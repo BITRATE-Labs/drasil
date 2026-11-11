@@ -1260,46 +1260,51 @@ describe('GPT generation observations', () => {
     );
     expect(JSON.stringify(attributes)).not.toContain('synthetic-private-provider-detail');
   });
-  it.each([null, [{ type: 'message', content: null }]])(
-    'preserves response diagnostics and usage for malformed output %j',
-    async (output) => {
-      const http = jest.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            id: 'resp_malformed',
-            object: 'response',
-            status: 'failed',
-            model: 'returned-model',
-            error: { code: 'server_error', message: 'synthetic-private-provider-detail' },
-            output: [],
-            usage: { input_tokens: 3, output_tokens: 0, total_tokens: 3 },
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
-      );
-      const client = new OpenAI({ apiKey: 'synthetic-runtime-secret', fetch: http });
-      const response = await client.responses.create({ model: 'synthetic', input: 'fixture' });
-      Object.assign(response, { output });
-      const create = jest.spyOn(client.responses, 'create').mockResolvedValue(response);
-      const result = await new GPTService(client).extractReportIdentity({
-        sources: [{ ref: sourceRef, content: { kind: 'text', text: 'Synthetic evidence' } }],
-        signal: new AbortController().signal,
-      });
-      expect(result).toMatchObject({ kind: 'failed', retryable: false });
-      expect(http).toHaveBeenCalledTimes(1);
-      expect(create).toHaveBeenCalledTimes(1);
-      const attributes = recorder.spans[0].attributes;
-      expect(attributes['langfuse.observation.metadata.response_status']).toBe('failed');
-      expect(attributes['langfuse.observation.metadata.response_error_code']).toBe('server_error');
-      expect(attributes['langfuse.observation.metadata.output_item_count']).toBeUndefined();
-      if (output === null) expect(attributes['langfuse.observation.output']).toBeUndefined();
-      else expect(JSON.parse(String(attributes['langfuse.observation.output']))).toEqual(output);
-      expect(JSON.parse(String(attributes['langfuse.observation.usage_details']))).toMatchObject({
-        input: 3,
-        total: 3,
-      });
-    }
-  );
+  it.each([
+    null,
+    [{ type: 'message', content: null }],
+    [{ type: 'message', content: 'malformed' }],
+  ])('preserves response diagnostics and usage for malformed output %j', async (output) => {
+    const http = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'resp_malformed',
+          object: 'response',
+          status: 'failed',
+          model: 'returned-model',
+          error: { code: 'server_error', message: 'synthetic-private-provider-detail' },
+          output: [],
+          usage: { input_tokens: 3, output_tokens: 0, total_tokens: 3 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    );
+    const client = new OpenAI({ apiKey: 'synthetic-runtime-secret', fetch: http });
+    const response = await client.responses.create({ model: 'synthetic', input: 'fixture' });
+    Object.assign(response, { output });
+    const create = jest.spyOn(client.responses, 'create').mockResolvedValue(response);
+    const result = await new GPTService(client).extractReportIdentity({
+      sources: [{ ref: sourceRef, content: { kind: 'text', text: 'Synthetic evidence' } }],
+      signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ kind: 'failed', retryable: false });
+    expect(http).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    const attributes = recorder.spans[0].attributes;
+    expect(attributes['langfuse.observation.metadata.response_status']).toBe('failed');
+    expect(attributes['langfuse.observation.metadata.response_error_code']).toBe('server_error');
+    expect(attributes['langfuse.observation.metadata.output_item_count']).toBe(
+      output === null ? undefined : '1'
+    );
+    expect(attributes['langfuse.observation.metadata.output_text_count']).toBeUndefined();
+    expect(attributes['langfuse.observation.metadata.refusal_detected']).toBeUndefined();
+    if (output === null) expect(attributes['langfuse.observation.output']).toBeUndefined();
+    else expect(JSON.parse(String(attributes['langfuse.observation.output']))).toEqual(output);
+    expect(JSON.parse(String(attributes['langfuse.observation.usage_details']))).toMatchObject({
+      input: 3,
+      total: 3,
+    });
+  });
   it('exports safe error metadata without invented usage', async () => {
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const parse = jest
