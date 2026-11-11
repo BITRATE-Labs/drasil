@@ -267,5 +267,6 @@ Common skills in this repo:
 - `db-reset-local`
 - `prisma-workflow`
 - `testing-integration`
+- `local-bot-testing` for local Discord reproduction before deploying diagnostics
 - `git-worktrees`
 - `pr-workflow`

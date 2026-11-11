@@ -25,6 +25,7 @@ Current wrappers:
 - `pr-workflow`
 - `prisma-workflow`
 - `testing-integration`
+- `local-bot-testing`
 
 Keep `.opencode/skills` as the detailed source of truth. Keep `.codex/skills` as thin
 compatibility shims with only `name` and `description` in frontmatter.
