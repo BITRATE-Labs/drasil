@@ -987,8 +987,29 @@ export class GPTService implements IGPTService {
         metadata: {
           usage_status: usageDetails ? 'reported' : 'unknown',
           ...(serviceTier ? { service_tier: serviceTier } : {}),
+          response_status: response.status,
+          response_error_code: response.error?.code,
+          response_incomplete_reason: response.incomplete_details?.reason,
+          response_id: response.id,
+          request_id: response._request_id,
+          output_item_count: Array.isArray(rawOutput) ? rawOutput.length : undefined,
         },
       });
+      try {
+        const outputContent = response.output.flatMap((item) => {
+          if (item.type !== 'message') return [];
+          if (!Array.isArray(item.content)) throw new Error('Invalid response message content');
+          return item.content;
+        });
+        recordObservation('generation', {
+          metadata: {
+            output_text_count: outputContent.filter((item) => item.type === 'output_text').length,
+            refusal_detected: outputContent.some((item) => item.type === 'refusal'),
+          },
+        });
+      } catch {
+        // Preserve core diagnostics and let the SDK parser handle malformed provider output.
+      }
       // Use the same SDK parser after preserving the provider's billable response.
       const parsedResponse = parseOpenAIResponse<typeof request, unknown>(response, request);
       recordObservation('generation', {
