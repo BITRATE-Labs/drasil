@@ -1209,6 +1209,97 @@ describe('GPT generation observations', () => {
       total: 5,
     });
   });
+  it.each([
+    { status: 'completed', error: null, incomplete_details: null },
+    {
+      status: 'failed',
+      error: { code: 'server_error', message: 'synthetic-private-provider-detail' },
+      incomplete_details: null,
+    },
+    {
+      status: 'incomplete',
+      error: null,
+      incomplete_details: { reason: 'max_output_tokens' },
+    },
+  ])('retains provider diagnostics for an empty $status response', async (details) => {
+    const http = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'resp_synthetic',
+          object: 'response',
+          ...details,
+          model: 'returned-model',
+          output: [],
+          usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req_synthetic' },
+        }
+      )
+    );
+    const client = new OpenAI({ apiKey: 'synthetic-runtime-secret', fetch: http });
+    const result = await new GPTService(client).extractReportIdentity({
+      sources: [{ ref: sourceRef, content: { kind: 'text', text: 'Synthetic evidence' } }],
+      signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ kind: 'failed', reason: 'invalid_output', retryable: false });
+    expect(http).toHaveBeenCalledTimes(1);
+    const attributes = recorder.spans[0].attributes;
+    expect(attributes['langfuse.observation.metadata.response_status']).toBe(details.status);
+    expect(attributes['langfuse.observation.metadata.response_id']).toBe('resp_synthetic');
+    expect(attributes['langfuse.observation.metadata.request_id']).toBe('req_synthetic');
+    expect(attributes['langfuse.observation.metadata.output_item_count']).toBe('0');
+    expect(attributes['langfuse.observation.metadata.output_text_count']).toBe('0');
+    expect(attributes['langfuse.observation.metadata.refusal_detected']).toBe('false');
+    expect(attributes['langfuse.observation.metadata.response_error_code']).toBe(
+      details.error?.code
+    );
+    expect(attributes['langfuse.observation.metadata.response_incomplete_reason']).toBe(
+      details.incomplete_details?.reason
+    );
+    expect(JSON.stringify(attributes)).not.toContain('synthetic-private-provider-detail');
+  });
+  it.each([null, [{ type: 'message', content: null }]])(
+    'preserves response diagnostics and usage for malformed output %j',
+    async (output) => {
+      const http = jest.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: 'resp_malformed',
+            object: 'response',
+            status: 'failed',
+            model: 'returned-model',
+            error: { code: 'server_error', message: 'synthetic-private-provider-detail' },
+            output: [],
+            usage: { input_tokens: 3, output_tokens: 0, total_tokens: 3 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      );
+      const client = new OpenAI({ apiKey: 'synthetic-runtime-secret', fetch: http });
+      const response = await client.responses.create({ model: 'synthetic', input: 'fixture' });
+      Object.assign(response, { output });
+      const create = jest.spyOn(client.responses, 'create').mockResolvedValue(response);
+      const result = await new GPTService(client).extractReportIdentity({
+        sources: [{ ref: sourceRef, content: { kind: 'text', text: 'Synthetic evidence' } }],
+        signal: new AbortController().signal,
+      });
+      expect(result).toMatchObject({ kind: 'failed', retryable: false });
+      expect(http).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledTimes(1);
+      const attributes = recorder.spans[0].attributes;
+      expect(attributes['langfuse.observation.metadata.response_status']).toBe('failed');
+      expect(attributes['langfuse.observation.metadata.response_error_code']).toBe('server_error');
+      expect(attributes['langfuse.observation.metadata.output_item_count']).toBeUndefined();
+      if (output === null) expect(attributes['langfuse.observation.output']).toBeUndefined();
+      else expect(JSON.parse(String(attributes['langfuse.observation.output']))).toEqual(output);
+      expect(JSON.parse(String(attributes['langfuse.observation.usage_details']))).toMatchObject({
+        input: 3,
+        total: 3,
+      });
+    }
+  );
   it('exports safe error metadata without invented usage', async () => {
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const parse = jest
@@ -1221,6 +1312,40 @@ describe('GPT generation observations', () => {
     expect(recorder.spans[0].attributes['langfuse.observation.metadata.http_status']).toBe('429');
     expect(recorder.spans[0].attributes['langfuse.observation.usage_details']).toBeUndefined();
     expect(JSON.stringify(recorder.spans[0].attributes)).not.toContain('synthetic-runtime-secret');
+  });
+  it('identifies refusal output without adding its prose to diagnostic metadata', async () => {
+    const http = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'resp_refusal',
+          object: 'response',
+          status: 'completed',
+          model: 'returned-model',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'refusal', refusal: 'synthetic-private-refusal-detail' }],
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    );
+    const client = new OpenAI({ apiKey: 'synthetic-runtime-secret', fetch: http });
+    const result = await new GPTService(client).extractReportIdentity({
+      sources: [{ ref: sourceRef, content: { kind: 'text', text: 'Synthetic evidence' } }],
+      signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ kind: 'failed', retryable: false });
+    const attributes = recorder.spans[0].attributes;
+    expect(attributes['langfuse.observation.metadata.refusal_detected']).toBe('true');
+    expect(attributes['langfuse.observation.metadata.output_item_count']).toBe('1');
+    expect(attributes['langfuse.observation.metadata.output_text_count']).toBe('0');
+    const metadata = Object.entries(attributes).filter(([key]) =>
+      key.startsWith('langfuse.observation.metadata.')
+    );
+    expect(JSON.stringify(metadata)).not.toContain('synthetic-private-refusal-detail');
   });
   it('omits a generation when no image is available', async () => {
     const parse = jest.fn();
@@ -1246,6 +1371,8 @@ describe('GPT generation observations', () => {
           id: 'synthetic-response',
           object: 'response',
           status: 'completed',
+          error: null,
+          incomplete_details: null,
           model: 'returned-model',
           output,
           usage: { input_tokens: 100, output_tokens: 7, total_tokens: 107 },
@@ -1268,6 +1395,9 @@ describe('GPT generation observations', () => {
       });
       expect(JSON.parse(String(span.attributes['langfuse.observation.output']))).toEqual(output);
       expect(span.attributes['langfuse.observation.metadata.usage_status']).toBe('reported');
+      expect(span.attributes['langfuse.observation.metadata.response_status']).toBe('completed');
+      expect(span.attributes['langfuse.observation.metadata.output_item_count']).toBe('1');
+      expect(span.attributes['langfuse.observation.metadata.output_text_count']).toBe('1');
       expect(span.attributes['langfuse.observation.metadata.request_outcome']).toBe(
         'invalid_response'
       );
