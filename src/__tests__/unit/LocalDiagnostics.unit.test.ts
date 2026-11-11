@@ -40,6 +40,7 @@ describe('local diagnostics', () => {
     expect(result).toMatchObject({ kind: 'failed', reason: 'invalid_output' });
     expect(http).toHaveBeenCalledTimes(1);
     expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]).usage).toEqual({ input: 0, output: 0, total: 0 });
     expect(JSON.parse(lines[0])).toMatchObject({
       event: 'local_observation',
       pid: process.pid,

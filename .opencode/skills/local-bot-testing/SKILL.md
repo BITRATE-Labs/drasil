@@ -33,7 +33,7 @@ Complete this private preflight record. A secret name, display name or `NODE_ENV
 
 Reuse the documented `drasil/dev` credential route only after proving it belongs to the selected dev identity. `npm run dev:env` writes `.env` and overwrites any existing file. Preserve and explicitly select existing configuration before hydration; never print or commit credential values. If no suitable dev identity can be verified, report what is missing before proposing app creation or a same-token handover.
 
-A different bot in a shared channel can still react to the same message. Isolate the fixture with channel permissions or a dedicated test guild. Do not copy deployed channel configuration, production DB contents, report IDs or persisted custom IDs into the local fixture. Keep IDs and operational receipts gitignored and private.
+A different bot in a shared channel can still react to the same message. Isolate the fixture with channel permissions or a dedicated test guild. Do not copy deployed channel configuration, production DB contents, report IDs or persisted custom IDs into the local fixture. Store IDs and operational receipts in the already ignored `.debug/local-bot-testing/<run-id>/` directory or outside the checkout. Verify the selected destination is private and ignored before writing.
 
 Inspect current `Bot`, ready handler and worker startup. Global command registration affects the selected app. Action, report analysis, CAPTCHA, queue, reminder and reconciliation workers can act before the test interaction. Check due/processing jobs before enabling features. Detection test mode changes accounting, not side effects. Do not infer a guild sandbox from an undocumented environment flag.
 
@@ -57,7 +57,7 @@ These counts identify work to inspect, not proof that every worker is idle. Revi
 
 ## Start and test
 
-After preflight and authorization, use `npm run dev` in an owned interactive session. This selects `src/dev.ts`, initializes local diagnostic capture, disables remote Langfuse/PostHog export, then imports the existing bootstrap. It is a real bot, not a dry-run or an automatic identity check.
+After preflight and authorization, use `npm run dev` in an owned interactive session. This selects `src/dev.ts`, initializes local diagnostic capture, disables remote Langfuse/PostHog export, then imports the existing bootstrap. It is a real bot, not a dry-run or an automatic identity check. To test an explicitly approved remote exporter configuration, use the normal `npm start` entry instead; `npm run dev` deliberately overrides inherited export settings.
 
 Record the watcher and child PID/start time. Wait for login, configuration, command registration and relevant workers, not just the generic startup line. Verify the selected guild setup and pending work before the fixture action.
 
