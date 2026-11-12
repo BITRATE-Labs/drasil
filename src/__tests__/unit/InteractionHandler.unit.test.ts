@@ -64,7 +64,16 @@ import {
   buildAdminActionCustomId,
   parseAdminActionCustomId,
 } from '../../utils/adminActionCustomIds';
-import type { AccountQuarantinePreview } from '../../services/AccountQuarantineService';
+import type {
+  AccountQuarantinePreview,
+  IAccountQuarantineService,
+} from '../../services/AccountQuarantineService';
+import type { ISetupDiagnosticsService } from '../../services/SetupDiagnosticsService';
+import type { IReportIntakeService } from '../../services/ReportIntakeService';
+import type { IDetectionEventsRepository } from '../../repositories/DetectionEventsRepository';
+import type { ICaptchaChallengeService } from '../../services/CaptchaChallengeService';
+import type { IModerationActionRequestRepository } from '../../repositories/ModerationActionRequestRepository';
+import type { IReportIntakeRepository } from '../../repositories/ReportIntakeRepository';
 
 const handlerApplications = new WeakMap<InteractionHandler, BotApplication>();
 function buildHandler(
@@ -148,6 +157,17 @@ const buildInteraction = (customId: string, guildId: string, user: User): Button
   };
   return interaction as unknown as ButtonInteraction;
 };
+
+const buildSetupInteraction = (getTextInputValue: jest.Mock): ModalSubmitInteraction =>
+  ({
+    customId: SETUP_VERIFICATION_MODAL_ID,
+    guildId: 'guild-1',
+    user: { id: 'admin-1' },
+    fields: { getTextInputValue },
+    reply: jest.fn().mockResolvedValue(undefined),
+    deferReply: jest.fn().mockResolvedValue(undefined),
+    editReply: jest.fn().mockResolvedValue(undefined),
+  }) as unknown as ModalSubmitInteraction;
 
 const issueCaseModal = async (
   handler: InteractionHandler,
@@ -557,6 +577,40 @@ describe('InteractionHandler (unit)', () => {
     }
   });
 
+  const createHandler = (
+    overrides: {
+      setupDiagnosticsService?: ISetupDiagnosticsService;
+      reportIntakeService?: IReportIntakeService;
+      roleGateService?: IRoleGateService;
+      detectionEventsRepository?: IDetectionEventsRepository;
+      accountQuarantineService?: IAccountQuarantineService;
+      captchaChallengeService?: ICaptchaChallengeService;
+      actionRequests?: IModerationActionRequestRepository;
+      reportIntakes?: IReportIntakeRepository;
+    } = {}
+  ): InteractionHandler =>
+    buildHandler(
+      client,
+      notificationManager,
+      userModerationService,
+      securityActionService,
+      configService,
+      verificationEventRepository,
+      threadManager,
+      adminActionRepository,
+      overrides.setupDiagnosticsService,
+      overrides.reportIntakeService,
+      undefined,
+      undefined,
+      undefined,
+      overrides.roleGateService,
+      overrides.detectionEventsRepository,
+      overrides.accountQuarantineService,
+      overrides.captchaChallengeService,
+      overrides.actionRequests,
+      overrides.reportIntakes
+    );
+
   const enableModeratorBanActions = (): void => {
     (configService.getServerConfig as jest.Mock).mockResolvedValue({
       settings: { [MODERATOR_BAN_ACTION_ENABLED_SETTING_KEY]: true },
@@ -575,16 +629,7 @@ describe('InteractionHandler (unit)', () => {
       caseRoleAttempted: true,
       caseRoleActive: true,
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: buildOpenCaseContextModalCustomId('user-2'),
       guildId: 'guild-1',
@@ -645,16 +690,7 @@ describe('InteractionHandler (unit)', () => {
         }),
       },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: buildOpenCaseMessageContextModalCustomId('user-2', 'channel-1', 'message-1'),
       guildId: 'guild-1',
@@ -697,16 +733,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('rejects native Open Case modal submits without administrator permission', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: buildOpenCaseContextModalCustomId('user-2'),
       guildId: 'guild-1',
@@ -760,18 +787,7 @@ describe('InteractionHandler (unit)', () => {
         metadata: null,
       }),
     };
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      reportIntakeService as any
-    );
+    const handler = createHandler({ reportIntakeService: reportIntakeService as any });
     const interaction = buildInteraction(
       buildReportIntakeAdminActionsCustomId('intake-1'),
       'guild-1',
@@ -802,16 +818,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('handles verify button by calling UserModerationService', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('admin_actions:confirm_verify:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -833,22 +840,7 @@ describe('InteractionHandler (unit)', () => {
       formatResolutionConfirmation: jest.fn().mockReturnValue(null),
       applyResolution: jest.fn().mockResolvedValue({ applied: true }),
     } as unknown as jest.Mocked<IRoleGateService>;
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      roleGateService
-    );
+    const handler = createHandler({ roleGateService });
     const interaction = buildInteraction('admin_actions:confirm_verify:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -873,16 +865,7 @@ describe('InteractionHandler (unit)', () => {
     verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(activeCase);
     verificationEventRepository.findById.mockResolvedValue(activeCase);
     verificationEventRepository.findByUserAndServer.mockResolvedValue([activeCase]);
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_restrict_user:case:user-1',
       'guild-1',
@@ -910,16 +893,7 @@ describe('InteractionHandler (unit)', () => {
       'Close pending verification cases for <@user-1> without verifying or banning them? The case role will be removed.',
     ],
   ])('opens an ephemeral confirmation for persistent %s button', async (customId, message) => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(customId, 'guild-1', { id: 'admin-1' } as User);
     grantInteractionPermissions(interaction);
 
@@ -936,16 +910,7 @@ describe('InteractionHandler (unit)', () => {
     verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(activeCase);
     verificationEventRepository.findById.mockResolvedValue(activeCase);
     verificationEventRepository.findByUserAndServer.mockResolvedValue([activeCase]);
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_lift_restriction:case:user-1',
       'guild-1',
@@ -972,16 +937,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('handles close-no-action button by calling UserModerationService', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_close_no_action:case:user-1',
       'guild-1',
@@ -1011,16 +967,7 @@ describe('InteractionHandler (unit)', () => {
       attention_state: CaseAttentionState.PARKED,
       containment_status: CaseContainmentStatus.CONTAINED,
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_close_no_action:case:user-1',
       'guild-1',
@@ -1044,22 +991,7 @@ describe('InteractionHandler (unit)', () => {
       formatResolutionConfirmation: jest.fn().mockReturnValue(null),
       applyResolution: jest.fn().mockResolvedValue({ applied: true }),
     } as unknown as jest.Mocked<IRoleGateService>;
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      roleGateService
-    );
+    const handler = createHandler({ roleGateService });
     const interaction = buildInteraction(
       'admin_actions:confirm_close_no_action:case:user-1',
       'guild-1',
@@ -1093,22 +1025,7 @@ describe('InteractionHandler (unit)', () => {
       formatResolutionConfirmation: jest.fn().mockReturnValue(null),
       applyResolution: jest.fn().mockResolvedValue({ applied: true }),
     } as unknown as jest.Mocked<IRoleGateService>;
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      roleGateService
-    );
+    const handler = createHandler({ roleGateService });
     const interaction = buildInteraction(
       'admin_actions:confirm_close_no_action:case:user-1',
       'guild-1',
@@ -1135,22 +1052,7 @@ describe('InteractionHandler (unit)', () => {
       formatResolutionConfirmation: jest.fn().mockReturnValue('Role gate should not render'),
       applyResolution: jest.fn().mockResolvedValue({ applied: true }),
     } as unknown as jest.Mocked<IRoleGateService>;
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      roleGateService
-    );
+    const handler = createHandler({ roleGateService });
     const interaction = buildInteraction('close_user-1', 'guild-1', { id: 'admin-1' } as User);
     Object.assign(interaction, {
       guild: {
@@ -1181,16 +1083,7 @@ describe('InteractionHandler (unit)', () => {
       buildVerificationEvent(`ver-${index + 1}`, `user-${index + 1}`)
     );
     verificationEventRepository.findReviewablePendingByServer.mockResolvedValue(pendingCases);
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(CASE_REVIEW_DIGEST_OPEN_CUSTOM_ID, 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1215,16 +1108,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('truncates case digest select text to the provided limit', () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
 
     expect((handler as any).truncateSelectText('a'.repeat(101), 100)).toHaveLength(100);
   });
@@ -1245,16 +1129,7 @@ describe('InteractionHandler (unit)', () => {
     (configService.getCachedServerConfig as jest.Mock).mockReturnValue({
       admin_channel_id: 'admin-channel-1',
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildSelectInteraction(
       buildCaseReviewDigestSelectCustomId(0),
       ['ver-selected'],
@@ -1292,16 +1167,7 @@ describe('InteractionHandler (unit)', () => {
     const activeCase = buildVerificationEvent('ver-1', 'user-1');
     verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(activeCase);
     verificationEventRepository.findByUserAndServer.mockResolvedValue([activeCase]);
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('admin_actions:m:c:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1337,25 +1203,7 @@ describe('InteractionHandler (unit)', () => {
             : null
         ),
     } as any;
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      captchaChallengeService
-    );
+    const handler = createHandler({ captchaChallengeService });
     const interaction = buildInteraction(
       buildAdminActionCustomId('menu', 'case', 'user-1', undefined, 'ver-selected'),
       'guild-1',
@@ -1397,25 +1245,7 @@ describe('InteractionHandler (unit)', () => {
       },
     });
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      captchaChallengeService
-    );
+    const handler = createHandler({ captchaChallengeService });
     const interaction = buildInteraction(
       buildAdminActionCustomId('confirm_captcha', 'case', 'user-1', undefined, 'ver-1'),
       'guild-1',
@@ -1464,25 +1294,7 @@ describe('InteractionHandler (unit)', () => {
     (client.guilds.fetch as jest.Mock).mockResolvedValue({
       members: { fetch: jest.fn().mockResolvedValue(buildMember('guild-1', 'user-1')) },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      captchaChallengeService
-    );
+    const handler = createHandler({ captchaChallengeService });
     const interaction = buildInteraction(
       buildAdminActionCustomId(
         'confirm_captcha_retry',
@@ -1519,25 +1331,7 @@ describe('InteractionHandler (unit)', () => {
         id: '11111111-1111-4111-8111-111111111111',
       }),
     } as any;
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      captchaChallengeService
-    );
+    const handler = createHandler({ captchaChallengeService });
     const interaction = buildInteraction(
       buildAdminActionCustomId('captcha_bypass', 'case', 'user-1', undefined, 'ver-1'),
       'guild-1',
@@ -1574,25 +1368,7 @@ describe('InteractionHandler (unit)', () => {
     verificationEventRepository.findById.mockResolvedValue(
       buildVerificationEvent('ver-1', 'user-1')
     );
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      captchaChallengeService
-    );
+    const handler = createHandler({ captchaChallengeService });
     const interaction = {
       customId: 'captcha:bypass:ver-1:11111111-1111-4111-8111-111111111111:2',
       guildId: 'guild-1',
@@ -1620,16 +1396,7 @@ describe('InteractionHandler (unit)', () => {
   it('shows observed admin actions with a resolved display label and no confirmation copy', async () => {
     process.env.DRASIL_WEB_PUBLIC_URL = 'https://drasilbot.com';
     delete process.env.NEXT_PUBLIC_APP_URL;
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('admin_actions:m:o:user-1:det-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1659,23 +1426,7 @@ describe('InteractionHandler (unit)', () => {
         detection_type: DetectionType.USER_REPORT,
       }),
     };
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      detectionEventsRepository as any
-    );
+    const handler = createHandler({ detectionEventsRepository: detectionEventsRepository as any });
     const interaction = buildInteraction('admin_actions:m:o:user-1:det-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1699,16 +1450,7 @@ describe('InteractionHandler (unit)', () => {
       user_id: null,
     } as unknown as VerificationEvent;
     verificationEventRepository.findById.mockResolvedValue(selectedCase);
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildSelectInteraction(
       buildCaseReviewDigestSelectCustomId(0),
       ['ver-selected'],
@@ -1728,16 +1470,7 @@ describe('InteractionHandler (unit)', () => {
 
   it('shows a confirmation modal for the ban button', async () => {
     enableModeratorBanActions();
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('ban_user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1784,17 +1517,9 @@ describe('InteractionHandler (unit)', () => {
       },
     });
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      buildNoIssueSetupDiagnosticsService()
-    );
+    const handler = createHandler({
+      setupDiagnosticsService: buildNoIssueSetupDiagnosticsService(),
+    });
     const interaction = buildInteraction('admin_actions:menu:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1819,17 +1544,9 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('syncs pending cases for an already-banned user after confirmation', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      buildNoIssueSetupDiagnosticsService()
-    );
+    const handler = createHandler({
+      setupDiagnosticsService: buildNoIssueSetupDiagnosticsService(),
+    });
     const interaction = buildInteraction('admin_actions:confirm_sync_ban:case:user-1', 'guild-1', {
       id: 'ban-mod-1',
     } as User);
@@ -1867,17 +1584,9 @@ describe('InteractionHandler (unit)', () => {
       },
     });
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      buildNoIssueSetupDiagnosticsService()
-    );
+    const handler = createHandler({
+      setupDiagnosticsService: buildNoIssueSetupDiagnosticsService(),
+    });
     const interaction = buildInteraction('admin_actions:menu:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1918,17 +1627,9 @@ describe('InteractionHandler (unit)', () => {
       },
     });
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      buildNoIssueSetupDiagnosticsService()
-    );
+    const handler = createHandler({
+      setupDiagnosticsService: buildNoIssueSetupDiagnosticsService(),
+    });
     const interaction = buildInteraction('admin_actions:menu:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1958,17 +1659,9 @@ describe('InteractionHandler (unit)', () => {
     verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(verificationEvent);
     verificationEventRepository.findById.mockResolvedValue(verificationEvent);
     verificationEventRepository.findByUserAndServer.mockResolvedValue([verificationEvent]);
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      buildNoIssueSetupDiagnosticsService()
-    );
+    const handler = createHandler({
+      setupDiagnosticsService: buildNoIssueSetupDiagnosticsService(),
+    });
     const interaction = buildInteraction('admin_actions:menu:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -1998,17 +1691,9 @@ describe('InteractionHandler (unit)', () => {
     verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(verificationEvent);
     verificationEventRepository.findById.mockResolvedValue(verificationEvent);
     verificationEventRepository.findByUserAndServer.mockResolvedValue([verificationEvent]);
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      buildNoIssueSetupDiagnosticsService()
-    );
+    const handler = createHandler({
+      setupDiagnosticsService: buildNoIssueSetupDiagnosticsService(),
+    });
     const interaction = buildInteraction('admin_actions:menu:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -2048,16 +1733,7 @@ describe('InteractionHandler (unit)', () => {
     };
     verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(verificationEvent);
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('admin_actions:confirm_thread:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -2093,16 +1769,7 @@ describe('InteractionHandler (unit)', () => {
     };
     verificationEventRepository.findByUserAndServer.mockResolvedValue([verificationEvent]);
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('admin_actions:confirm_reopen:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -2126,16 +1793,7 @@ describe('InteractionHandler (unit)', () => {
   it('handles history button for members with moderation permissions', async () => {
     verificationEventRepository.findByUserAndServer.mockResolvedValue([]);
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('history_user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -2167,16 +1825,7 @@ describe('InteractionHandler (unit)', () => {
           }),
         },
       });
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository
-      );
+      const handler = createHandler();
       const interaction = buildInteraction(customId, 'guild-1', { id: 'viewer-1' } as User);
       Object.assign(interaction, {
         memberPermissions: { has: jest.fn().mockReturnValue(false) },
@@ -2214,16 +1863,7 @@ describe('InteractionHandler (unit)', () => {
           }),
         },
       });
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository
-      );
+      const handler = createHandler();
       const interaction = buildInteraction(customId, 'guild-1', { id: 'ban-mod-1' } as User);
       grantOnlyBanMembersPermission(interaction);
 
@@ -2242,16 +1882,7 @@ describe('InteractionHandler (unit)', () => {
 
   it('allows ban confirmation with only BanMembers permission', async () => {
     enableModeratorBanActions();
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('ban_user-1', 'guild-1', {
       id: 'ban-mod-1',
     } as User);
@@ -2277,16 +1908,7 @@ describe('InteractionHandler (unit)', () => {
       verificationEventRepository.findById.mockImplementation(async (id) =>
         id === original.id ? original : newer
       );
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository
-      );
+      const handler = createHandler();
       const notification = buildInteraction(
         buildAdminActionCustomId('menu', 'case', 'user-1'),
         'guild-1',
@@ -2364,16 +1986,7 @@ describe('InteractionHandler (unit)', () => {
             },
           }) as any
       );
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository
-      );
+      const handler = createHandler();
       const submission = {
         id: 'modal-submit',
         customId: `verification:${action}_modal:user-1`,
@@ -2407,16 +2020,7 @@ describe('InteractionHandler (unit)', () => {
 
   it('does not rebind an unexpired case modal to a newer case', async () => {
     enableModeratorBanActions();
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const first = buildInteraction(
       buildAdminActionCustomId('ban', 'case', 'user-1', undefined, 'ver-1'),
       'guild-1',
@@ -2440,16 +2044,7 @@ describe('InteractionHandler (unit)', () => {
     'rejects %s case modal evidence before moderation effects',
     async (failure) => {
       enableModeratorBanActions();
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository
-      );
+      const handler = createHandler();
       const interaction = {
         customId: 'verification:ban_modal:user-1',
         guildId: 'guild-1',
@@ -2479,24 +2074,22 @@ describe('InteractionHandler (unit)', () => {
     }
   );
 
-  it('submits verifier ban modal with final notes', async () => {
+  it.each([
+    { scenario: 'final notes', notes: 'admin final notes', reason: 'admin final notes' },
+    {
+      scenario: 'the default reason when notes are blank',
+      notes: '   ',
+      reason: 'Banned by moderator during verification',
+    },
+  ])('submits verifier ban modal with $scenario', async ({ notes, reason }) => {
     enableModeratorBanActions();
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: 'verification:ban_modal:user-1',
       guildId: 'guild-1',
       user: { id: 'admin-1' } as User,
       fields: {
-        getTextInputValue: jest.fn(() => 'admin final notes'),
+        getTextInputValue: jest.fn(() => notes),
       },
       deferReply: jest.fn().mockResolvedValue(undefined),
       editReply: jest.fn().mockResolvedValue(undefined),
@@ -2512,7 +2105,7 @@ describe('InteractionHandler (unit)', () => {
 
     expect(userModerationService.banUser).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'user-1' }),
-      'admin final notes',
+      reason,
       interaction.user
     );
     expect(interaction.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
@@ -2531,16 +2124,7 @@ describe('InteractionHandler (unit)', () => {
         fetch: jest.fn().mockRejectedValue(new Error('Unknown Member')),
       },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: 'verification:ban_modal:user-left',
       guildId: 'guild-1',
@@ -2572,44 +2156,6 @@ describe('InteractionHandler (unit)', () => {
     );
   });
 
-  it('submits verifier ban modal with the default reason when notes are blank', async () => {
-    enableModeratorBanActions();
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
-    const interaction = {
-      customId: 'verification:ban_modal:user-1',
-      guildId: 'guild-1',
-      user: { id: 'admin-1' } as User,
-      fields: {
-        getTextInputValue: jest.fn(() => '   '),
-      },
-      deferReply: jest.fn().mockResolvedValue(undefined),
-      editReply: jest.fn().mockResolvedValue(undefined),
-      reply: jest.fn().mockResolvedValue(undefined),
-      followUp: jest.fn().mockResolvedValue(undefined),
-      replied: false,
-      deferred: false,
-    } as unknown as ModalSubmitInteraction;
-    grantOnlyBanMembersPermission(interaction);
-
-    await issueCaseModal(handler, interaction);
-    await handler.handleModalSubmit(interaction);
-
-    expect(userModerationService.banUser).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'user-1' }),
-      'Banned by moderator during verification',
-      interaction.user
-    );
-  });
-
   it('rejects verifier ban modal submission without BanMembers permission', async () => {
     (client.guilds.fetch as jest.Mock).mockResolvedValue({
       members: {
@@ -2618,16 +2164,7 @@ describe('InteractionHandler (unit)', () => {
         }),
       },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: 'verification:ban_modal:user-1',
       guildId: 'guild-1',
@@ -2656,16 +2193,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('handles observed open case button', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_observed_open:observed:user-1:det-1',
       'guild-1',
@@ -2689,16 +2217,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('does not open cases from old observed restrict custom ID codes', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('admin_actions:cor:o:user-1:det-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -2715,16 +2234,7 @@ describe('InteractionHandler (unit)', () => {
 
   it('shows an observed kick reason modal for present members', async () => {
     enableObservedKickActions();
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_observed_kick:observed:user-1:det-1',
       'guild-1',
@@ -2747,16 +2257,7 @@ describe('InteractionHandler (unit)', () => {
     securityActionService.kickObservedDetection.mockRejectedValueOnce(
       new Error('Discord rejected')
     );
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: 'observed:kick_modal:user-1:det-1',
       guildId: 'guild-1',
@@ -2781,16 +2282,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('shows a case kick reason modal by default', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('admin_actions:confirm_kick:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -2805,16 +2297,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('submits case kick modal with the default reason when blank', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: 'verification:kick_modal:user-1',
       guildId: 'guild-1',
@@ -2846,16 +2329,7 @@ describe('InteractionHandler (unit)', () => {
 
   it('submits observed kick modal with the provided reason', async () => {
     enableObservedKickActions();
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = {
       customId: 'observed:kick_modal:user-1:det-1',
       guildId: 'guild-1',
@@ -2889,16 +2363,7 @@ describe('InteractionHandler (unit)', () => {
     handler: InteractionHandler;
     modalId: string;
   }> {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const reason = {
       id: 'reason-1',
       customId: 'moderation_action_reason:ban:user-1',
@@ -3009,16 +2474,7 @@ describe('InteractionHandler (unit)', () => {
       jest.useFakeTimers();
       try {
         const action = scenario === 'kick_reason' ? 'kick' : 'ban';
-        const handler = buildHandler(
-          client,
-          notificationManager,
-          userModerationService,
-          securityActionService,
-          configService,
-          verificationEventRepository,
-          threadManager,
-          adminActionRepository
-        );
+        const handler = createHandler();
         const reasonInteraction = {
           id: 'reason-1',
           customId: `moderation_action_reason:${action}:user-1`,
@@ -3075,16 +2531,7 @@ describe('InteractionHandler (unit)', () => {
   );
 
   it('executes native ban action only after the second confirmation modal', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const reasonInteraction = {
       customId: 'moderation_action_reason:ban:user-1',
       guildId: 'guild-1',
@@ -3145,16 +2592,7 @@ describe('InteractionHandler (unit)', () => {
     (configService.getServerConfig as jest.Mock).mockResolvedValue({
       settings: { [MODERATOR_KICK_ACTION_ENABLED_SETTING_KEY]: false },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('admin_actions:confirm_kick:case:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -3171,16 +2609,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('blocks confirmed observed kick when the observed kick policy is disabled', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_observed_kick:observed:user-1:det-1',
       'guild-1',
@@ -3222,27 +2651,11 @@ describe('InteractionHandler (unit)', () => {
           metadata: state === 'busy' ? { report_ban_operation_id: 'other-operation' } : {},
         }),
       };
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        detections as never,
-        undefined,
-        undefined,
-        requests as never,
-        reports as never
-      );
+      const handler = createHandler({
+        detectionEventsRepository: detections as never,
+        actionRequests: requests as never,
+        reportIntakes: reports as never,
+      });
       const interaction = {
         customId: 'observed:ban_modal:user-1:det-1',
         guildId: 'guild-1',
@@ -3313,27 +2726,11 @@ describe('InteractionHandler (unit)', () => {
         metadata: state === 'busy' ? { report_ban_operation_id: 'other-operation' } : {},
       }),
     };
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      detections as never,
-      undefined,
-      undefined,
-      requests as never,
-      reports as never
-    );
+    const handler = createHandler({
+      detectionEventsRepository: detections as never,
+      actionRequests: requests as never,
+      reportIntakes: reports as never,
+    });
     const originalReport = await reports.findById();
     reports.findById.mockResolvedValueOnce({
       ...originalReport,
@@ -3430,27 +2827,10 @@ describe('InteractionHandler (unit)', () => {
         metadata: state === 'busy' ? { report_ban_operation_id: 'operation-1' } : {},
       }),
     };
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      detections as never,
-      undefined,
-      undefined,
-      undefined,
-      reports as never
-    );
+    const handler = createHandler({
+      detectionEventsRepository: detections as never,
+      reportIntakes: reports as never,
+    });
     const interaction = buildInteraction('report_intake_admin:b:report-1', 'guild-1', {
       id: state === 'reporter' ? 'reporter-1' : 'admin-1',
     } as User);
@@ -3513,27 +2893,12 @@ describe('InteractionHandler (unit)', () => {
         },
         channels: { fetch: jest.fn().mockResolvedValue(null) },
       });
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository,
-        undefined,
-        reportService as never,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        detections as never,
-        undefined,
-        undefined,
-        requests as never,
-        reports as never
-      );
+      const handler = createHandler({
+        reportIntakeService: reportService as never,
+        detectionEventsRepository: detections as never,
+        actionRequests: requests as never,
+        reportIntakes: reports as never,
+      });
       const reporter = buildMember('guild-1', 'reporter');
       const reportActions = createBotReportActions(
         {
@@ -3632,16 +2997,7 @@ describe('InteractionHandler (unit)', () => {
         [MODERATOR_BAN_ACTION_REQUIRES_REASON_SETTING_KEY]: true,
       },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('observed:ban:user-1:det-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -3656,16 +3012,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('handles observed false positive dismissal', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_observed_false_positive:observed:user-1:det-1',
       'guild-1',
@@ -3744,16 +3091,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('handles observed close report confirmation as an observed dismissal', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_observed_close_report:observed:user-1:det-1',
       'guild-1',
@@ -3779,16 +3117,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('confirms the direct observed close report button as a report closeout', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('observed:close_report:user-1:det-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -3821,16 +3150,7 @@ describe('InteractionHandler (unit)', () => {
         }),
       },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction('observed:dismiss_menu:user-1:det-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -3856,16 +3176,7 @@ describe('InteractionHandler (unit)', () => {
         }),
       },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:observed_false_positive:observed:user-1:det-1',
       'guild-1',
@@ -3894,16 +3205,7 @@ describe('InteractionHandler (unit)', () => {
         }),
       },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_observed_dismiss:observed:user-1:det-1',
       'guild-1',
@@ -3925,16 +3227,7 @@ describe('InteractionHandler (unit)', () => {
     securityActionService.undoObservedDetectionAction.mockResolvedValueOnce(
       AdminActionType.FALSE_POSITIVE
     );
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
     const interaction = buildInteraction(
       'admin_actions:confirm_observed_undo_dismiss:observed:user-1:det-1',
       'guild-1',
@@ -3982,40 +3275,24 @@ describe('InteractionHandler (unit)', () => {
       },
     });
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      buildNoIssueSetupDiagnosticsService()
-    );
+    const handler = createHandler({
+      setupDiagnosticsService: buildNoIssueSetupDiagnosticsService(),
+    });
 
-    const interaction = {
-      customId: SETUP_VERIFICATION_MODAL_ID,
-      guildId: 'guild-1',
-      user: { id: 'admin-1' } as User,
-      fields: {
-        getTextInputValue: jest.fn((id: string) => {
-          if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
-            return '123456789012345678';
-          }
-          if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
-            return '123456789012345679';
-          }
-          if (id === SETUP_VERIFICATION_CHANNEL_FIELD_ID) {
-            return '123456789012345680';
-          }
-          return '';
-        }),
-      },
-      reply: jest.fn().mockResolvedValue(undefined),
-      deferReply: jest.fn().mockResolvedValue(undefined),
-      editReply: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ModalSubmitInteraction;
+    const interaction = buildSetupInteraction(
+      jest.fn((id: string) => {
+        if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
+          return '123456789012345678';
+        }
+        if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
+          return '123456789012345679';
+        }
+        if (id === SETUP_VERIFICATION_CHANNEL_FIELD_ID) {
+          return '123456789012345680';
+        }
+        return '';
+      })
+    );
 
     await handler.handleModalSubmit(interaction);
 
@@ -4059,37 +3336,21 @@ describe('InteractionHandler (unit)', () => {
       },
     });
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      buildNoIssueSetupDiagnosticsService()
-    );
+    const handler = createHandler({
+      setupDiagnosticsService: buildNoIssueSetupDiagnosticsService(),
+    });
 
-    const interaction = {
-      customId: SETUP_VERIFICATION_MODAL_ID,
-      guildId: 'guild-1',
-      user: { id: 'admin-1' } as User,
-      fields: {
-        getTextInputValue: jest.fn((id: string) => {
-          if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
-            return '123456789012345678';
-          }
-          if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
-            return '123456789012345679';
-          }
-          return '';
-        }),
-      },
-      reply: jest.fn().mockResolvedValue(undefined),
-      deferReply: jest.fn().mockResolvedValue(undefined),
-      editReply: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ModalSubmitInteraction;
+    const interaction = buildSetupInteraction(
+      jest.fn((id: string) => {
+        if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
+          return '123456789012345678';
+        }
+        if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
+          return '123456789012345679';
+        }
+        return '';
+      })
+    );
 
     await handler.handleModalSubmit(interaction);
 
@@ -4123,36 +3384,19 @@ describe('InteractionHandler (unit)', () => {
       },
     });
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
 
-    const interaction = {
-      customId: SETUP_VERIFICATION_MODAL_ID,
-      guildId: 'guild-1',
-      user: { id: 'admin-1' } as User,
-      fields: {
-        getTextInputValue: jest.fn((id: string) => {
-          if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
-            return '123456789012345678';
-          }
-          if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
-            return '123456789012345679';
-          }
-          return '';
-        }),
-      },
-      reply: jest.fn().mockResolvedValue(undefined),
-      deferReply: jest.fn().mockResolvedValue(undefined),
-      editReply: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ModalSubmitInteraction;
+    const interaction = buildSetupInteraction(
+      jest.fn((id: string) => {
+        if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
+          return '123456789012345678';
+        }
+        if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
+          return '123456789012345679';
+        }
+        return '';
+      })
+    );
 
     await handler.handleModalSubmit(interaction);
 
@@ -4224,36 +3468,18 @@ describe('InteractionHandler (unit)', () => {
       },
     });
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      setupDiagnosticsService
+    const handler = createHandler({ setupDiagnosticsService });
+    const interaction = buildSetupInteraction(
+      jest.fn((id: string) => {
+        if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
+          return '123456789012345678';
+        }
+        if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
+          return '123456789012345679';
+        }
+        return '';
+      })
     );
-    const interaction = {
-      customId: SETUP_VERIFICATION_MODAL_ID,
-      guildId: 'guild-1',
-      user: { id: 'admin-1' } as User,
-      fields: {
-        getTextInputValue: jest.fn((id: string) => {
-          if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
-            return '123456789012345678';
-          }
-          if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
-            return '123456789012345679';
-          }
-          return '';
-        }),
-      },
-      reply: jest.fn().mockResolvedValue(undefined),
-      deferReply: jest.fn().mockResolvedValue(undefined),
-      editReply: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ModalSubmitInteraction;
 
     await handler.handleModalSubmit(interaction);
 
@@ -4270,16 +3496,7 @@ describe('InteractionHandler (unit)', () => {
   });
 
   it('rejects setup verification modal when role is invalid', async () => {
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
 
     const interaction = {
       customId: SETUP_VERIFICATION_MODAL_ID,
@@ -4315,24 +3532,7 @@ describe('InteractionHandler (unit)', () => {
         preview: jest.fn().mockResolvedValue(readyAccountQuarantinePreview),
         quarantine: jest.fn(),
       };
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        service as any
-      );
+      const handler = createHandler({ accountQuarantineService: service as any });
       const interaction = buildInteraction('preview', 'guild-1', { id: 'admin-1' } as User);
       Object.assign(interaction, {
         guild: {
@@ -4418,24 +3618,7 @@ describe('InteractionHandler (unit)', () => {
         id: 'guild-1',
         members: { fetch: jest.fn().mockResolvedValue(buildMember('guild-1', 'user-1')) },
       });
-      const handler = buildHandler(
-        client,
-        notificationManager,
-        userModerationService,
-        securityActionService,
-        configService,
-        verificationEventRepository,
-        threadManager,
-        adminActionRepository,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        accountQuarantineService as any
-      );
+      const handler = createHandler({ accountQuarantineService: accountQuarantineService as any });
       const interaction = {
         customId: buildAccountQuarantineModalCustomId(handler, verificationEvent),
         guildId: 'guild-1',
@@ -4500,24 +3683,7 @@ describe('InteractionHandler (unit)', () => {
       id: 'guild-1',
       members: { fetch: jest.fn().mockResolvedValue(buildMember('guild-1', 'user-1')) },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      accountQuarantineService as any
-    );
+    const handler = createHandler({ accountQuarantineService: accountQuarantineService as any });
     const interaction = {
       customId: buildAccountQuarantineModalCustomId(handler, verificationEvent),
       guildId: 'guild-1',
@@ -4572,24 +3738,7 @@ describe('InteractionHandler (unit)', () => {
       id: 'guild-1',
       members: { fetch: jest.fn().mockResolvedValue(buildMember('guild-1', 'user-1')) },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      accountQuarantineService as any
-    );
+    const handler = createHandler({ accountQuarantineService: accountQuarantineService as any });
     const interaction = {
       customId: buildAccountQuarantineModalCustomId(handler, verificationEvent),
       guildId: 'guild-1',
@@ -4635,24 +3784,7 @@ describe('InteractionHandler (unit)', () => {
       id: 'guild-1',
       members: { fetch: jest.fn().mockResolvedValue(member) },
     });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      accountQuarantineService as any
-    );
+    const handler = createHandler({ accountQuarantineService: accountQuarantineService as any });
     const previewInteraction = buildInteraction('admin_actions:q:c:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -4701,24 +3833,7 @@ describe('InteractionHandler (unit)', () => {
     const accountQuarantineService = {
       preview: jest.fn().mockRejectedValue(new Error('Preview unavailable')),
     };
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      accountQuarantineService as any
-    );
+    const handler = createHandler({ accountQuarantineService: accountQuarantineService as any });
     const interaction = buildInteraction('admin_actions:q:c:user-1', 'guild-1', {
       id: 'admin-1',
     } as User);
@@ -4743,124 +3858,72 @@ describe('InteractionHandler (unit)', () => {
     expect(renderedComponents).not.toContain('Continue');
   });
 
-  it('requires a usable recovery thread before applying quarantine', async () => {
-    const verificationEvent = buildVerificationEvent('ver-thread-required', 'user-1');
-    verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(verificationEvent);
-    verificationEventRepository.findById.mockResolvedValue(verificationEvent);
-    securityActionService.repairActiveCase.mockResolvedValue({
-      repaired: false,
-      threadCreated: false,
-      threadId: null,
-      verificationEventId: verificationEvent.id,
-      userAdded: false,
-      promptSent: false,
-      promptAlreadyPresent: false,
-      message: 'Thread unavailable.',
-    });
-    const accountQuarantineService = {
-      preview: jest.fn().mockResolvedValue(readyAccountQuarantinePreview),
-      quarantine: jest.fn(),
-    };
-    (client.guilds.fetch as jest.Mock).mockResolvedValue({
-      id: 'guild-1',
-      members: { fetch: jest.fn().mockResolvedValue(buildMember('guild-1', 'user-1')) },
-    });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      accountQuarantineService as any
-    );
-    const interaction = {
-      customId: buildAccountQuarantineModalCustomId(handler, verificationEvent),
-      guildId: 'guild-1',
-      user: { id: 'admin-1' } as User,
-      memberPermissions: { has: jest.fn().mockReturnValue(true) },
-      fields: { getTextInputValue: jest.fn().mockReturnValue('Reported compromise') },
-      deferReply: jest.fn().mockResolvedValue(undefined),
-      editReply: jest.fn().mockResolvedValue(undefined),
-      reply: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ModalSubmitInteraction;
+  it.each([
+    {
+      prerequisite: 'recovery thread',
+      caseId: 'ver-thread-required',
+      repairResult: {
+        repaired: false,
+        threadId: null,
+        userAdded: false,
+        promptAlreadyPresent: false,
+        message: 'Thread unavailable.',
+      },
+      error: 'usable user verification thread is required',
+    },
+    {
+      prerequisite: 'persistent admin notification',
+      caseId: 'ver-notification-required',
+      repairResult: {
+        repaired: true,
+        notificationReady: false,
+        threadId: 'thread-ver-notification-required',
+        userAdded: true,
+        promptAlreadyPresent: true,
+        message: 'Thread repaired, but notification unavailable.',
+      },
+      error: 'usable persistent admin notification is required',
+    },
+  ])(
+    'requires a usable $prerequisite before applying quarantine',
+    async ({ caseId, repairResult, error }) => {
+      const verificationEvent = buildVerificationEvent(caseId, 'user-1');
+      verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(verificationEvent);
+      verificationEventRepository.findById.mockResolvedValue(verificationEvent);
+      securityActionService.repairActiveCase.mockResolvedValue({
+        threadCreated: false,
+        verificationEventId: verificationEvent.id,
+        promptSent: false,
+        ...repairResult,
+      });
+      const accountQuarantineService = {
+        preview: jest.fn().mockResolvedValue(readyAccountQuarantinePreview),
+        quarantine: jest.fn(),
+      };
+      (client.guilds.fetch as jest.Mock).mockResolvedValue({
+        id: 'guild-1',
+        members: { fetch: jest.fn().mockResolvedValue(buildMember('guild-1', 'user-1')) },
+      });
+      const handler = createHandler({ accountQuarantineService: accountQuarantineService as any });
+      const interaction = {
+        customId: buildAccountQuarantineModalCustomId(handler, verificationEvent),
+        guildId: 'guild-1',
+        user: { id: 'admin-1' } as User,
+        memberPermissions: { has: jest.fn().mockReturnValue(true) },
+        fields: { getTextInputValue: jest.fn().mockReturnValue('Reported compromise') },
+        deferReply: jest.fn().mockResolvedValue(undefined),
+        editReply: jest.fn().mockResolvedValue(undefined),
+        reply: jest.fn().mockResolvedValue(undefined),
+      } as unknown as ModalSubmitInteraction;
 
-    await handler.handleModalSubmit(interaction);
+      await handler.handleModalSubmit(interaction);
 
-    expect(accountQuarantineService.quarantine).not.toHaveBeenCalled();
-    expect(interaction.editReply).toHaveBeenCalledWith({
-      content: expect.stringContaining('usable user verification thread is required'),
-    });
-  });
-
-  it('requires a usable persistent admin notification before applying quarantine', async () => {
-    const verificationEvent = buildVerificationEvent('ver-notification-required', 'user-1');
-    verificationEventRepository.findActiveByUserAndServer.mockResolvedValue(verificationEvent);
-    verificationEventRepository.findById.mockResolvedValue(verificationEvent);
-    securityActionService.repairActiveCase.mockResolvedValue({
-      repaired: true,
-      notificationReady: false,
-      threadCreated: false,
-      threadId: verificationEvent.thread_id,
-      verificationEventId: verificationEvent.id,
-      userAdded: true,
-      promptSent: false,
-      promptAlreadyPresent: true,
-      message: 'Thread repaired, but notification unavailable.',
-    });
-    const accountQuarantineService = {
-      preview: jest.fn().mockResolvedValue(readyAccountQuarantinePreview),
-      quarantine: jest.fn(),
-    };
-    (client.guilds.fetch as jest.Mock).mockResolvedValue({
-      id: 'guild-1',
-      members: { fetch: jest.fn().mockResolvedValue(buildMember('guild-1', 'user-1')) },
-    });
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      accountQuarantineService as any
-    );
-    const interaction = {
-      customId: buildAccountQuarantineModalCustomId(handler, verificationEvent),
-      guildId: 'guild-1',
-      user: { id: 'admin-1' } as User,
-      memberPermissions: { has: jest.fn().mockReturnValue(true) },
-      fields: { getTextInputValue: jest.fn().mockReturnValue('Reported compromise') },
-      deferReply: jest.fn().mockResolvedValue(undefined),
-      editReply: jest.fn().mockResolvedValue(undefined),
-      reply: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ModalSubmitInteraction;
-
-    await handler.handleModalSubmit(interaction);
-
-    expect(accountQuarantineService.quarantine).not.toHaveBeenCalled();
-    expect(interaction.editReply).toHaveBeenCalledWith({
-      content: expect.stringContaining('usable persistent admin notification is required'),
-    });
-  });
+      expect(accountQuarantineService.quarantine).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith({
+        content: expect.stringContaining(error),
+      });
+    }
+  );
 
   it('bounds a large compromised-account preview to Discord message limits', async () => {
     const verificationEvent = buildVerificationEvent('ver-quarantine-preview', 'user-1');
@@ -4882,24 +3945,7 @@ describe('InteractionHandler (unit)', () => {
         lockdown: { plannedActions: [] },
       }),
     };
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      accountQuarantineService as any
-    );
+    const handler = createHandler({ accountQuarantineService: accountQuarantineService as any });
 
     const preview = await (handler as any).buildAccountQuarantineConfirmationMessage(
       {
@@ -4929,36 +3975,19 @@ describe('InteractionHandler (unit)', () => {
       },
     });
 
-    const handler = buildHandler(
-      client,
-      notificationManager,
-      userModerationService,
-      securityActionService,
-      configService,
-      verificationEventRepository,
-      threadManager,
-      adminActionRepository
-    );
+    const handler = createHandler();
 
-    const interaction = {
-      customId: SETUP_VERIFICATION_MODAL_ID,
-      guildId: 'guild-1',
-      user: { id: 'admin-1' } as User,
-      fields: {
-        getTextInputValue: jest.fn((id: string) => {
-          if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
-            return '123456789012345678';
-          }
-          if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
-            return '123456789012345679';
-          }
-          return '';
-        }),
-      },
-      reply: jest.fn().mockResolvedValue(undefined),
-      deferReply: jest.fn().mockResolvedValue(undefined),
-      editReply: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ModalSubmitInteraction;
+    const interaction = buildSetupInteraction(
+      jest.fn((id: string) => {
+        if (id === SETUP_VERIFICATION_RESTRICTED_ROLE_FIELD_ID) {
+          return '123456789012345678';
+        }
+        if (id === SETUP_VERIFICATION_ADMIN_CHANNEL_FIELD_ID) {
+          return '123456789012345679';
+        }
+        return '';
+      })
+    );
 
     await handler.handleModalSubmit(interaction);
 
