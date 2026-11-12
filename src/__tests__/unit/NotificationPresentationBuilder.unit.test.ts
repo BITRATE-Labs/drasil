@@ -1020,6 +1020,44 @@ describe('NotificationPresentationBuilder (unit)', () => {
   it.each([
     {
       action: 'thread',
+      message: 'membership_screening_pending',
+      title: 'Case thread setup failed',
+      summary:
+        'Member must complete server screening, then run case repair. Moderator actions remain available.',
+    },
+    {
+      action: 'thread',
+      message: 'parent_channel_access_denied',
+      title: 'Case thread setup failed',
+      summary:
+        'Member cannot view the case channel. Check case-role channel permissions, then run case repair.',
+    },
+    {
+      action: 'thread',
+      message: 'parent_channel_access_pending',
+      title: 'Case thread setup failed',
+      summary: 'Discord channel access may still be updating. Run case repair shortly.',
+    },
+    {
+      action: 'thread',
+      message: 'parent_channel_access_unverified',
+      title: 'Case thread setup failed',
+      summary: 'Check bot and member access to the case channel, then run case repair.',
+    },
+    {
+      action: 'case_role',
+      message: 'missing_permissions',
+      title: 'Case role assignment failed',
+      summary: 'If unresolved, check bot permissions and role hierarchy, then run case repair.',
+    },
+    {
+      action: 'persistence',
+      message: 'persistence_failed',
+      title: 'Case update failed',
+      summary: 'Check bot logs for details.',
+    },
+    {
+      action: 'thread',
       message:
         'Discord denied adding user-1 to the private verification thread because the user is still pending Discord membership screening/onboarding for this server. ' +
         'Pending members cannot be added to private threads even when the case role and parent-channel permissions look correct. ' +
@@ -1102,6 +1140,57 @@ describe('NotificationPresentationBuilder (unit)', () => {
         expect(value).not.toContain('Warning:');
       }
       expect(JSON.stringify(verificationEvent.metadata)).toBe(originalMetadata);
+    }
+  );
+
+  it.each(['failed', 'unknown', 'kicked'] as const)(
+    'shows the case kick %s snapshot alongside independent thread warnings',
+    (outcome) => {
+      const event = buildVerificationEvent({
+        metadata: {
+          automatic_moderation_response: {
+            action: 'kick',
+            outcome,
+            attention: 'required',
+            caseId: '11111111-1111-4111-8111-111111111111',
+            updatedAt: '2026-11-12T00:00:00Z',
+            failures: [
+              {
+                step: outcome === 'kicked' ? 'persistence' : 'kick',
+                code:
+                  outcome === 'kicked'
+                    ? 'persistence_failed'
+                    : outcome === 'unknown'
+                      ? 'kick_outcome_unknown'
+                      : 'kick_rejected',
+              },
+            ],
+          },
+          action_failures: [
+            {
+              action: 'thread',
+              message: 'membership_screening_pending',
+              at: '2026-11-12T00:00:00Z',
+            },
+          ],
+        },
+      });
+      const embed = builder.createSuspiciousUserEmbed(
+        buildMember(),
+        buildDetectionResult(),
+        event,
+        []
+      );
+      const warning = getField(embed, 'Moderation Action Warning');
+      expect(warning).toContain(
+        outcome === 'failed'
+          ? 'Automatic kick failed.'
+          : outcome === 'unknown'
+            ? 'Kick outcome could not be confirmed.'
+            : 'Member kicked.'
+      );
+      expect(warning).toContain('Member must complete server screening');
+      expect(warning).not.toContain('Notification delivery failed');
     }
   );
 

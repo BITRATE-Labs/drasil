@@ -60,6 +60,7 @@ describeIntegration('UserModerationService (integration)', () => {
     );
     roleManager = {
       getCaseRoleId: jest.fn().mockResolvedValue('case-role'),
+      assertSafeCaseRole: jest.fn().mockResolvedValue(undefined),
       assignCaseRole: jest.fn().mockResolvedValue(true),
       removeCaseRole: jest.fn().mockResolvedValue(true),
     };

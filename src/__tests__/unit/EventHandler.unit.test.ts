@@ -22,7 +22,14 @@ import {
   PermissionFlagsBits,
   PermissionsBitField,
 } from 'discord.js';
-import { InMemoryVerificationEventRepository } from '../fakes/inMemoryRepositories';
+import {
+  InMemoryVerificationEventRepository,
+  InMemoryDetectionEventsRepository,
+  InMemoryServerMemberRepository,
+  InMemoryUserRepository,
+  InMemoryServerRepository,
+} from '../fakes/inMemoryRepositories';
+import { SecurityActionService } from '../../services/SecurityActionService';
 import { EventHandler } from '../../controllers/EventHandler';
 import {
   ActiveAccountQuarantineCache,
@@ -3016,7 +3023,7 @@ describe('EventHandler (unit)', () => {
     );
   });
 
-  it('records staff watchlist matches without opening review when setup is incomplete', async () => {
+  it('observes staff watchlist matches when setup is incomplete', async () => {
     const detectionOrchestrator = {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
@@ -3052,14 +3059,14 @@ describe('EventHandler (unit)', () => {
 
     await (handler as any).handleMessage(message);
 
-    expect(securityActionService.recordSuspiciousMessage).toHaveBeenCalledWith(
+    expect(securityActionService.observeSuspiciousMessage).toHaveBeenCalledWith(
       message.member,
       expect.objectContaining({
         messageAction: expect.objectContaining({ kind: 'review_only' }),
       }),
       message
     );
-    expect(securityActionService.observeSuspiciousMessage).not.toHaveBeenCalled();
+    expect(securityActionService.recordSuspiciousMessage).not.toHaveBeenCalled();
     expect(securityActionService.handleSuspiciousMessage).not.toHaveBeenCalled();
   });
 
@@ -4196,125 +4203,171 @@ describe('EventHandler (unit)', () => {
     expect(installer.send.mock.calls[0][0]).toContain('No message content is included in this DM.');
   });
 
-  it('downgrades restrictive automatic detection to record-only while setup is incomplete', async () => {
-    const configService = {
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: 'admin-1',
-        verification_channel_id: 'verification-1',
-        settings: { setup_nudge_last_attempt_at: new Date().toISOString() },
-      }),
-    };
-    const setupDiagnosticsService = {
-      validateGuildSetup: jest.fn().mockResolvedValue({
-        guildId: 'guild-1',
-        checkedAt: new Date(),
-        issues: [{ severity: 'error', code: 'case-role-missing', message: 'Missing role.' }],
-        errorCount: 1,
-        warningCount: 0,
-      }),
-    };
-    const securityActionService = {
-      handleSuspiciousMessage: jest.fn(),
-      handleSuspiciousJoin: jest.fn(),
-      recordSuspiciousMessage: jest.fn().mockResolvedValue('detection-1'),
-    };
-    const handler = buildHandler({
-      configService,
-      setupDiagnosticsService,
-      securityActionService,
-    });
-    const member = {
-      guild: { id: 'guild-1' },
-      user: { tag: 'test-user#0001' },
-    } as any;
-    const message = {} as any;
-
-    await (handler as any).handleAutomaticDetection(
-      member,
-      {
+  it.each(['errors', 'missing', 'exception'] as const)(
+    'honors configured response despite unrelated setup errors (%s)',
+    async (diagnostics) => {
+      const setupDiagnosticsService =
+        diagnostics === 'missing'
+          ? undefined
+          : {
+              validateGuildSetup:
+                diagnostics === 'exception'
+                  ? jest.fn().mockRejectedValue(new Error('diagnostic unavailable'))
+                  : jest.fn().mockResolvedValue({ errorCount: 1 }),
+            };
+      const securityActionService = {
+        handleSuspiciousMessage: jest.fn().mockResolvedValue(true),
+        handleSuspiciousJoin: jest.fn().mockResolvedValue(true),
+        recordSuspiciousMessage: jest.fn().mockResolvedValue('detection-1'),
+      };
+      const handler = buildHandler({ setupDiagnosticsService, securityActionService });
+      const member = { guild: { id: 'guild-1' }, user: { tag: 'test' } } as any;
+      for (const source of [{}, undefined]) {
+        await (handler as any).handleAutomaticDetection(
+          member,
+          {
+            label: 'SUSPICIOUS',
+            confidence: 0.8,
+            reasons: [],
+            triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+          },
+          { mode: 'restrict', observedMinConfidenceThreshold: 95 },
+          70,
+          source
+        );
+      }
+      expect(securityActionService.handleSuspiciousMessage).toHaveBeenCalledTimes(1);
+      expect(securityActionService.handleSuspiciousJoin).toHaveBeenCalledTimes(1);
+      expect(securityActionService.recordSuspiciousMessage).not.toHaveBeenCalled();
+      if (setupDiagnosticsService)
+        expect(setupDiagnosticsService.validateGuildSetup).not.toHaveBeenCalled();
+    }
+  );
+  it.each(['message', 'join'] as const)(
+    'does not invent a failure when %s enforcement is suppressed',
+    async (source) => {
+      const securityActionService = {
+        handleSuspiciousMessage: jest.fn().mockResolvedValue(false),
+        handleSuspiciousJoin: jest.fn().mockResolvedValue(false),
+        recordAutomaticResponseFailure: jest.fn().mockResolvedValue(undefined),
+      };
+      const handler = buildHandler({ securityActionService });
+      const member = { guild: { id: 'guild-1' }, user: { tag: 'test' } } as GuildMember;
+      const detection: Parameters<EventHandler['handleAutomaticDetection']>[1] = {
         label: 'SUSPICIOUS',
-        confidence: 1,
-        reasons: ['test'],
+        confidence: 0.8,
+        reasons: [],
+        detectionEventId: 'det-1',
         triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'test',
-      },
-      { mode: 'restrict' },
-      70,
-      message
-    );
+        triggerContent: '',
+      };
+      await handler['handleAutomaticDetection'](
+        member,
+        detection,
+        { mode: 'restrict', observedMinConfidenceThreshold: 95 } as Parameters<
+          EventHandler['handleAutomaticDetection']
+        >[2],
+        70,
+        source === 'message' ? ({} as Message) : undefined
+      );
+      expect(
+        securityActionService[
+          source === 'message' ? 'handleSuspiciousMessage' : 'handleSuspiciousJoin'
+        ]
+      ).toHaveBeenCalledTimes(1);
+      expect(securityActionService.recordAutomaticResponseFailure).not.toHaveBeenCalled();
+    }
+  );
 
-    expect(securityActionService.recordSuspiciousMessage).toHaveBeenCalledWith(
-      member,
-      expect.objectContaining({ label: 'SUSPICIOUS' }),
-      message
-    );
-    expect(securityActionService.handleSuspiciousMessage).not.toHaveBeenCalled();
-    expect(securityActionService.handleSuspiciousJoin).not.toHaveBeenCalled();
-  });
-
-  it('fails closed when automatic detection setup diagnostics are unavailable', async () => {
-    const handler = buildHandler();
-
-    await expect(
-      (handler as any).evaluateAutomaticDetectionSetupSafety({ id: 'guild-1' })
-    ).resolves.toEqual({ ready: false });
-  });
-
-  it('treats inactive server records as unsafe even when core setup IDs remain', async () => {
-    const configService = {
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: 'case-role-1',
-        admin_channel_id: 'admin-channel-1',
-        verification_channel_id: 'verification-channel-1',
-        is_active: false,
-        settings: {},
-      }),
-    };
-    const handler = buildHandler({
-      configService,
-      setupDiagnosticsService: buildReadySetupDiagnosticsService(),
-    });
-
-    await expect(
-      (handler as any).evaluateAutomaticDetectionSetupSafety({ id: 'guild-1' })
-    ).resolves.toMatchObject({ ready: false });
-  });
-
-  it('reuses setup readiness briefly across a burst of automatic detections', async () => {
-    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
-    const configService = {
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: 'case-role-1',
-        admin_channel_id: 'admin-channel-1',
-        verification_channel_id: 'verification-channel-1',
-        is_active: true,
-        settings: {},
-      }),
-    };
-    const setupDiagnosticsService = buildReadySetupDiagnosticsService();
-    const handler = buildHandler({ configService, setupDiagnosticsService });
-    const guild = { id: 'guild-1' } as any;
-
-    await Promise.all([
-      (handler as any).evaluateAutomaticDetectionSetupSafety(guild),
-      (handler as any).evaluateAutomaticDetectionSetupSafety(guild),
-    ]);
-    await (handler as any).evaluateAutomaticDetectionSetupSafety(guild);
-
-    expect(configService.getServerConfig).toHaveBeenCalledTimes(1);
-    expect(setupDiagnosticsService.validateGuildSetup).toHaveBeenCalledTimes(1);
-
-    now.mockReturnValue(31_001);
-    await (handler as any).evaluateAutomaticDetectionSetupSafety(guild);
-
-    expect(configService.getServerConfig).toHaveBeenCalledTimes(2);
-    expect(setupDiagnosticsService.validateGuildSetup).toHaveBeenCalledTimes(2);
-    now.mockRestore();
-  });
+  it.each(['message', 'join'] as const)(
+    'keeps stored outcomes unchanged through actual %s replay suppression',
+    async (source) => {
+      type Dependencies = ConstructorParameters<typeof SecurityActionService>;
+      const detections = new InMemoryDetectionEventsRepository();
+      const servers = new InMemoryServerRepository();
+      await servers.upsertByGuildId('guild-replay', {
+        settings: {
+          message_detection_auto_kick_enabled: true,
+          join_detection_auto_kick_enabled: true,
+          auto_kick_min_confidence_threshold: 95,
+        },
+      });
+      const kick = jest.fn();
+      const apply = jest.fn();
+      const security = new SecurityActionService(
+        {
+          upsertObservedDetectionNotification: jest.fn().mockResolvedValue(null),
+        } as unknown as Dependencies[0],
+        detections,
+        new InMemoryServerMemberRepository(),
+        new InMemoryVerificationEventRepository(),
+        new InMemoryUserRepository(),
+        servers,
+        {} as Dependencies[6],
+        {} as Dependencies[7],
+        { kickUser: kick, applyCaseRole: apply } as unknown as Dependencies[8],
+        { user: { id: 'bot' } } as Client
+      );
+      const handler = buildHandler({
+        securityActionService: {
+          handleSuspiciousMessage: jest.fn(security.handleSuspiciousMessage.bind(security)),
+          handleSuspiciousJoin: jest.fn(security.handleSuspiciousJoin.bind(security)),
+          recordAutomaticResponseFailure: jest.fn(
+            security.recordAutomaticResponseFailure.bind(security)
+          ),
+        },
+      });
+      const member = {
+        id: 'user-replay',
+        guild: { id: 'guild-replay' },
+        user: { id: 'user-replay', username: 'synthetic', tag: 'synthetic' },
+      } as GuildMember;
+      for (const [outcome, attention] of [
+        ['pending', 'required'],
+        ['failed', 'required'],
+        ['unknown', 'required'],
+        ['kicked', 'resolved'],
+      ] as const) {
+        const metadata = {
+          observed_action: 'kick',
+          automatic_response_resolved_by: '123456789012345678',
+          automatic_response_resolved_at: '2026-11-12T00:00:00.000Z',
+          automatic_moderation_response: {
+            action: 'kick',
+            outcome,
+            attention,
+            caseId: null,
+            updatedAt: '2026-11-11T00:00:00.000Z',
+            failures: [],
+          },
+        };
+        const event = await detections.create({
+          server_id: member.guild.id,
+          user_id: member.id,
+          detection_type: DetectionType.SUSPICIOUS_CONTENT,
+          confidence: 0.99,
+          metadata,
+        });
+        await handler['handleAutomaticDetection'](
+          member,
+          {
+            label: 'SUSPICIOUS',
+            confidence: 0.99,
+            reasons: [],
+            triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+            triggerContent: '',
+            detectionEventId: event.id,
+          },
+          { mode: 'restrict' } as Parameters<EventHandler['handleAutomaticDetection']>[2],
+          70,
+          source === 'message' ? ({} as Message) : undefined
+        );
+        expect((await detections.findById(event.id))?.metadata).toEqual(metadata);
+      }
+      expect(kick).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+    }
+  );
 
   it('skips detection-time setup validation immediately after a warning attempt', async () => {
     const configService = {
@@ -4458,7 +4511,7 @@ describe('EventHandler (unit)', () => {
       setup_nudge_last_source: 'audit_log_installer',
     });
   });
-  it.each(['clean', 'setup-unsafe', 'failure'] as const)(
+  it.each(['clean', 'record-only', 'failure'] as const)(
     'finishes the message workflow for %s with the actual outcome',
     async (mode) => {
       const recorder = createTracingRecorder();
@@ -4478,6 +4531,13 @@ describe('EventHandler (unit)', () => {
         const handler = buildHandler({
           detectionOrchestrator: { detectMessage },
           securityActionService: { recordSuspiciousMessage: record },
+          configService: {
+            initialize: jest.fn().mockResolvedValue(undefined),
+            getCachedServerConfig: jest.fn().mockReturnValue({}),
+            getServerConfig: jest.fn().mockResolvedValue({
+              settings: { detection_response_mode: 'record_only', min_confidence_threshold: 70 },
+            }),
+          },
         });
         await (handler as any).handleMessage(buildMessage(new PermissionsBitField()));
         const root = recorder.spans.find((span) => span.name === 'message-moderation');

@@ -1,3 +1,7 @@
+import {
+  readAutomaticModerationResponse,
+  formatAutomaticModerationResponse,
+} from '@drasil/application';
 import { DetectionEvent } from '../repositories/types';
 import { formatDetectionAccountingStatus } from './detectionEventAccounting';
 
@@ -40,6 +44,21 @@ export class DetectionHistoryFormatter {
       content += `Type: ${event.detection_type}\n`;
       content += `Confidence: ${(event.confidence * 100).toFixed(0)}%\n`;
       content += `Accounting: ${formatDetectionAccountingStatus(event)}\n`;
+      const response = readAutomaticModerationResponse(event.metadata);
+      if (response) {
+        content += `Automatic response: ${formatAutomaticModerationResponse(response)}\n`;
+        const actor = event.metadata?.automatic_response_resolved_by;
+        const closedAt = event.metadata?.automatic_response_resolved_at;
+        if (
+          typeof actor === 'string' &&
+          actor.length > 0 &&
+          typeof closedAt === 'string' &&
+          !Number.isNaN(Date.parse(closedAt))
+        ) {
+          content += `Last review closed by: ${actor}\n`;
+          content += `Last review closed at: ${new Date(closedAt).toISOString()}\n`;
+        }
+      }
 
       // event.reasons is guaranteed to be an array by DetectionEvent type,
       // so the truthiness check `event.reasons &&` is unnecessary.

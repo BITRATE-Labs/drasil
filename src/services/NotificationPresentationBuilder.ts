@@ -1,4 +1,8 @@
 import {
+  readAutomaticModerationResponse,
+  formatAutomaticModerationResponse,
+} from '@drasil/application';
+import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -337,6 +341,13 @@ export class NotificationPresentationBuilder {
       )
       .setTimestamp();
 
+    const response = readAutomaticModerationResponse(
+      detectionEvents.find((event) => event.id === detectionResult.detectionEventId)?.metadata
+    );
+    if (response) {
+      embed.setTitle('Automatic Response Needs Review');
+      embed.setDescription(formatAutomaticModerationResponse(response));
+    }
     this.addOptionalAnalysisFields(embed, detectionResult, detectionEvents);
 
     if (detectionHistory && (!isUserReport || detectionEvents.length > 1)) {
@@ -486,12 +497,26 @@ export class NotificationPresentationBuilder {
     return rows;
   }
 
+  public createAutomaticResponseCloseRow(
+    userId: string,
+    detectionEventId: string
+  ): ActionRowBuilder<ButtonBuilder> {
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+      this.createCustomButton(
+        `observed:dismiss:${userId}:${detectionEventId}`,
+        'Close alert',
+        ButtonStyle.Secondary
+      )
+    );
+  }
+
   public createObservedActionRows(
     userId: string,
     detectionEventId: string,
     guildId?: string,
     options: Pick<AdminActionRowOptions, 'includeBanAction'> & {
       actioned?: boolean;
+      closeResponse?: boolean;
       kind?: ObservedActionKind;
     } = {}
   ): ActionRowBuilder<ButtonBuilder>[] {
@@ -537,7 +562,11 @@ export class NotificationPresentationBuilder {
     buttons.push(
       this.createCustomButton(
         `observed:${options.kind === 'report' ? 'close_report' : 'dismiss'}:${userId}:${detectionEventId}`,
-        options.kind === 'report' ? 'Close Report' : 'Dismiss',
+        options.closeResponse
+          ? 'Close alert'
+          : options.kind === 'report'
+            ? 'Close Report'
+            : 'Dismiss',
         ButtonStyle.Secondary
       ),
       this.createCustomButton(
@@ -1502,7 +1531,12 @@ export class NotificationPresentationBuilder {
 
   private formatVerificationActionFailureFieldValue(metadata: unknown): string | null {
     const failures = getVerificationActionFailures(metadata);
-    if (failures.length === 0) {
+    const response = readAutomaticModerationResponse(metadata);
+    const kickSummary =
+      response?.action === 'kick' && response.failures.length
+        ? formatAutomaticModerationResponse(response)
+        : null;
+    if (failures.length === 0 && !kickSummary) {
       return null;
     }
 
@@ -1511,13 +1545,17 @@ export class NotificationPresentationBuilder {
       .map((failure) => {
         const timestamp = Math.floor(new Date(failure.at).getTime() / 1000);
         const action =
-          failure.action === 'case_role' || failure.action === 'restrict'
-            ? 'Case role assignment failed'
-            : failure.action === 'private_evidence_thread'
-              ? 'Admin evidence thread setup failed'
-              : failure.action === 'role_quarantine'
-                ? 'Role quarantine attempt failed'
-                : 'Case thread setup failed';
+          failure.action === 'persistence'
+            ? 'Case update failed'
+            : failure.action === 'notification'
+              ? 'Notification delivery failed'
+              : failure.action === 'case_role' || failure.action === 'restrict'
+                ? 'Case role assignment failed'
+                : failure.action === 'private_evidence_thread'
+                  ? 'Admin evidence thread setup failed'
+                  : failure.action === 'role_quarantine'
+                    ? 'Role quarantine attempt failed'
+                    : 'Case thread setup failed';
         const message = failure.message.toLowerCase();
         const canRepairCase =
           failure.action === 'thread' ||
@@ -1526,30 +1564,36 @@ export class NotificationPresentationBuilder {
         let summary = canRepairCase
           ? 'If unresolved, check bot logs, then run case repair.'
           : 'Check bot logs for details.';
-        // shortcut: recognize stored error text, add reason codes if producers change the wording.
+        // Retain text matching for shipped action-failure records; new failures use safe codes.
         if (
           failure.action === 'thread' &&
-          message.includes('pending discord membership screening/onboarding')
+          (message === 'membership_screening_pending' ||
+            message.includes('pending discord membership screening/onboarding'))
         ) {
           summary =
             'Member must complete server screening, then run case repair. Moderator actions remain available.';
         } else if (
           failure.action === 'thread' &&
-          message.includes('cannot currently view parent channel')
+          (message === 'parent_channel_access_denied' ||
+            message.includes('cannot currently view parent channel'))
         ) {
           summary =
             'Member cannot view the case channel. Check case-role channel permissions, then run case repair.';
         } else if (
           failure.action === 'thread' &&
-          message.includes("not propagated the user's parent-channel access yet")
+          (message === 'parent_channel_access_pending' ||
+            message.includes("not propagated the user's parent-channel access yet"))
         ) {
           summary = 'Discord channel access may still be updating. Run case repair shortly.';
         } else if (
           failure.action === 'thread' &&
-          message.includes('parent-channel access could not be verified')
+          (message === 'parent_channel_access_unverified' ||
+            message.includes('parent-channel access could not be verified'))
         ) {
           summary = 'Check bot and member access to the case channel, then run case repair.';
         } else if (
+          message === 'missing_permissions' ||
+          message === 'missing_access' ||
           message.includes('missing permissions') ||
           message.includes('missing access') ||
           message.includes('missing thread permissions')
@@ -1563,7 +1607,7 @@ export class NotificationPresentationBuilder {
       })
       .join('\n\n');
 
-    return `${value}\n\nCase saved.`;
+    return [kickSummary, value, 'Case saved.'].filter(Boolean).join('\n\n');
   }
 
   private formatRoleQuarantineFieldValue(metadata: unknown): string | null {

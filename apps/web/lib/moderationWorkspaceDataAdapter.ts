@@ -1,3 +1,7 @@
+import {
+  readAutomaticModerationResponse,
+  formatAutomaticModerationResponse,
+} from '@drasil/application';
 import { filterCaseKindActions } from './caseActionEligibility';
 import { caseConversationSources, reportConversationSources } from './conversationTypes';
 import { readAttentionReply } from './conversationDataAdapter';
@@ -46,6 +50,7 @@ import { getPostgresPool } from './setupDataAdapter';
 import {
   caseWorkspaceDataSchema,
   workspaceItemDetailSchema,
+  responseReviewClosureSchema,
   type CaseWorkspaceData,
   type WorkspaceItemDetail,
   type WorkspaceActionPolicy,
@@ -433,9 +438,55 @@ export function createModerationWorkspaceDataAdapter(
       detection,
       observedState.success ? observedState.data : {}
     );
+    const response = readAutomaticModerationResponse(row.metadata);
+    const metadata = observedState.success ? observedState.data : {};
+    const reviewClosure = responseReviewClosureSchema.safeParse({
+      actorId: metadata.automatic_response_resolved_by,
+      closedAt: metadata.automatic_response_resolved_at,
+    });
+    if (response) {
+      const queue = await getPostgresPool().query<{ id: string; metadata: unknown }>(
+        `select id, metadata from moderation_queue_items where server_id = $1 and detection_event_id = $2 and item_type = 'observed_alert_mirror' limit 1`,
+        [guildId, id]
+      );
+      const projected = response;
+      if (detection.latestCaseId)
+        item.links.push({
+          label: 'Linked case',
+          url: `/admin/guild/${guildId}/cases/${detection.latestCaseId}`,
+        });
+      item.title = 'Automatic response needs review';
+      item.summary = formatAutomaticModerationResponse(projected);
+      item.statusLabel =
+        projected.attention === 'acknowledged'
+          ? 'Acknowledged, response incomplete'
+          : projected.attention === 'resolved'
+            ? 'Response resolved'
+            : 'Response needs review';
+      item.queueItemId = queue.rows[0]?.id ?? null;
+      item.allowedActions = [
+        'view_history',
+        ...(projected.attention !== 'resolved' && projected.caseId === null
+          ? projected.action === 'kick'
+            ? ['dismiss_no_action' as const]
+            : ([
+                'open_case',
+                'dismiss_no_action',
+                'mark_false_positive',
+                'kick_user',
+                'ban_user',
+              ] as const)
+          : []),
+        ...(projected.attention === 'required' && projected.caseId === null && item.queueItemId
+          ? ['acknowledge' as const]
+          : []),
+      ];
+    }
     const effectivePolicy = await policy(item);
     return workspaceItemDetailSchema.parse({
       kind: 'observed_alert',
+      ...(response ? { automaticResponse: response } : {}),
+      ...(response && reviewClosure.success ? { reviewClosure: reviewClosure.data } : {}),
       item: { ...item, allowedActions: effectivePolicy.allowedActions },
       policy: effectivePolicy,
       detection,

@@ -1,3 +1,8 @@
+import {
+  type AutomaticModerationResponse,
+  hasAutomaticResponseAttention,
+  readAutomaticModerationResponse,
+} from '@drasil/application';
 import { injectable, inject } from 'inversify';
 import { Prisma, PrismaClient, admin_action_type, detection_type } from '../db/prisma';
 import { DetectionEvent, VerificationStatus } from './types'; // Keep existing domain types
@@ -15,6 +20,52 @@ import {
 /**
  * Interface for Detection Events Repository (Remains the same)
  */
+export interface AutomaticResponseCompletion {
+  detectionEventId: string;
+  serverId: string;
+  userId: string;
+  expectedResponse: AutomaticModerationResponse;
+  actorId: string;
+  completedAt: Date;
+  caseId?: string;
+}
+
+export function mergeAutomaticResponseFailure(
+  previous: AutomaticModerationResponse | null,
+  incoming: AutomaticModerationResponse
+): AutomaticModerationResponse {
+  let response = incoming;
+  if (
+    previous?.action === 'kick' &&
+    (incoming.action !== 'kick' || (previous.outcome === 'kicked' && incoming.outcome !== 'kicked'))
+  ) {
+    response = {
+      ...previous,
+      caseId: incoming.caseId,
+      updatedAt: incoming.updatedAt,
+      attention: incoming.attention,
+      failures: [
+        ...previous.failures,
+        ...incoming.failures.filter(
+          (failure) => previous.outcome !== 'kicked' || failure.step !== 'kick'
+        ),
+      ],
+    };
+  }
+  if (previous?.action !== response.action || previous.outcome !== response.outcome)
+    return { ...response, attention: 'required' };
+  const added = response.failures.filter(
+    (failure) =>
+      !previous.failures.some((saved) => saved.step === failure.step && saved.code === failure.code)
+  );
+  return {
+    ...response,
+    failures: [...previous.failures, ...added],
+    attention:
+      !added.length && previous.caseId === response.caseId ? previous.attention : 'required',
+  };
+}
+
 export interface IDetectionEventsRepository {
   create(data: Partial<DetectionEvent>): Promise<DetectionEvent>;
   findByServerAndUser(serverId: string, userId: string): Promise<DetectionEvent[]>;
@@ -34,7 +85,8 @@ export interface IDetectionEventsRepository {
   ): Promise<DetectionEvent | null>;
   patchMetadata(
     detectionEventId: string,
-    patch: Record<string, unknown>
+    patch: Record<string, unknown>,
+    expectedResponse?: AutomaticModerationResponse
   ): Promise<DetectionEvent | null>;
   updateMetadata(
     detectionEventId: string,
@@ -59,6 +111,13 @@ export interface IDetectionEventsRepository {
     detectionEventId: string,
     actionTypes: string[]
   ): Promise<DetectionEvent | null>;
+  completeAutomaticResponseAttention(
+    input: AutomaticResponseCompletion
+  ): Promise<DetectionEvent | null>;
+  recordAutomaticResponseFailure(
+    detectionEventId: string,
+    response: AutomaticModerationResponse
+  ): Promise<AutomaticModerationResponse | null>;
   cleanupOldEvents(retentionDays: number): Promise<number>;
   findById(id: string): Promise<DetectionEvent | null>; // Add findById for consistency
 }
@@ -219,11 +278,21 @@ export class DetectionEventsRepository implements IDetectionEventsRepository {
         SELECT *
         FROM detection_events
         WHERE server_id = ${serverId}
-          AND COALESCE(metadata, '{}'::jsonb) ? 'observed_notification_message_id'
-          AND NOT (COALESCE(metadata, '{}'::jsonb) ? 'observed_action')
+          AND ((COALESCE(metadata, '{}'::jsonb) ? 'observed_notification_message_id'
+          AND NOT (COALESCE(metadata, '{}'::jsonb) ? 'observed_action'))
+          OR COALESCE(metadata, '{}'::jsonb) ? 'automatic_moderation_response')
         ORDER BY detected_at ASC
       `;
-      return events as DetectionEvent[];
+      return events.filter((event) => {
+        const response = readAutomaticModerationResponse(event.metadata);
+        return response
+          ? hasAutomaticResponseAttention(event.metadata)
+          : Boolean(
+              event.metadata &&
+              'observed_notification_message_id' in event.metadata &&
+              !('observed_action' in event.metadata)
+            );
+      });
     } catch (error) {
       this.handleError(error, 'findUnresolvedObservedNotificationsByServer');
     }
@@ -345,11 +414,15 @@ export class DetectionEventsRepository implements IDetectionEventsRepository {
 
   async patchMetadata(
     detectionEventId: string,
-    patch: Record<string, unknown>
+    patch: Record<string, unknown>,
+    expectedResponse?: AutomaticModerationResponse
   ): Promise<DetectionEvent | null> {
+    const expected = expectedResponse ? JSON.stringify(expectedResponse) : null;
     const rows = await this.prisma.$queryRaw<DetectionEvent[]>`
       update detection_events set metadata = coalesce(metadata, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
-      where id = ${detectionEventId}::uuid returning *`;
+      where id = ${detectionEventId}::uuid
+        and (${expected}::jsonb IS NULL OR metadata->'automatic_moderation_response' = ${expected}::jsonb)
+      returning *`;
     return rows[0] ?? null;
   }
 
@@ -401,6 +474,64 @@ export class DetectionEventsRepository implements IDetectionEventsRepository {
     }
   }
 
+  async recordAutomaticResponseFailure(
+    detectionEventId: string,
+    incoming: AutomaticModerationResponse
+  ): Promise<AutomaticModerationResponse | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      const rows = await transaction.$queryRaw<
+        DetectionEvent[]
+      >`SELECT * FROM detection_events WHERE id=${detectionEventId}::uuid FOR UPDATE`;
+      const event = rows.at(0);
+      if (!event) return null;
+      const response = mergeAutomaticResponseFailure(
+        readAutomaticModerationResponse(event.metadata),
+        incoming
+      );
+      if (response.attention === 'resolved') return response;
+      const saved = await transaction.$queryRaw<DetectionEvent[]>`
+        UPDATE detection_events SET metadata=COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({ automatic_moderation_response: response })}::jsonb
+        WHERE id=${detectionEventId}::uuid RETURNING *`;
+      return saved.at(0) ? response : null;
+    });
+  }
+
+  async completeAutomaticResponseAttention(
+    input: AutomaticResponseCompletion
+  ): Promise<DetectionEvent | null> {
+    const { expectedResponse } = input;
+    if (expectedResponse.caseId || expectedResponse.attention === 'resolved') return null;
+    const response = {
+      ...expectedResponse,
+      attention: input.caseId ? expectedResponse.attention : 'resolved',
+      caseId: input.caseId ?? null,
+      updatedAt: input.completedAt.toISOString(),
+    };
+    const patch = input.caseId
+      ? { automatic_moderation_response: response }
+      : {
+          automatic_moderation_response: response,
+          automatic_response_resolved_by: input.actorId,
+          automatic_response_resolved_at: input.completedAt.toISOString(),
+        };
+    try {
+      // The conditional update serializes with acknowledgement without overwriting renewed failures or ownership.
+      const rows = await this.prisma.$queryRaw<DetectionEvent[]>`
+        UPDATE detection_events SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
+        WHERE id = ${input.detectionEventId}::uuid AND server_id = ${input.serverId} AND user_id = ${input.userId}
+          AND metadata->'automatic_moderation_response'->>'attention' IN ('required', 'acknowledged')
+          AND ((metadata->'automatic_moderation_response') - 'attention') = (${JSON.stringify(expectedResponse)}::jsonb - 'attention')
+          AND (${input.caseId ?? null}::text IS NULL OR EXISTS (
+            SELECT 1 FROM verification_events v WHERE v.id::text = ${input.caseId ?? null}
+              AND v.server_id = ${input.serverId} AND v.user_id = ${input.userId}
+              AND v.status = 'pending' AND v.attention_state <> 'parked'))
+        RETURNING *`;
+      return rows[0] ?? null;
+    } catch (error) {
+      this.handleError(error, 'completeAutomaticResponseAttention');
+    }
+  }
+
   async claimObservedAction(
     detectionEventId: string,
     metadata: Record<string, unknown>
@@ -415,6 +546,8 @@ export class DetectionEventsRepository implements IDetectionEventsRepository {
           SET metadata = COALESCE(d.metadata, '{}'::jsonb) || ${JSON.stringify(metadata)}::jsonb
           WHERE d.id = ${detectionEventId}::uuid
             AND NOT (COALESCE(d.metadata, '{}'::jsonb) ? 'observed_action')
+            AND COALESCE(d.metadata->'automatic_moderation_response'->>'attention', '') <> 'resolved'
+            AND COALESCE(d.metadata->'automatic_moderation_response'->>'caseId', '') = ''
             AND (NOT ${openingCase} OR NOT EXISTS (
               SELECT 1 FROM report_intakes r WHERE r.id::text = d.metadata->>'reportIntakeId'
                 AND coalesce(r.metadata->>'report_ban_operation_id', '') <> ''

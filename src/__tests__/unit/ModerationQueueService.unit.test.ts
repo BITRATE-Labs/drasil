@@ -128,6 +128,7 @@ class FakeDiscordChannel {
 class FakeModerationQueueRepository implements IModerationQueueRepository {
   public items: ModerationQueueItem[] = [];
   public intakeRepository?: InMemoryReportIntakeRepository;
+  public verificationRepository?: IVerificationEventRepository;
   private nextId = 0;
 
   async reserveOrdinaryAcknowledgement(
@@ -157,6 +158,10 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
   async completeOrdinaryAcknowledgement(item: ModerationQueueItem): Promise<boolean> {
     const row = this.items.find((value) => value.id === item.id && value.attention_cleanup_pending);
     return row ? Boolean(await this.deleteById(row.id)) : false;
+  }
+
+  async acknowledgeAutomaticResponse(): Promise<'already_handled'> {
+    return 'already_handled';
   }
 
   async acknowledgeIdentityReview(input: {
@@ -305,6 +310,14 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
     const current = await this.intakeRepository?.findById(claim.intake.id);
     return current && ownsPresentation(current, claim, new Date()) ? this.upsert(data) : null;
   }
+  async upsertAutomaticResponseAttention(
+    data: Parameters<IModerationQueueRepository['upsert']>[0],
+    deleteMessage: Parameters<IModerationQueueRepository['upsertAutomaticResponseAttention']>[1]
+  ): Promise<ModerationQueueItem | null> {
+    void deleteMessage;
+    return this.upsert(data);
+  }
+
   async upsert(
     data: Parameters<IModerationQueueRepository['upsert']>[0]
   ): Promise<ModerationQueueItem> {
@@ -373,6 +386,21 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
     item.queue_message_id = queueMessageId;
     item.updated_at = new Date();
     return { ...item };
+  }
+
+  async deleteStaleCaseMirror(
+    item: ModerationQueueItem,
+    deleteMessage: Parameters<IModerationQueueRepository['deleteStaleCaseMirror']>[1]
+  ): Promise<void> {
+    const owner = item.verification_event_id
+      ? await this.verificationRepository?.findById(item.verification_event_id)
+      : null;
+    if (
+      owner?.status === VerificationStatus.PENDING &&
+      owner.attention_state === CaseAttentionState.REVIEW_REQUIRED
+    )
+      return;
+    if (await deleteMessage(item)) await this.deleteById(item.id);
   }
 
   async deleteById(id: string): Promise<ModerationQueueItem | null> {
@@ -513,9 +541,13 @@ const buildService = (
     findAllActive: jest.fn(async () => [server]),
   } as unknown as IServerRepository;
   const verificationRepository = {
+    findById: jest.fn(
+      async (id: string) => input.pendingCases?.find((event) => event.id === id) ?? null
+    ),
     findPendingByServer: jest.fn(async () => input.pendingCases ?? []),
     findReviewablePendingByServer: jest.fn(async () => input.pendingCases ?? []),
   } as unknown as IVerificationEventRepository;
+  queueRepository.verificationRepository = verificationRepository;
   const detectionRepository = {
     findUnresolvedObservedNotificationsByServer: jest.fn(async () => input.observedAlerts ?? []),
     findById: jest.fn(
@@ -1185,6 +1217,46 @@ describe('ModerationQueueService', () => {
     ]);
   });
 
+  it('retains a rejected stale cleanup receipt and continues cleaning later items', async () => {
+    const { service, queueRepository, channel } = buildService();
+    const first = await queueRepository.upsert({
+      serverId: 'guild-1',
+      userId: 'first-user',
+      itemType: ModerationQueueItemType.CASE_MIRROR,
+      verificationEventId: 'first-case',
+      queueChannelId: 'queue-channel',
+      queueMessageId: 'first-message',
+    });
+    await queueRepository.upsert({
+      serverId: 'guild-1',
+      userId: 'next-user',
+      itemType: ModerationQueueItemType.CASE_MIRROR,
+      verificationEventId: 'next-case',
+      queueChannelId: 'queue-channel',
+      queueMessageId: 'next-message',
+    });
+    const firstMessage = new FakeDiscordMessage('first-message', 'queue-channel', {});
+    const nextMessage = new FakeDiscordMessage('next-message', 'queue-channel', {});
+    channel.sentMessages.push(firstMessage, nextMessage);
+    const cleanup = jest.spyOn(queueRepository, 'deleteStaleCaseMirror');
+    cleanup.mockRejectedValueOnce(new Error('private provider payload'));
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(service.syncServerQueue('guild-1')).resolves.toBeUndefined();
+      expect(queueRepository.items).toEqual([first]);
+      expect(firstMessage.deleted).toBe(false);
+      expect(nextMessage.deleted).toBe(true);
+      expect(warning).toHaveBeenCalledWith('Stale moderation queue cleanup incomplete', {
+        queue_item_id: first.id,
+        item_type: ModerationQueueItemType.CASE_MIRROR,
+        error_kind: 'error',
+      });
+    } finally {
+      warning.mockRestore();
+      cleanup.mockRestore();
+    }
+  });
+
   it('does not create observed mirrors for detections without observed notifications', async () => {
     const { channel, queueRepository, service } = buildService();
     const detectionEvent = { ...buildDetectionEvent(), metadata: {} };
@@ -1577,4 +1649,169 @@ describe('ModerationQueueService', () => {
     service.stop();
     jest.useRealTimers();
   });
+});
+
+describe('automatic response attention', () => {
+  it('persists case-owned attention before unavailable Discord destination lookup', async () => {
+    const { service, queueRepository } = buildService({
+      channelFetchError: new Error('channel unavailable'),
+    });
+    await service.upsertCaseMirror(buildVerificationEvent());
+    expect(queueRepository.items).toHaveLength(1);
+    expect(queueRepository.items[0].item_type).toBe(ModerationQueueItemType.CASE_MIRROR);
+  });
+  const response = {
+    action: 'kick',
+    outcome: 'kicked',
+    updatedAt: '2026-11-11T00:00:00.000Z',
+    failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+    attention: 'required',
+    caseId: null,
+  };
+  it('shows actual action separately from failed follow-up', async () => {
+    const { service, channel } = buildService();
+    await service.upsertObservedAlertMirror({
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    });
+    const embed = channel.sentMessages[0].embeds[0];
+    expect(embed.description).toContain('Member kicked. Notification delivery failed.');
+    expect(JSON.stringify(channel.sentMessages[0].payload.components)).not.toContain('kick_user');
+    await service.upsertObservedAlertMirror({
+      ...buildDetectionEvent(),
+      metadata: {
+        automatic_moderation_response: {
+          ...response,
+          failures: [{ step: 'persistence', code: 'persistence_failed' }],
+          updatedAt: '2026-11-12T00:00:00.000Z',
+        },
+      },
+    });
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    expect(channel.sentMessages[0].embeds[0].description).toContain(
+      'Member kicked. Follow-up records could not be saved.'
+    );
+    expect(channel.sentMessages[0].embeds[0].description).not.toContain(
+      'Notification delivery failed.'
+    );
+  });
+  it('persists response attention without Discord delivery', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { observed_action: 'kick', automatic_moderation_response: response },
+    };
+    const { service, queueRepository } = buildService({
+      channelFetchError: new Error('unavailable'),
+    });
+    const upsert = jest.spyOn(queueRepository, 'upsert');
+    await service.upsertObservedAlertMirror(event);
+    await service.upsertObservedAlertMirror(event);
+    expect(upsert).toHaveBeenCalled();
+    expect(queueRepository.items).toHaveLength(1);
+  });
+  it('retains unresolved attention through reconciliation', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { observed_action: 'kick', automatic_moderation_response: response },
+    };
+    const { service, queueRepository } = buildService({ observedAlerts: [event] });
+    await service.syncServerQueue(event.server_id!);
+    expect(queueRepository.items).toHaveLength(1);
+  });
+  it('keeps persisted attention after a failed send', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    };
+    const { service, queueRepository, channel } = buildService();
+    channel.send.mockRejectedValueOnce(new Error('delivery failed'));
+    const upsert = jest.spyOn(queueRepository, 'upsert');
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await service.upsertObservedAlertMirror(event);
+    expect(upsert).toHaveBeenCalled();
+    expect(queueRepository.items).toHaveLength(1);
+    expect(queueRepository.items[0].queue_message_id).toBeNull();
+    warn.mockRestore();
+  });
+  it('propagates persistence failure before attempting delivery', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    };
+    const { service, queueRepository, channel } = buildService();
+    jest.spyOn(queueRepository, 'upsert').mockRejectedValueOnce(new Error('write failed'));
+    await expect(service.upsertObservedAlertMirror(event)).rejects.toThrow('write failed');
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+  it('keeps acknowledged attention visible without repeated pings', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: { ...response, attention: 'acknowledged' } },
+    };
+    const { service, queueRepository, channel } = buildService();
+    await service.upsertObservedAlertMirror(event);
+    await service.upsertObservedAlertMirror(event);
+    expect(queueRepository.items).toHaveLength(1);
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    expect(channel.sentMessages[0].payload.allowedMentions).toEqual({ parse: [] });
+  });
+  it('uses authoritative projected attention for the acknowledgement control', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    };
+    const { service, queueRepository, channel } = buildService();
+    const item = await queueRepository.upsert({
+      serverId: event.server_id!,
+      userId: event.user_id,
+      itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
+      detectionEventId: event.id,
+      metadata: { automatic_moderation_response: { ...response, attention: 'acknowledged' } },
+    });
+    jest.spyOn(queueRepository, 'upsertAutomaticResponseAttention').mockResolvedValue(item);
+    const upsert = jest.spyOn(queueRepository, 'upsert');
+    await service.upsertObservedAlertMirror(event);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(JSON.stringify(channel.sentMessages[0].payload.components)).toContain('Close alert');
+    expect(JSON.stringify(channel.sentMessages[0].payload.components)).not.toContain('Acknowledge');
+  });
+  it('does not deliver stale attention rejected by authoritative projection', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    };
+    const { service, queueRepository, channel } = buildService();
+    jest.spyOn(queueRepository, 'upsertAutomaticResponseAttention').mockResolvedValue(null);
+    await service.upsertObservedAlertMirror(event);
+    expect(queueRepository.items).toHaveLength(0);
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+  it.each([true, false])(
+    'cleans only the obsolete projection and retains it if Discord cleanup fails (%s)',
+    async (deleted) => {
+      const event = {
+        ...buildDetectionEvent(),
+        metadata: { automatic_moderation_response: response },
+      };
+      const { service, queueRepository, channel } = buildService();
+      const retired = await queueRepository.upsert({
+        serverId: event.server_id!,
+        userId: event.user_id,
+        itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
+        detectionEventId: event.id,
+        metadata: { automatic_moderation_response: { ...response, attention: 'resolved' } },
+      });
+      jest
+        .spyOn(queueRepository, 'upsertAutomaticResponseAttention')
+        .mockImplementation(async (_data, deleteMessage) => {
+          if (await deleteMessage(retired)) await queueRepository.deleteById(retired.id);
+          return null;
+        });
+      const cleanup = jest.spyOn(service, 'deleteQueueMessage').mockResolvedValue(deleted);
+      await service.upsertObservedAlertMirror(event);
+      expect(cleanup).toHaveBeenCalledWith(retired);
+      expect(await queueRepository.findById(retired.id)).toEqual(deleted ? null : retired);
+      expect(channel.send).not.toHaveBeenCalled();
+    }
+  );
 });

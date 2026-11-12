@@ -12,6 +12,8 @@ import {
   reserveAnalysisChange,
 } from '../../repositories/reportIntakeProcessing';
 import {
+  hasAutomaticResponseAttention,
+  readAutomaticModerationResponse,
   type ReportAnalysisOutcome,
   materializeSetupStoredChange,
   setupStateMatches,
@@ -21,7 +23,10 @@ import {
 } from '@drasil/application';
 import { isDeepStrictEqual } from 'util';
 import type { IAdminActionRepository } from '../../repositories/AdminActionRepository';
-import type { IDetectionEventsRepository } from '../../repositories/DetectionEventsRepository';
+import {
+  mergeAutomaticResponseFailure,
+  type IDetectionEventsRepository,
+} from '../../repositories/DetectionEventsRepository';
 import type {
   IServerMemberRepository,
   CaseRoleApplicationCompletion,
@@ -200,8 +205,17 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
     return `det-${this.idCounter}`;
   }
 
-  async patchMetadata(id: string, patch: Record<string, unknown>): Promise<DetectionEvent | null> {
+  async patchMetadata(
+    id: string,
+    patch: Record<string, unknown>,
+    expectedResponse?: import('@drasil/application').AutomaticModerationResponse
+  ): Promise<DetectionEvent | null> {
     const event = await this.findById(id);
+    if (
+      expectedResponse &&
+      !isDeepStrictEqual(readAutomaticModerationResponse(event?.metadata), expectedResponse)
+    )
+      return null;
     return event ? this.updateMetadata(id, { ...event.metadata, ...patch }) : null;
   }
 
@@ -271,8 +285,10 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
         const metadata = event.metadata ?? {};
         return (
           event.server_id === serverId &&
-          typeof metadata.observed_notification_message_id === 'string' &&
-          typeof metadata.observed_action !== 'string'
+          (readAutomaticModerationResponse(metadata)
+            ? hasAutomaticResponseAttention(metadata)
+            : typeof metadata.observed_notification_message_id === 'string' &&
+              typeof metadata.observed_action !== 'string')
         );
       })
       .sort((a, b) => toTimestamp(a.detected_at) - toTimestamp(b.detected_at))
@@ -406,6 +422,53 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
     return { ...updated };
   }
 
+  async recordAutomaticResponseFailure(
+    detectionEventId: string,
+    incoming: import('@drasil/application').AutomaticModerationResponse
+  ): Promise<import('@drasil/application').AutomaticModerationResponse | null> {
+    const event = await this.findById(detectionEventId);
+    if (!event) return null;
+    const response = mergeAutomaticResponseFailure(
+      readAutomaticModerationResponse(event.metadata),
+      incoming
+    );
+    if (response.attention === 'resolved') return response;
+    const saved = await this.patchMetadata(event.id, { automatic_moderation_response: response });
+    return saved ? response : null;
+  }
+
+  async completeAutomaticResponseAttention(
+    input: import('../../repositories/DetectionEventsRepository').AutomaticResponseCompletion
+  ): Promise<DetectionEvent | null> {
+    const event = await this.findById(input.detectionEventId);
+    const response = readAutomaticModerationResponse(event?.metadata);
+    if (
+      !event ||
+      event.server_id !== input.serverId ||
+      event.user_id !== input.userId ||
+      !response ||
+      response.caseId ||
+      response.attention === 'resolved' ||
+      JSON.stringify({ ...response, attention: null }) !==
+        JSON.stringify({ ...input.expectedResponse, attention: null })
+    )
+      return null;
+    return this.patchMetadata(event.id, {
+      automatic_moderation_response: {
+        ...response,
+        attention: input.caseId ? response.attention : 'resolved',
+        caseId: input.caseId ?? null,
+        updatedAt: input.completedAt.toISOString(),
+      },
+      ...(!input.caseId
+        ? {
+            automatic_response_resolved_by: input.actorId,
+            automatic_response_resolved_at: input.completedAt.toISOString(),
+          }
+        : {}),
+    });
+  }
+
   async claimObservedAction(
     detectionEventId: string,
     metadata: Record<string, unknown>
@@ -416,7 +479,12 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
     }
 
     const existingMetadata = this.events[eventIndex].metadata ?? {};
-    if (existingMetadata.observed_action) {
+    const response = readAutomaticModerationResponse(existingMetadata);
+    if (
+      existingMetadata.observed_action ||
+      response?.attention === 'resolved' ||
+      response?.caseId
+    ) {
       return null;
     }
 
@@ -1454,7 +1522,11 @@ export class InMemoryVerificationEventRepository implements IVerificationEventRe
   async patchMetadata(
     id: string,
     patch: Record<string, unknown>,
-    options: { touchUpdatedAt?: boolean; expectedPendingThreadId?: string } = {}
+    options: {
+      touchUpdatedAt?: boolean;
+      expectedPendingThreadId?: string;
+      expectedRepairState?: VerificationEvent['metadata'];
+    } = {}
   ): Promise<VerificationEvent | null> {
     const eventIndex = this.events.findIndex((event) => event.id === id);
     if (eventIndex === -1) return null;
@@ -1469,6 +1541,22 @@ export class InMemoryVerificationEventRepository implements IVerificationEventRe
       event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
         ? event.metadata
         : {};
+    if (options.expectedRepairState !== undefined) {
+      const expected =
+        options.expectedRepairState &&
+        typeof options.expectedRepairState === 'object' &&
+        !Array.isArray(options.expectedRepairState)
+          ? options.expectedRepairState
+          : {};
+      if (
+        !isDeepStrictEqual(
+          metadata.automatic_moderation_response ?? null,
+          expected.automatic_moderation_response ?? null
+        ) ||
+        !isDeepStrictEqual(metadata.action_failures ?? null, expected.action_failures ?? null)
+      )
+        return null;
+    }
     const updated: VerificationEvent = {
       ...event,
       metadata: JSON.parse(JSON.stringify({ ...metadata, ...patch })),

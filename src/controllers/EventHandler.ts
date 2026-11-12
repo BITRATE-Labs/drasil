@@ -25,7 +25,6 @@ import {
 import * as dotenv from 'dotenv';
 import { randomUUID } from 'node:crypto';
 import { injectable, inject, optional } from 'inversify';
-import { deriveSetupReadiness } from '../contracts/setup';
 import { UserProfileData } from '../services/GPTService';
 import { DetectionResult, IDetectionOrchestrator } from '../services/DetectionOrchestrator';
 import { INotificationManager } from '../services/NotificationManager';
@@ -110,7 +109,6 @@ const GLOBAL_MESSAGE_WATCHLIST_CACHE_TTL_MS = 30_000;
 const GLOBAL_MESSAGE_WATCHLIST_INITIAL_FAILURE_RETRY_MS = 5_000;
 const SETUP_NUDGE_SUPPRESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const SETUP_WARNING_VALIDATION_PRECHECK_MS = 5 * 60 * 1000;
-const AUTOMATIC_DETECTION_SETUP_SAFETY_CACHE_TTL_MS = 30_000;
 const SETUP_WARNING_LAST_FINGERPRINT_SETTING_KEY = 'setup_warning_last_fingerprint';
 const DISCORD_RECENT_AUDIT_WINDOW_MS = 60 * 1000;
 const MANUAL_INTAKE_ROLE_REMOVAL_REASON = 'Manual intake trigger role consumed by Drasil';
@@ -127,12 +125,6 @@ interface SetupNudgeUser {
   readonly id: string;
   readonly bot?: boolean;
   send(content: string | MessageCreateOptions): Promise<unknown>;
-}
-
-interface AutomaticDetectionSetupSafety {
-  readonly ready: boolean;
-  readonly config?: Server;
-  readonly report?: SetupDiagnosticReport;
 }
 
 type CachedMessageChannel = Message['channel'] & {
@@ -183,13 +175,6 @@ export class EventHandler implements IEventHandler {
   private globalMessageWatchlistLoadedAt = 0;
   private globalMessageWatchlistRetryAfter = 0;
   private globalMessageWatchlistHasLoaded = false;
-  private automaticDetectionSetupSafetyCache = new Map<
-    string,
-    {
-      readonly expiresAt: number;
-      readonly result: Promise<AutomaticDetectionSetupSafety>;
-    }
-  >();
   private activeQuarantineCache: IActiveAccountQuarantineCache;
   private globalMessageWatchlistLoadPromise: Promise<
     readonly GlobalMessageWatchlistEntry[]
@@ -615,28 +600,6 @@ export class EventHandler implements IEventHandler {
                 ? { ...detectionResult.messageAction, kind: 'review_only' as const }
                 : undefined,
             };
-            const setupSafety = await this.evaluateAutomaticDetectionSetupSafety(member.guild);
-            if (!setupSafety.ready) {
-              await this.securityActionService.recordSuspiciousMessage(
-                member,
-                staffDetectionResult,
-                message
-              );
-              if (setupSafety.config && setupSafety.report) {
-                void this.maybeSendDetectionSetupWarning(
-                  member.guild,
-                  setupSafety.config,
-                  setupSafety.report
-                ).catch((error) => {
-                  console.warn(`Failed to process setup warning for guild ${serverId}:`, error);
-                });
-              }
-              recordWorkflowOutcome({
-                output: { verdict: 'SUSPICIOUS', actual_outcome: 'record_only' },
-                metadata: { setup_ready: false },
-              });
-              return;
-            }
             await this.securityActionService.observeSuspiciousMessage(
               member,
               staffDetectionResult,
@@ -828,6 +791,22 @@ export class EventHandler implements IEventHandler {
       }
     }
 
+    if (!notification) {
+      await this.securityActionService.recordAutomaticResponseFailure(
+        member,
+        detectionResult,
+        {
+          action: 'notify',
+          outcome: 'failed',
+          attention: 'required',
+          caseId: null,
+          updatedAt: new Date().toISOString(),
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+        sourceMessage
+      );
+    }
+
     recordWorkflowOutcome({
       output: {
         verdict: detectionResult.label,
@@ -854,26 +833,9 @@ export class EventHandler implements IEventHandler {
       }
 
       const confidencePercent = detectionResult.confidence * 100;
-      let effectiveResponseSettings = responseSettings;
-      if (responseSettings.mode === 'notify_only' || responseSettings.mode === 'restrict') {
-        const setupSafety = await this.evaluateAutomaticDetectionSetupSafety(member.guild);
-        if (!setupSafety.ready) {
-          effectiveResponseSettings = { ...responseSettings, mode: 'record_only' };
-          if (setupSafety.config && setupSafety.report) {
-            void this.maybeSendDetectionSetupWarning(
-              member.guild,
-              setupSafety.config,
-              setupSafety.report
-            ).catch((error) => {
-              console.warn(`Failed to process setup warning for guild ${member.guild.id}:`, error);
-            });
-          }
-        }
-      }
-
       const routesWithoutCaseHandling =
-        effectiveResponseSettings.mode === 'record_only' ||
-        effectiveResponseSettings.mode === 'notify_only' ||
+        responseSettings.mode === 'record_only' ||
+        responseSettings.mode === 'notify_only' ||
         confidencePercent < actionThreshold;
       if (sourceMessage && !detectionResult.detectionEventId && routesWithoutCaseHandling) {
         detectionResult.detectionEventId = await this.securityActionService.recordSuspiciousMessage(
@@ -883,7 +845,7 @@ export class EventHandler implements IEventHandler {
         );
       }
 
-      switch (effectiveResponseSettings.mode) {
+      switch (responseSettings.mode) {
         case 'record_only':
           recordWorkflowOutcome({
             output: {
@@ -893,7 +855,7 @@ export class EventHandler implements IEventHandler {
             },
             metadata: {
               requested_mode: responseSettings.mode,
-              effective_mode: effectiveResponseSettings.mode,
+              effective_mode: responseSettings.mode,
             },
           });
           console.log(
@@ -905,7 +867,7 @@ export class EventHandler implements IEventHandler {
           await this.notifyObservedDetectionIfEligible(
             member,
             detectionResult,
-            effectiveResponseSettings,
+            responseSettings,
             sourceMessage
           );
           return;
@@ -915,34 +877,19 @@ export class EventHandler implements IEventHandler {
             await this.notifyObservedDetectionIfEligible(
               member,
               detectionResult,
-              effectiveResponseSettings,
+              responseSettings,
               sourceMessage
             );
             return;
           }
           if (sourceMessage) {
-            const handled = await this.securityActionService.handleSuspiciousMessage(
+            await this.securityActionService.handleSuspiciousMessage(
               member,
               detectionResult,
               sourceMessage
             );
-            if (handled === false)
-              recordWorkflowOutcome({
-                output: { verdict: detectionResult.label, actual_outcome: 'action_failed' },
-                level: 'ERROR',
-                statusMessage: 'action_failed',
-              });
           } else {
-            const handled = await this.securityActionService.handleSuspiciousJoin(
-              member,
-              detectionResult
-            );
-            if (handled === false)
-              recordWorkflowOutcome({
-                output: { verdict: detectionResult.label, actual_outcome: 'action_failed' },
-                level: 'ERROR',
-                statusMessage: 'action_failed',
-              });
+            await this.securityActionService.handleSuspiciousJoin(member, detectionResult);
           }
           return;
 
@@ -953,49 +900,6 @@ export class EventHandler implements IEventHandler {
           return;
       }
     });
-  }
-
-  private evaluateAutomaticDetectionSetupSafety(
-    guild: Guild
-  ): Promise<AutomaticDetectionSetupSafety> {
-    const now = Date.now();
-    const cached = this.automaticDetectionSetupSafetyCache.get(guild.id);
-    if (cached && cached.expiresAt > now) {
-      return cached.result;
-    }
-
-    const result = this.loadAutomaticDetectionSetupSafety(guild);
-    this.automaticDetectionSetupSafetyCache.set(guild.id, {
-      expiresAt: now + AUTOMATIC_DETECTION_SETUP_SAFETY_CACHE_TTL_MS,
-      result,
-    });
-    return result;
-  }
-
-  private async loadAutomaticDetectionSetupSafety(
-    guild: Guild
-  ): Promise<AutomaticDetectionSetupSafety> {
-    if (!this.setupDiagnosticsService) {
-      return { ready: false };
-    }
-
-    try {
-      const config = await this.configService.getServerConfig(guild.id);
-      const report = await this.setupDiagnosticsService.validateGuildSetup(guild);
-      return {
-        ready:
-          deriveSetupReadiness({
-            installed: true,
-            coreConfigured: !this.isSetupIncomplete(config),
-            blockingErrorCount: report.errorCount,
-          }) === 'ready',
-        config,
-        report,
-      };
-    } catch (error) {
-      console.warn(`Could not verify setup readiness for guild ${guild.id}:`, error);
-      return { ready: false };
-    }
   }
 
   private async runJoinDetectionForMember(

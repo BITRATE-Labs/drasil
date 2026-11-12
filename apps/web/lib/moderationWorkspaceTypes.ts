@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { captchaIssuanceConfigurationSchema, queuedCommandSchemas } from '@drasil/application';
+import {
+  automaticModerationResponseSchema,
+  captchaIssuanceConfigurationSchema,
+  queuedCommandSchemas,
+} from '@drasil/application';
 import {
   caseDetailSchema,
   moderationInboxItemSchema,
@@ -147,6 +151,10 @@ export const supportAttentionSubtypeSchema = z.enum([
   'quarantine_breach',
 ]);
 const common = { item: moderationInboxItemSchema, policy: workspaceActionPolicySchema };
+export const responseReviewClosureSchema = z.object({
+  actorId: z.string().min(1),
+  closedAt: z.iso.datetime(),
+});
 export const workspaceItemDetailSchema = z.discriminatedUnion('kind', [
   z.object({
     ...common,
@@ -165,6 +173,8 @@ export const workspaceItemDetailSchema = z.discriminatedUnion('kind', [
   z.object({
     ...common,
     kind: z.literal('observed_alert'),
+    automaticResponse: automaticModerationResponseSchema.optional(),
+    reviewClosure: responseReviewClosureSchema.optional(),
     item: moderationInboxItemSchema.extend({ kind: z.literal('observed_alert') }),
     detection: memberProfileDetectionSchema,
     requests: z.array(moderationActionRequestSummarySchema).readonly(),

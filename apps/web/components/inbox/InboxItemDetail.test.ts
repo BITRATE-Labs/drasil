@@ -344,3 +344,173 @@ it('renders a completed identity handoff as review resolved without claiming sta
   expect(html).toContain('<h2>Review resolved</h2>');
   expect(html).not.toContain('Resolved by staff');
 });
+
+it.each([
+  {
+    state: 'failed response',
+    allowed: ['acknowledge', 'dismiss_no_action'],
+    policy: ['acknowledge', 'dismiss_no_action'],
+    queueId: 'response-queue',
+    canQueue: true,
+  },
+  {
+    state: 'mixed response',
+    allowed: ['acknowledge', 'dismiss_no_action'],
+    policy: ['acknowledge', 'dismiss_no_action'],
+    queueId: 'response-queue',
+    canQueue: true,
+  },
+  {
+    state: 'required',
+    allowed: ['acknowledge'],
+    policy: ['acknowledge'],
+    queueId: 'response-queue',
+    canQueue: false,
+  },
+  {
+    state: 'acknowledged',
+    allowed: ['view_history'],
+    policy: ['view_history', 'kick_user', 'ban_user', 'open_case'],
+    queueId: 'response-queue',
+    canQueue: true,
+  },
+  {
+    state: 'resolved',
+    allowed: ['view_history'],
+    policy: ['view_history', 'kick_user', 'ban_user', 'open_case'],
+    queueId: 'response-queue',
+    canQueue: true,
+  },
+  {
+    state: 'queue unavailable',
+    allowed: ['view_history'],
+    policy: ['view_history', 'kick_user'],
+    queueId: null,
+    canQueue: true,
+  },
+  {
+    state: 'authorization filtered',
+    allowed: ['kick_user', 'ban_user'],
+    policy: ['view_history'],
+    queueId: 'response-queue',
+    canQueue: true,
+  },
+])(
+  'keeps observed response controls within current item and policy actions ($state)',
+  ({ state, allowed, policy, queueId, canQueue }) => {
+    const original = fixtureModerationInboxItems().find((item) => item.kind === 'observed_alert')!;
+    const item = {
+      ...original,
+      queueItemId: queueId,
+      allowedActions: allowed,
+      statusLabel: state,
+      title: 'Automatic response needs review',
+      summary:
+        state === 'failed response'
+          ? 'Automatic kick failed. The member may still have access.'
+          : 'Member kicked. Notification delivery failed.',
+    };
+    const model = workspaceItemDetailSchema.parse({
+      kind: 'observed_alert',
+      ...(['resolved', 'acknowledged'].includes(state)
+        ? { reviewClosure: { actorId: '123456789012345678', closedAt: '2026-11-12T00:00:00.000Z' } }
+        : {}),
+      automaticResponse: {
+        action: 'kick',
+        outcome: state === 'failed response' ? 'failed' : 'kicked',
+        attention: 'required',
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      },
+      item,
+      policy: {
+        allowedActions: policy,
+        canQueueCaseActions: canQueue,
+        canOpenReportCases: false,
+        canManageCleanup: false,
+        kickReasonRequired: true,
+        banReasonRequired: true,
+      },
+      detection: {
+        id: item.sourceId,
+        detectionType: 'suspicious_content',
+        confidence: 0.8,
+        reasons: [],
+        detectedAt: item.createdAt,
+        sourceMessageUrl: null,
+        observedAction: null,
+        observedActionAt: null,
+        latestCaseId: null,
+        observedActionBy: null,
+        sourceChannelId: null,
+        sourceMessageId: null,
+        accounting: {
+          excluded: false,
+          scope: null,
+          reason: null,
+          excludedBy: null,
+          excludedAt: null,
+        },
+      },
+      requests:
+        state === 'mixed response'
+          ? [
+              {
+                id: 'observed-close',
+                guildId: item.guildId,
+                actionType: 'dismiss_observed_detection',
+                requestedAction: 'dismiss_no_action',
+                actorSurface: 'web',
+                status: 'queued',
+                targetUserId: item.subject.userId,
+                detectionEventId: item.sourceId,
+                verificationEventId: null,
+                reportIntakeId: null,
+                messageDeletionJobId: null,
+                requestedAt: '2026-11-11T00:00:00.000Z',
+                updatedAt: '2026-11-11T00:00:00.000Z',
+                completedAt: null,
+                failedAt: null,
+                lastError: null,
+                resultSummary: null,
+              },
+            ]
+          : [],
+    });
+    const submit = vi.fn();
+    const html = renderToStaticMarkup(
+      createElement(InboxItemDetail, {
+        detail: model,
+        loadedAt: '2026-11-11T00:00:00Z',
+        returnHref: '/inbox',
+        trackedRequestId: null,
+        onTrackedRequest() {},
+        actions: {
+          caseAction: submit,
+          observedAction: submit,
+          reportAction: submit,
+          attentionAction: submit,
+        },
+      })
+    );
+    if (state === 'failed response')
+      expect(html).toContain(
+        'Open Member history to review existing cases or use Open Case for further moderation.'
+      );
+    else expect(html).toContain('Member kicked. Notification delivery failed.');
+    if (state === 'resolved' || state === 'acknowledged') {
+      expect(html).toContain('Last review closed by');
+      expect(html).toContain('123456789012345678');
+      expect(html).toContain('2026-11-12T00:00:00.000Z');
+    }
+    if (state === 'mixed response') {
+      expect(html).toContain('Close alert');
+      expect(matchingInboxRequests(model).map((request) => request.id)).toEqual(['observed-close']);
+    }
+    if (state === 'required' || state === 'mixed response' || state === 'failed response')
+      expect(html).toContain('Acknowledge response');
+    else expect(html).not.toContain('Acknowledge response');
+    expect(html).not.toMatch(/Kick member|Ban member|Open case/);
+  }
+);

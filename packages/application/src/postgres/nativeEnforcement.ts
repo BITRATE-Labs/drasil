@@ -20,6 +20,17 @@ export async function nativeCompletion(
     [executionId]
   );
   const row = found.rows[0];
+  if (row && !row.acknowledged_at) {
+    const confirmedKick = await client.query(
+      `select e.id from mcp_executions e join moderation_action_requests q on q.id=e.queue_request_id
+       where e.id=$1::uuid and e.resolved->'command'->>'kind'='kick_user'
+         and q.status='completed' and q.result->>'action_type'='delegated_admission'
+         and q.result->>'state'='partial' and q.result->>'code'='provider_acknowledged_updates_pending'`,
+      [executionId]
+    );
+    if (confirmedKick.rows.length)
+      return { state: 'partial', code: 'provider_acknowledged_updates_pending' };
+  }
   return row
     ? row.acknowledged_at
       ? { state: 'partial', code: 'provider_acknowledged_updates_pending' }

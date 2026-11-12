@@ -1,3 +1,4 @@
+import { PostgresQueueAttentionRepository } from './application/adapters/attention';
 import { createAttentionActions, type QueueAttentionItemRecord } from '@drasil/application';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { submitWorkspaceAttentionAction } from '../app/admin/guild/[guildId]/inbox/actions';
@@ -78,6 +79,7 @@ describe('direct web attention acknowledgement', () => {
     const actions = createAttentionActions({
       authority: { loadFresh: async () => null },
       repository: {
+        acknowledgeAutomaticResponse: async () => 'already_handled',
         acknowledgeIdentityReview: async () => 'already_handled',
         findById: async () => {
           throw new Error('must authorize first');
@@ -190,4 +192,116 @@ it('acknowledges identity review through the web transaction without deleting it
   expect(runtime.deleteMessage).not.toHaveBeenCalled();
   expect(runtime.query.mock.calls.some(([sql]) => String(sql).startsWith('delete'))).toBe(false);
   expect(runtime.query).toHaveBeenCalledWith('commit');
+});
+
+describe('automatic response acknowledgement repository', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  const response = {
+    action: 'kick',
+    outcome: 'kicked',
+    updatedAt: '2026-11-11T00:00:00.000Z',
+    failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+    attention: 'required',
+    caseId: null,
+  };
+  it('updates response and queue together without deleting the unresolved item', async () => {
+    const metadata = { observed_action: 'kick', automatic_moderation_response: response };
+    runtime.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('select * from moderation_queue_items'))
+        return {
+          rows: [
+            {
+              id: 'item',
+              server_id: 'guild-1',
+              item_type: 'observed_alert_mirror',
+              detection_event_id: 'detection',
+              metadata,
+            },
+          ],
+        };
+      if (sql.includes('select id, metadata from detection_events'))
+        return { rows: [{ id: 'detection', metadata }] };
+      if (sql.includes('update moderation_queue_items')) return { rows: [{ id: 'item' }] };
+      return { rows: [] };
+    });
+    const repository = new PostgresQueueAttentionRepository();
+    expect(
+      await repository.acknowledgeAutomaticResponse({
+        itemId: 'item',
+        guildId: 'guild-1',
+        actorId: 'staff',
+        acknowledgedAt: new Date(),
+      })
+    ).toBe('acknowledged');
+    const writes = runtime.query.mock.calls.filter(([sql]) => String(sql).startsWith('update'));
+    expect(writes).toHaveLength(2);
+    const queuePatch = JSON.parse(String(writes[0][1][3]));
+    expect(queuePatch).toEqual({
+      automatic_moderation_response: { ...response, attention: 'acknowledged' },
+    });
+    expect(String(writes[0][0])).toContain("coalesce(metadata, '{}'::jsonb) ||");
+    const saved = JSON.parse(String(writes[1][1][1]));
+    expect(saved).toEqual({
+      ...metadata,
+      automatic_moderation_response: { ...response, attention: 'acknowledged' },
+    });
+    expect(runtime.query.mock.calls.map(([sql]) => String(sql))).toContain('commit');
+    expect(runtime.deleteMessage).not.toHaveBeenCalled();
+  });
+  it('rejects malformed snapshots without updating either record', async () => {
+    runtime.query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('select *')
+        ? [
+            {
+              id: 'item',
+              server_id: 'guild-1',
+              item_type: 'observed_alert_mirror',
+              detection_event_id: 'detection',
+              metadata: { automatic_moderation_response: { ...response, outcome: 'notified' } },
+            },
+          ]
+        : [],
+    }));
+    expect(
+      await new PostgresQueueAttentionRepository().acknowledgeAutomaticResponse({
+        itemId: 'item',
+        guildId: 'guild-1',
+        actorId: 'staff',
+        acknowledgedAt: new Date(),
+      })
+    ).toBe('already_handled');
+    expect(runtime.query.mock.calls.some(([sql]) => String(sql).startsWith('update'))).toBe(false);
+  });
+  it('rolls back both records when persistence fails', async () => {
+    const metadata = { automatic_moderation_response: response };
+    runtime.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('select *'))
+        return {
+          rows: [
+            {
+              id: 'item',
+              server_id: 'guild-1',
+              item_type: 'observed_alert_mirror',
+              detection_event_id: 'detection',
+              metadata,
+            },
+          ],
+        };
+      if (sql.includes('select id, metadata')) return { rows: [{ id: 'detection', metadata }] };
+      if (sql.includes('update moderation_queue_items')) return { rows: [{ id: 'item' }] };
+      if (sql.includes('update detection_events')) throw new Error('write failed');
+      return { rows: [] };
+    });
+    await expect(
+      new PostgresQueueAttentionRepository().acknowledgeAutomaticResponse({
+        itemId: 'item',
+        guildId: 'guild-1',
+        actorId: 'staff',
+        acknowledgedAt: new Date(),
+      })
+    ).rejects.toThrow('write failed');
+    expect(runtime.query.mock.calls.map(([sql]) => String(sql))).toContain('rollback');
+  });
 });

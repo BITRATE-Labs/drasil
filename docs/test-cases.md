@@ -154,3 +154,13 @@ For staged report intake, verify with synthetic evidence in an isolated local de
 - Existing non-staged reports retain their multiple-candidate flow.
 
 Live preview testing stops before submission or moderation unless separately authorized. Final receipts and dispatch failures can be exercised with repository fakes and an isolated test database.
+
+### Automatic response outcomes
+
+- Qualifying message and join detections still attempt configured restriction or eligible kick when general setup diagnostics report errors or cannot run. Explicit off/record-only/notify-only policy, thresholds, exemptions, and kick opt-ins retain their behavior.
+- Reject unsafe role grants without applying the role. Preserve the durable case and show role failure. When the role succeeds and the thread fails, show the applied role separately from the failed thread, without claiming full isolation.
+- Distinguish a rejected kick, uncertain kick, pending kick, and confirmed kick followed by bookkeeping or delivery failure. Response attention must offer no repeat kick. Reconciliation must not enforce again.
+- With every Discord notification and queue link missing or inaccessible, retain one durable attention item and show its actual outcome in the web inbox and selected detail. Never route evidence to an arbitrary fallback destination.
+- A reviewable case absorbs failure attention without a duplicate observed row. Terminal and parked case failures retain historical linkage and one detection-owned attention row. Do not reopen or unpark the case.
+- Acknowledge validated response attention through the existing control. Confirm that staff acknowledgement preserves the kicked/failed/unknown outcome and unresolved failure details, including after reconciliation. Ordinary or malformed observed rows must not offer this control.
+- Coalesced alert updates show changed failure details. Successful enforcement and notification continue through the existing successful path.

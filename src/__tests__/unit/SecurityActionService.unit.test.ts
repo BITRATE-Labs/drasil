@@ -1,3 +1,7 @@
+import {
+  readAutomaticModerationResponse,
+  type AutomaticModerationResponse,
+} from '@drasil/application';
 import { createTracingRecorder } from '../fakes/recordingTracing';
 import { withObservation } from '../../observability/langfuse';
 import { Client, Guild, GuildMember, Message, User } from 'discord.js';
@@ -32,6 +36,7 @@ import {
 } from '../../services/ThreadManager';
 import {
   UserModerationService,
+  KickExecutionError,
   IUserModerationService,
   ICombinedBanLifecycleService,
 } from '../../services/UserModerationService';
@@ -241,6 +246,201 @@ describe('SecurityActionService (unit)', () => {
       gptService as any
     );
 
+  it.each(['pending', 'failed', 'unknown', 'kicked'] as const)(
+    'closes orphan %s kick attention without a target member or changing the kick fence',
+    async (outcome) => {
+      const response = {
+        action: 'kick',
+        outcome,
+        attention: 'required',
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      };
+      const event = await detectionEventsRepository.create({
+        server_id: 'guild-close',
+        user_id: 'absent-user',
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.9,
+        metadata: {
+          observed_action: 'kick',
+          observed_action_by: 'bot',
+          automatic_moderation_response: response,
+        },
+      });
+      const service = buildService();
+      expect(
+        await service.dismissObservedDetection(
+          'guild-close',
+          'absent-user',
+          event.id,
+          { id: 'moderator' } as User,
+          AdminActionType.DISMISS
+        )
+      ).toBe(true);
+      const saved = await detectionEventsRepository.findById(event.id);
+      expect(saved?.metadata).toMatchObject({
+        observed_action: 'kick',
+        observed_action_by: 'bot',
+        automatic_response_resolved_by: 'moderator',
+        automatic_response_resolved_at: expect.any(String),
+        automatic_moderation_response: {
+          ...response,
+          attention: 'resolved',
+          updatedAt: expect.any(String),
+        },
+      });
+      expect(userModerationService.kickUser).not.toHaveBeenCalled();
+      expect(
+        await service.dismissObservedDetection(
+          'guild-close',
+          'absent-user',
+          event.id,
+          { id: 'moderator' } as User,
+          AdminActionType.DISMISS
+        )
+      ).toBe(false);
+    }
+  );
+
+  it('terminal dismissal resolves a failed notify response', async () => {
+    const event = await detectionEventsRepository.create({
+      server_id: 'guild-close',
+      user_id: 'absent-user',
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.9,
+      metadata: {
+        automatic_moderation_response: {
+          action: 'notify',
+          outcome: 'failed',
+          attention: 'required',
+          caseId: null,
+          updatedAt: '2026-11-11T00:00:00.000Z',
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      },
+    });
+    expect(
+      await buildService().dismissObservedDetection(
+        'guild-close',
+        'absent-user',
+        event.id,
+        { id: 'moderator' } as User,
+        AdminActionType.DISMISS
+      )
+    ).toBe(true);
+    expect((await detectionEventsRepository.findById(event.id))?.metadata).toMatchObject({
+      automatic_moderation_response: { attention: 'resolved', outcome: 'failed' },
+    });
+  });
+
+  it('rejects stale observed enforcement and case controls after response completion', async () => {
+    const member = buildMember('guild-closed-controls', 'user-closed-controls');
+    const moderator = { id: 'moderator' } as User;
+    await serverRepository.getOrCreateServer(member.guild.id);
+    await serverRepository.updateSettings(member.guild.id, { observed_action_kick_enabled: true });
+    const detection = await detectionEventsRepository.create({
+      server_id: member.guild.id,
+      user_id: member.id,
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.9,
+      metadata: {
+        automatic_moderation_response: {
+          action: 'notify',
+          outcome: 'failed',
+          attention: 'resolved',
+          caseId: null,
+          updatedAt: '2026-11-11T00:00:00.000Z',
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      },
+    });
+    const service = buildService();
+    expect(await service.kickObservedDetection(member, detection.id, moderator, 'Review')).toBe(
+      false
+    );
+    expect(await service.openObservedDetectionCase(member, detection.id, moderator)).toBe(false);
+    expect(
+      await service.dismissObservedDetection(
+        member.guild.id,
+        member.id,
+        detection.id,
+        moderator,
+        AdminActionType.FALSE_POSITIVE
+      )
+    ).toBe(false);
+    expect(userModerationService.kickUser).not.toHaveBeenCalled();
+    expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
+    expect((await detectionEventsRepository.findById(detection.id))?.metadata).not.toHaveProperty(
+      'observed_action'
+    );
+  });
+
+  it.each([false, true])(
+    'opening a response alert transfers to its live case and preserves incomplete steps (failed=%s)',
+    async (failed) => {
+      const member = buildMember('guild-response-open', 'user-response-open');
+      const moderator = { id: 'moderator' } as User;
+      Object.defineProperty(verificationEventRepository, 'nextId', {
+        value: () => 'c339ae64-cf09-4874-8174-0b0fb2490f4b',
+      });
+      const event = await detectionEventsRepository.create({
+        server_id: member.guild.id,
+        user_id: member.id,
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.9,
+        metadata: {
+          automatic_moderation_response: {
+            action: 'notify',
+            outcome: 'failed',
+            attention: 'required',
+            caseId: null,
+            updatedAt: '2026-11-11T00:00:00.000Z',
+            failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+          },
+        },
+      });
+      if (failed) {
+        userModerationService.applyCaseRole.mockResolvedValue(false);
+        threadManager.createVerificationThread.mockResolvedValue(null);
+      }
+      expect(await buildService().openObservedDetectionCase(member, event.id, moderator)).toBe(
+        true
+      );
+      const owner = await verificationEventRepository.findActiveByUserAndServer(
+        member.id,
+        member.guild.id
+      );
+      expect(owner?.id).toBe('c339ae64-cf09-4874-8174-0b0fb2490f4b');
+      expect((await detectionEventsRepository.findById(event.id))?.metadata).toMatchObject({
+        automatic_moderation_response: { caseId: owner?.id, attention: 'required' },
+      });
+      if (!failed) {
+        await buildService().openCaseForSuspiciousMessage(member, {
+          label: 'SUSPICIOUS',
+          confidence: 0.9,
+          reasons: [],
+          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+          triggerContent: '',
+          detectionEventId: event.id,
+        });
+        expect((await verificationEventRepository.findById(owner!.id))?.metadata).toMatchObject({
+          automatic_moderation_response: { failures: [], attention: 'resolved' },
+          action_failures: [],
+        });
+      }
+      if (failed)
+        expect(owner?.metadata).toMatchObject({
+          automatic_moderation_response: {
+            failures: expect.arrayContaining([
+              { step: 'role', code: 'role_assignment_failed' },
+              { step: 'thread', code: 'thread_creation_failed' },
+            ]),
+          },
+        });
+    }
+  );
+
   it('records deterministic rejoin-after-kick detections with prior kick metadata', async () => {
     const guildId = 'guild-rejoin-kick';
     const userId = 'user-rejoin-kick';
@@ -363,6 +563,204 @@ describe('SecurityActionService (unit)', () => {
     expect(notificationManager.upsertSuspiciousUserNotification).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['case_mirror', 'observed_cleanup', 'both'] as const)(
+    'continues automatic CAPTCHA after saved live-case %s projection fails',
+    async (operation) => {
+      const member = buildMember('projection-guild', 'projection-user');
+      await serverRepository.upsertByGuildId(member.guild.id, {
+        settings: { captcha_mode: 'suspicious_join' },
+      });
+      userModerationService.applyCaseRole.mockRejectedValueOnce(new Error('PRIVATE_ROLE_SENTINEL'));
+      const queue = {
+        upsertCaseMirror: jest.fn().mockResolvedValue(undefined),
+        upsertObservedAlertMirrorById: jest.fn().mockResolvedValue(undefined),
+      };
+      if (operation !== 'observed_cleanup')
+        queue.upsertCaseMirror.mockRejectedValue(new Error('PRIVATE_QUEUE_SENTINEL'));
+      if (operation !== 'case_mirror')
+        queue.upsertObservedAlertMirrorById.mockRejectedValue(new Error('PRIVATE_QUEUE_SENTINEL'));
+      const captcha = {
+        findByCaseId: jest.fn().mockResolvedValue(null),
+        requestChallenge: jest.fn().mockResolvedValue({ delivered: true }),
+      };
+      const service = buildService();
+      Object.assign(service, { moderationQueueService: queue, captchaChallengeService: captcha });
+      const recordFailure = jest.spyOn(service, 'recordAutomaticResponseFailure');
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.9,
+        reasons: [],
+        triggerSource: DetectionType.NEW_ACCOUNT,
+        triggerContent: '',
+      };
+      try {
+        await expect(service.handleSuspiciousJoin(member, detection)).resolves.toBe(true);
+        const owner = await verificationEventRepository.findActiveByUserAndServer(
+          member.id,
+          member.guild.id
+        );
+        expect(captcha.requestChallenge).toHaveBeenCalledWith(
+          expect.objectContaining({ verificationEventId: owner?.id })
+        );
+        expect(queue.upsertCaseMirror).toHaveBeenCalledTimes(1);
+        expect(queue.upsertObservedAlertMirrorById).toHaveBeenCalledTimes(1);
+        expect(getVerificationActionFailures(owner?.metadata)).toEqual([
+          expect.objectContaining({ action: 'case_role', message: 'role_assignment_failed' }),
+        ]);
+        const expected = {
+          automatic_moderation_response: {
+            action: 'restrict',
+            outcome: 'case_opened',
+            caseId: owner?.id,
+            attention: 'required',
+            failures: [{ step: 'role', code: 'role_assignment_failed' }],
+          },
+        };
+        expect(owner?.metadata).toMatchObject(expected);
+        expect(
+          (await detectionEventsRepository.findById(detection.detectionEventId!))?.metadata
+        ).toMatchObject(expected);
+        expect(recordFailure).not.toHaveBeenCalled();
+        expect(log).toHaveBeenCalledWith(
+          'Automatic response queue projection failed',
+          expect.objectContaining({
+            code: 'queue_projection_failed',
+            operation: operation === 'both' ? 'case_mirror' : operation,
+            case_id: owner?.id,
+            detection_event_id: detection.detectionEventId,
+          })
+        );
+        expect(JSON.stringify(log.mock.calls)).not.toContain('PRIVATE_');
+        expect(JSON.stringify(owner?.metadata)).not.toContain('PRIVATE_');
+        expect(userModerationService.kickUser).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+      }
+    }
+  );
+
+  it.each(['case_write', 'detection_write', 'orphan_attention'] as const)(
+    'keeps required %s persistence failure fatal before automatic CAPTCHA',
+    async (operation) => {
+      const member = buildMember('required-guild', 'required-user');
+      await serverRepository.upsertByGuildId(member.guild.id, {
+        settings: { captcha_mode: 'suspicious_join' },
+      });
+      userModerationService.applyCaseRole.mockImplementationOnce(async () => {
+        if (operation === 'orphan_attention') {
+          const owner = await verificationEventRepository.findActiveByUserAndServer(
+            member.id,
+            member.guild.id
+          );
+          await verificationEventRepository.update(owner!.id, {
+            attention_state: CaseAttentionState.PARKED,
+          });
+        }
+        throw new Error('role failure');
+      });
+      const failure = new Error('PRIVATE_REQUIRED_SENTINEL');
+      if (operation === 'case_write') {
+        const patch = verificationEventRepository.patchMetadata.bind(verificationEventRepository);
+        jest
+          .spyOn(verificationEventRepository, 'patchMetadata')
+          .mockImplementation(async (id, metadata, options) => {
+            if ('automatic_moderation_response' in metadata) throw failure;
+            return patch(id, metadata, options);
+          });
+      }
+      if (operation === 'detection_write') {
+        const patch = detectionEventsRepository.patchMetadata.bind(detectionEventsRepository);
+        jest
+          .spyOn(detectionEventsRepository, 'patchMetadata')
+          .mockImplementation(async (id, metadata, expected) => {
+            if ('automatic_moderation_response' in metadata) throw failure;
+            return patch(id, metadata, expected);
+          });
+      }
+      const queue = {
+        upsertCaseMirror: jest.fn().mockResolvedValue(undefined),
+        upsertObservedAlertMirrorById: jest.fn().mockRejectedValue(failure),
+      };
+      const captcha = {
+        findByCaseId: jest.fn().mockResolvedValue(null),
+        requestChallenge: jest.fn().mockResolvedValue({ delivered: true }),
+      };
+      const service = buildService();
+      Object.assign(service, { moderationQueueService: queue, captchaChallengeService: captcha });
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.9,
+        reasons: [],
+        triggerSource: DetectionType.NEW_ACCOUNT,
+        triggerContent: '',
+      };
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        await expect(service.handleSuspiciousJoin(member, detection)).rejects.toBe(failure);
+        expect(captcha.requestChallenge).not.toHaveBeenCalled();
+        expect(userModerationService.kickUser).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+      }
+    }
+  );
+
+  it.each(['message', 'join'] as const)(
+    'reports a missing detection precondition before %s automatic kick without enforcement',
+    async (source) => {
+      const recorder = createTracingRecorder();
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const member = buildMember('missing-detection-guild', 'missing-detection-user');
+        await serverRepository.upsertByGuildId(member.guild.id, {
+          settings: {
+            message_detection_auto_kick_enabled: true,
+            join_detection_auto_kick_enabled: true,
+            auto_kick_min_confidence_threshold: 95,
+          },
+        });
+        const service = buildService({ user: { id: 'bot' } } as Client);
+        const recordFailure = jest.spyOn(service, 'recordAutomaticResponseFailure');
+        const detection: DetectionResult = {
+          detectionEventId: '11111111-1111-4111-8111-111111111111',
+          label: 'SUSPICIOUS',
+          confidence: 0.99,
+          reasons: [],
+          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+          triggerContent: 'PRIVATE_CONTENT_SENTINEL',
+        };
+        await expect(
+          withObservation('missing-detection-test', 'chain', () =>
+            source === 'message'
+              ? service.handleSuspiciousMessage(member, detection)
+              : service.handleSuspiciousJoin(member, detection)
+          )
+        ).resolves.toBe(false);
+        expect(userModerationService.kickUser).not.toHaveBeenCalled();
+        expect(recordFailure).not.toHaveBeenCalled();
+        expect(await detectionEventsRepository.findById(detection.detectionEventId!)).toBeNull();
+        const root = recorder.spans.find((span) => span.name === 'missing-detection-test');
+        expect(root?.attributes['langfuse.observation.level']).toBe('ERROR');
+        expect(JSON.parse(String(root?.attributes['langfuse.observation.output']))).toMatchObject({
+          actual_outcome: 'not_attempted',
+          detection_event_id: detection.detectionEventId,
+        });
+        expect(log).toHaveBeenCalledWith(
+          'Automatic kick detection precondition failed',
+          expect.objectContaining({
+            code: 'detection_record_unavailable',
+            detection_event_id: detection.detectionEventId,
+          })
+        );
+        expect(JSON.stringify(log.mock.calls)).not.toContain('PRIVATE_CONTENT_SENTINEL');
+      } finally {
+        log.mockRestore();
+        await recorder.shutdown();
+      }
+    }
+  );
+
   it('does not duplicate durable CAPTCHA attention when automatic issuance fails', async () => {
     const guildId = 'guild-automatic-captcha-failure';
     const userId = 'user-automatic-captcha-failure';
@@ -455,7 +853,10 @@ describe('SecurityActionService (unit)', () => {
 
     await expect(
       (service as any).upsertNotification(member, detectionResult, verificationEvent)
-    ).rejects.toThrow('CAPTCHA lookup unavailable');
+    ).rejects.toMatchObject({
+      operation: 'captcha_read',
+      message: 'Case notification data could not be loaded.',
+    });
 
     expect(notificationManager.upsertSuspiciousUserNotification).not.toHaveBeenCalled();
   });
@@ -481,6 +882,18 @@ describe('SecurityActionService (unit)', () => {
       triggerContent: message.content,
     };
 
+    userModerationService.kickUser.mockImplementationOnce(
+      async (_member, _reason, _moderator, _id, lifecycle) => {
+        await lifecycle?.beforeSend();
+        const events = await detectionEventsRepository.findByServerAndUser(guildId, userId);
+        expect(events[0].metadata?.automatic_moderation_response).toMatchObject({
+          action: 'kick',
+          outcome: 'pending',
+        });
+        await lifecycle?.acknowledged();
+        return true;
+      }
+    );
     await expect(
       buildService({ user: botUser } as Client).handleSuspiciousMessage(
         member,
@@ -494,8 +907,17 @@ describe('SecurityActionService (unit)', () => {
       member,
       'Suspected compromised account: high-confidence scam activity detected by Drasil.',
       botUser,
-      detectionEvents[0].id
+      detectionEvents[0].id,
+      expect.objectContaining({
+        beforeSend: expect.any(Function),
+        acknowledged: expect.any(Function),
+      })
     );
+    expect(detectionEvents[0].metadata?.automatic_moderation_response).toMatchObject({
+      action: 'kick',
+      outcome: 'kicked',
+      attention: 'resolved',
+    });
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
     expect(threadManager.createVerificationThread).not.toHaveBeenCalled();
     expect(adminActionService.recordAction).toHaveBeenCalledWith(
@@ -508,6 +930,94 @@ describe('SecurityActionService (unit)', () => {
         new_status: VerificationStatus.KICKED,
       })
     );
+  });
+
+  it.each(['failed', 'unknown', 'kicked'] as const)(
+    'does not replay automatic kick outcome %s',
+    async (outcome) => {
+      const member = buildMember('guild-auto-replay', 'user-auto-replay');
+      const message = buildMessage(member.guild.id, 'channel-1');
+      await serverRepository.upsertByGuildId(member.guild.id, {
+        settings: {
+          message_detection_auto_kick_enabled: true,
+          auto_kick_min_confidence_threshold: 95,
+        },
+      });
+      const result: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.99,
+        reasons: ['Suspicious content'],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: message.content,
+      };
+      userModerationService.kickUser.mockRejectedValueOnce(
+        new KickExecutionError(
+          outcome,
+          outcome === 'kicked' ? 'persistence' : 'kick',
+          new Error('interrupted')
+        )
+      );
+      const service = buildService({ user: { id: 'bot-1' } } as Client);
+      await expect(service.handleSuspiciousMessage(member, result, message)).rejects.toMatchObject({
+        outcome,
+      });
+      const events = await detectionEventsRepository.findByServerAndUser(
+        member.guild.id,
+        member.id
+      );
+      expect(events[0].metadata?.automatic_moderation_response).toMatchObject({
+        action: 'kick',
+        outcome,
+        attention: 'required',
+      });
+      await expect(service.handleSuspiciousMessage(member, result, message)).resolves.toBe(false);
+      expect(userModerationService.kickUser).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('preserves acknowledged kick evidence when two outcome writes fail before recovery', async () => {
+    const member = buildMember('recovered-kick-guild', 'recovered-kick-user');
+    await serverRepository.upsertByGuildId(member.guild.id, {
+      settings: {
+        message_detection_auto_kick_enabled: true,
+        auto_kick_min_confidence_threshold: 95,
+      },
+    });
+    const result: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.99,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    userModerationService.kickUser.mockImplementationOnce(
+      async (_member, _reason, _actor, _id, lifecycle) => {
+        await lifecycle?.beforeSend();
+        await lifecycle?.acknowledged();
+        return true;
+      }
+    );
+    jest
+      .spyOn(detectionEventsRepository, 'patchMetadata')
+      .mockRejectedValueOnce(new Error('first outcome write unavailable'))
+      .mockRejectedValueOnce(new Error('second outcome write unavailable'));
+    const service = buildService({ user: { id: 'bot-1' } } as Client);
+    await expect(service.handleSuspiciousMessage(member, result)).rejects.toMatchObject({
+      outcome: 'kicked',
+      step: 'persistence',
+    });
+    expect(
+      (await detectionEventsRepository.findById(result.detectionEventId!))?.metadata
+    ).toMatchObject({
+      automatic_moderation_response: {
+        action: 'kick',
+        outcome: 'kicked',
+        attention: 'required',
+        failures: [{ step: 'persistence', code: 'persistence_failed' }],
+      },
+    });
+    await expect(service.handleSuspiciousMessage(member, result)).resolves.toBe(false);
+    expect(userModerationService.kickUser).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to restriction when auto-kick confidence is below threshold', async () => {
@@ -638,7 +1148,12 @@ describe('SecurityActionService (unit)', () => {
       const moderation = new UserModerationService(
         serverMemberRepository,
         notificationManager,
-        { getCaseRoleId: jest.fn(), assignCaseRole: jest.fn(), removeCaseRole: jest.fn() },
+        {
+          assertSafeCaseRole: jest.fn(),
+          getCaseRoleId: jest.fn(),
+          assignCaseRole: jest.fn(),
+          removeCaseRole: jest.fn(),
+        },
         verificationEventRepository,
         adminActionService,
         threadManager,
@@ -900,6 +1415,532 @@ describe('SecurityActionService (unit)', () => {
     );
   });
 
+  it('persists detection-owned restriction attention when the case is parked during follow-up', async () => {
+    const member = buildMember('parked-follow-up-guild', 'parked-follow-up-user');
+    const detection: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    notificationManager.upsertSuspiciousUserNotification.mockImplementation(
+      async (_member, _detection, owner) => {
+        await verificationEventRepository.update(owner.id, {
+          attention_state: CaseAttentionState.PARKED,
+          parked_at: new Date(),
+          parked_by: 'moderator',
+        });
+        return null;
+      }
+    );
+    const mirror = jest.fn().mockResolvedValue(undefined);
+    const observed = jest.fn().mockResolvedValue(undefined);
+    const service = new SecurityActionService(
+      notificationManager,
+      detectionEventsRepository,
+      serverMemberRepository,
+      verificationEventRepository,
+      userRepository,
+      serverRepository,
+      adminActionService,
+      threadManager,
+      userModerationService,
+      {} as Client,
+      gptService as any,
+      undefined,
+      {
+        upsertCaseMirror: mirror,
+        upsertObservedAlertMirrorById: observed,
+      } as unknown as IModerationQueueService
+    );
+    await expect(service.handleSuspiciousMessage(member, detection)).resolves.toBe(true);
+    const event = await detectionEventsRepository.findById(detection.detectionEventId!);
+    const owner = await verificationEventRepository.findById(event!.latest_verification_event_id!);
+    expect(owner).toMatchObject({
+      status: VerificationStatus.PENDING,
+      attention_state: CaseAttentionState.PARKED,
+    });
+    expect(event?.metadata).toMatchObject({
+      automatic_moderation_response: {
+        action: 'restrict',
+        outcome: 'case_opened',
+        caseId: null,
+        attention: 'required',
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      },
+    });
+    expect(owner?.metadata).toMatchObject({ automatic_moderation_response: { caseId: null } });
+    expect(observed).toHaveBeenCalledWith(event!.id);
+    expect(userModerationService.kickUser).not.toHaveBeenCalled();
+  });
+
+  it.each(['role', 'thread', 'notification'] as const)(
+    'persists one case-owned response when %s fails',
+    async (step) => {
+      const member = buildMember('failure-guild', 'failure-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      if (step === 'role')
+        userModerationService.applyCaseRole.mockRejectedValue(new Error('private error'));
+      if (step === 'thread')
+        threadManager.createVerificationThread.mockRejectedValue(new Error('private error'));
+      if (step === 'notification')
+        notificationManager.upsertSuspiciousUserNotification.mockResolvedValue(null);
+      const service = buildService();
+      const mirror = jest.fn().mockResolvedValue(undefined);
+      (service as any).moderationQueueService = {
+        upsertCaseMirror: mirror,
+        upsertObservedAlertMirrorById: jest.fn(),
+      };
+      await expect(service.handleSuspiciousMessage(member, detection)).resolves.toBe(true);
+      const event = await detectionEventsRepository.findById(detection.detectionEventId!);
+      const owner = await verificationEventRepository.findActiveByUserAndServer(
+        member.id,
+        member.guild.id
+      );
+      expect(event?.metadata).toMatchObject({
+        automatic_moderation_response: {
+          action: 'restrict',
+          outcome: 'case_opened',
+          attention: 'required',
+          caseId: owner?.id,
+          failures: [expect.objectContaining({ step })],
+        },
+      });
+      expect(JSON.stringify(event?.metadata)).not.toContain('private error');
+      expect(mirror).toHaveBeenCalled();
+      expect(notificationManager.upsertObservedDetectionNotification).not.toHaveBeenCalled();
+      if (step === 'role') expect(threadManager.createVerificationThread).toHaveBeenCalledTimes(1);
+      if (step === 'thread')
+        expect(
+          (await serverMemberRepository.findByServerAndUser(member.guild.id, member.id))
+            ?.case_role_active
+        ).toBe(true);
+    }
+  );
+
+  it.each([false, true])(
+    'retains evidence-thread and subsequent notification failures (first failure write unavailable: %s)',
+    async (writeUnavailable) => {
+      const member = buildMember('combined-failure-guild', 'combined-failure-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      threadManager.createPrivateEvidenceThread.mockRejectedValueOnce(
+        new Error('evidence unavailable')
+      );
+      notificationManager.upsertSuspiciousUserNotification
+        .mockResolvedValueOnce({ id: 'first-notification' } as Message)
+        .mockRejectedValueOnce(new Error('notification unavailable'));
+      if (writeUnavailable) {
+        const patchMetadata = verificationEventRepository.patchMetadata.bind(
+          verificationEventRepository
+        );
+        let failed = false;
+        jest
+          .spyOn(verificationEventRepository, 'patchMetadata')
+          .mockImplementation(async (id, patch, options) => {
+            if (!failed && 'action_failures' in patch) {
+              failed = true;
+              throw new Error('metadata unavailable');
+            }
+            return patchMetadata(id, patch, options);
+          });
+      }
+      const service = buildService();
+      (service as any).moderationQueueService = {
+        upsertCaseMirror: jest.fn(),
+        upsertObservedAlertMirrorById: jest.fn(),
+      };
+      await expect(service.handleSuspiciousMessage(member, detection)).resolves.toBe(true);
+      const owner = await verificationEventRepository.findActiveByUserAndServer(
+        member.id,
+        member.guild.id
+      );
+      expect(getVerificationActionFailures(owner?.metadata)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'private_evidence_thread',
+            message: 'thread_creation_failed',
+          }),
+          expect.objectContaining({
+            action: 'notification',
+            message: 'notification_delivery_failed',
+          }),
+        ])
+      );
+      expect(
+        (await detectionEventsRepository.findById(detection.detectionEventId!))?.metadata
+      ).toMatchObject({
+        automatic_moderation_response: {
+          failures: [
+            { step: 'notification', code: 'notification_delivery_failed' },
+            { step: 'thread', code: 'thread_creation_failed' },
+          ],
+        },
+      });
+    }
+  );
+
+  it.each(['kick', 'persistence', 'combined'] as const)(
+    'preserves case-owned %s failures without inventing notification failure',
+    async (kind) => {
+      const member = buildMember('owned-failure-guild', 'owned-failure-user');
+      const owner = await verificationEventRepository.createFromDetection(
+        null,
+        member.guild.id,
+        member.id,
+        VerificationStatus.PENDING,
+        {
+          action_failures: [
+            { action: 'thread', message: 'thread_creation_failed', at: '2026-11-11T00:00:00Z' },
+          ],
+        }
+      );
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.9,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      const failures: AutomaticModerationResponse['failures'] =
+        kind === 'kick'
+          ? [{ step: 'kick', code: 'kick_rejected' }]
+          : kind === 'persistence'
+            ? [{ step: 'persistence', code: 'persistence_failed' }]
+            : [
+                { step: 'kick', code: 'kick_rejected' },
+                { step: 'persistence', code: 'persistence_failed' },
+                { step: 'notification', code: 'notification_delivery_failed' },
+              ];
+      await buildService().recordAutomaticResponseFailure(member, detection, {
+        action: 'kick',
+        outcome: 'failed',
+        attention: 'required',
+        caseId: owner.id,
+        updatedAt: '2026-11-12T00:00:00Z',
+        failures,
+      });
+      const saved = await verificationEventRepository.findById(owner.id);
+      expect(
+        getVerificationActionFailures(saved?.metadata).map(({ action, message }) => ({
+          action,
+          message,
+        }))
+      ).toEqual([
+        { action: 'thread', message: 'thread_creation_failed' },
+        ...(kind !== 'kick' ? [{ action: 'persistence', message: 'persistence_failed' }] : []),
+        ...(kind === 'combined'
+          ? [{ action: 'notification', message: 'notification_delivery_failed' }]
+          : []),
+      ]);
+      expect(saved?.metadata).toMatchObject({
+        automatic_moderation_response: { action: 'kick', outcome: 'failed', failures },
+      });
+    }
+  );
+
+  it.each(['message', 'join'] as const)(
+    'preserves original %s kick error when failure recording also fails',
+    async (source) => {
+      const member = buildMember('double-failure-guild', 'double-failure-user');
+      await serverRepository.upsertByGuildId(member.guild.id, {
+        settings: {
+          message_detection_auto_kick_enabled: true,
+          join_detection_auto_kick_enabled: true,
+          auto_kick_min_confidence_threshold: 95,
+        },
+      });
+      const service = buildService({ user: { id: 'bot' } } as Client);
+      const original = new KickExecutionError(
+        'unknown',
+        'kick',
+        new Error('PRIVATE_ORIGINAL_SENTINEL')
+      );
+      userModerationService.kickUser.mockRejectedValueOnce(original);
+      jest
+        .spyOn(service, 'recordAutomaticResponseFailure')
+        .mockRejectedValueOnce(new Error('PRIVATE_SECONDARY_SENTINEL'));
+      const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.99,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      try {
+        await expect(
+          source === 'message'
+            ? service.handleSuspiciousMessage(member, detection)
+            : service.handleSuspiciousJoin(member, detection)
+        ).rejects.toBe(original);
+        expect(userModerationService.kickUser).toHaveBeenCalledTimes(1);
+        expect(service.recordAutomaticResponseFailure).toHaveBeenCalledTimes(1);
+        expect(diagnostics).toHaveBeenCalledWith(
+          'Automatic response failure recording failed',
+          expect.objectContaining({
+            code: 'persistence_failed',
+            actual_outcome: 'unknown',
+            detection_event_id: detection.detectionEventId,
+          })
+        );
+        expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('PRIVATE_');
+      } finally {
+        diagnostics.mockRestore();
+      }
+    }
+  );
+
+  it('reuses case-owned attention when the same failing detection is processed repeatedly', async () => {
+    const service = buildService();
+    const member = buildMember('repeat-guild', 'repeat-user');
+    const result: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    notificationManager.upsertSuspiciousUserNotification.mockResolvedValue(null);
+    const caseIds = new Set<string>();
+    const observed = jest.fn();
+    (service as any).moderationQueueService = {
+      upsertCaseMirror: async (owner: VerificationEvent) => {
+        caseIds.add(owner.id);
+      },
+      upsertObservedAlertMirrorById: observed,
+    };
+    await service.handleSuspiciousJoin(member, result);
+    await service.handleSuspiciousJoin(member, result);
+    expect(caseIds.size).toBe(1);
+    expect(
+      await detectionEventsRepository.findByServerAndUser(member.guild.id, member.id)
+    ).toHaveLength(1);
+    expect(observed).toHaveBeenCalledTimes(2);
+    expect(userModerationService.applyCaseRole).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains acknowledgement for identical case failures and requires attention for changed failures', async () => {
+    jest
+      .spyOn(verificationEventRepository as any, 'nextId')
+      .mockReturnValue('11111111-1111-4111-8111-111111111111');
+    const service = buildService();
+    const member = buildMember('ack-guild', 'ack-user');
+    const result: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    (service as any).moderationQueueService = {
+      upsertCaseMirror: jest.fn().mockResolvedValue(undefined),
+      upsertObservedAlertMirrorById: jest.fn().mockResolvedValue(undefined),
+    };
+    notificationManager.upsertSuspiciousUserNotification.mockResolvedValue(null);
+    await service.handleSuspiciousJoin(member, result);
+    const before = (await detectionEventsRepository.findById(result.detectionEventId!))!;
+    const response = (before.metadata as any).automatic_moderation_response;
+    await detectionEventsRepository.patchMetadata(before.id, {
+      automatic_moderation_response: { ...response, attention: 'acknowledged' },
+    });
+    await service.handleSuspiciousJoin(member, result);
+    expect((await detectionEventsRepository.findById(before.id))?.metadata).toMatchObject({
+      automatic_moderation_response: {
+        attention: 'acknowledged',
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      },
+    });
+    threadManager.createVerificationThread.mockRejectedValue(new Error('unavailable'));
+    await service.handleSuspiciousJoin(member, result);
+    expect((await detectionEventsRepository.findById(before.id))?.metadata).toMatchObject({
+      automatic_moderation_response: {
+        attention: 'required',
+        failures: expect.arrayContaining([{ step: 'thread', code: 'thread_creation_failed' }]),
+      },
+    });
+  });
+
+  it.each([
+    ['null', false],
+    ['throw', false],
+    ['null', true],
+    ['throw', true],
+  ] as const)(
+    'saves no-case delivery %s failure and preserves acknowledgement only if unchanged (%s)',
+    async (delivery, alreadyFailed) => {
+      const service = buildService();
+      const member = buildMember('delivery-failure-guild', 'delivery-failure-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      const id = await service.recordSuspiciousMessage(member, detection);
+      const initial: AutomaticModerationResponse = {
+        action: 'kick',
+        outcome: 'kicked',
+        attention: 'required',
+        caseId: null,
+        updatedAt: new Date().toISOString(),
+        failures: [{ step: 'persistence', code: 'persistence_failed' }],
+      };
+      await detectionEventsRepository.patchMetadata(id, {
+        automatic_moderation_response: {
+          ...initial,
+          attention: 'acknowledged',
+          failures: [
+            ...initial.failures,
+            ...(alreadyFailed
+              ? [{ step: 'notification', code: 'notification_delivery_failed' }]
+              : []),
+          ],
+        },
+      });
+      const mirror = jest.fn().mockResolvedValue(undefined);
+      (
+        service as unknown as { moderationQueueService: Partial<IModerationQueueService> }
+      ).moderationQueueService = { upsertObservedAlertMirrorById: mirror };
+      if (delivery === 'null')
+        notificationManager.upsertObservedDetectionNotification.mockResolvedValue(null);
+      else
+        notificationManager.upsertObservedDetectionNotification.mockRejectedValue(
+          new Error('private provider error')
+        );
+      await service.recordAutomaticResponseFailure(member, detection, initial);
+      const saved = readAutomaticModerationResponse(
+        (await detectionEventsRepository.findById(id))?.metadata
+      );
+      expect(saved).toMatchObject({
+        action: 'kick',
+        outcome: 'kicked',
+        attention: alreadyFailed ? 'acknowledged' : 'required',
+        caseId: null,
+        failures: [
+          { step: 'persistence', code: 'persistence_failed' },
+          { step: 'notification', code: 'notification_delivery_failed' },
+        ],
+      });
+      expect(mirror).toHaveBeenLastCalledWith(id);
+      expect(mirror).toHaveBeenCalledTimes(alreadyFailed ? 1 : 2);
+      expect(notificationManager.upsertObservedDetectionNotification).toHaveBeenCalledTimes(1);
+      expect(userModerationService.kickUser).not.toHaveBeenCalled();
+      expect(JSON.stringify(saved)).not.toContain('private provider error');
+    }
+  );
+
+  it.each(['missing', 'null_write', 'throw_write'] as const)(
+    'propagates unavailable durable delivery-failure recording (%s)',
+    async (failure) => {
+      const service = buildService();
+      const member = buildMember('write-failure-guild', 'write-failure-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      const mirror = jest.fn().mockResolvedValue(undefined);
+      (
+        service as unknown as { moderationQueueService: Partial<IModerationQueueService> }
+      ).moderationQueueService = { upsertObservedAlertMirrorById: mirror };
+      notificationManager.upsertObservedDetectionNotification.mockImplementation(async () => {
+        if (failure === 'missing')
+          jest.spyOn(detectionEventsRepository, 'findById').mockResolvedValue(null);
+        else if (failure === 'null_write')
+          jest.spyOn(detectionEventsRepository, 'patchMetadata').mockResolvedValue(null);
+        else
+          jest
+            .spyOn(detectionEventsRepository, 'patchMetadata')
+            .mockRejectedValue(new Error('write unavailable'));
+        return null;
+      });
+      await expect(
+        service.recordAutomaticResponseFailure(member, detection, {
+          action: 'kick',
+          outcome: 'kicked',
+          attention: 'required',
+          caseId: null,
+          updatedAt: new Date().toISOString(),
+          failures: [{ step: 'persistence', code: 'persistence_failed' }],
+        })
+      ).rejects.toThrow(
+        failure === 'missing'
+          ? 'Missing automatic response'
+          : failure === 'null_write'
+            ? 'Could not persist automatic notification failure'
+            : 'write unavailable'
+      );
+      expect(mirror).toHaveBeenCalledTimes(1);
+      expect(notificationManager.upsertObservedDetectionNotification).toHaveBeenCalledTimes(1);
+      expect(userModerationService.kickUser).not.toHaveBeenCalled();
+    }
+  );
+
+  it('propagates an unavailable staff observed failure write without retrying delivery', async () => {
+    const service = buildService();
+    const member = buildMember('observed-failure-guild', 'observed-failure-user');
+    const detection: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.PATTERN_MATCH,
+      triggerContent: '',
+    };
+    notificationManager.upsertObservedDetectionNotification.mockResolvedValue(null);
+    jest.spyOn(detectionEventsRepository, 'patchMetadata').mockResolvedValue(null);
+    await expect(service.observeSuspiciousMessage(member, detection)).rejects.toThrow(
+      'Could not persist automatic response failure'
+    );
+    expect(notificationManager.upsertObservedDetectionNotification).toHaveBeenCalledTimes(1);
+    expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
+  });
+
+  it('persists no-case failure attention before configured delivery and propagates a failed write', async () => {
+    const service = buildService();
+    const member = buildMember('failure-guild', 'failure-user');
+    const detection: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    const mirror = jest.fn().mockRejectedValue(new Error('queue write failed'));
+    (service as any).moderationQueueService = { upsertObservedAlertMirrorById: mirror };
+    await expect(
+      (service as any).recordAutomaticResponseFailure(member, detection, {
+        action: 'kick',
+        outcome: 'unknown',
+        attention: 'required',
+        caseId: null,
+        updatedAt: new Date().toISOString(),
+        failures: [{ step: 'kick', code: 'kick_outcome_unknown' }],
+      })
+    ).rejects.toThrow('queue write failed');
+    expect(
+      (await detectionEventsRepository.findById(detection.detectionEventId!))?.metadata
+    ).toMatchObject({
+      automatic_moderation_response: { action: 'kick', outcome: 'unknown', attention: 'required' },
+    });
+    expect(notificationManager.upsertObservedDetectionNotification).not.toHaveBeenCalled();
+  });
+
   it('continues case notification when automatic restriction fails', async () => {
     const guildId = 'guild-restrict-fails';
     const userId = 'user-restrict-fails';
@@ -935,7 +1976,7 @@ describe('SecurityActionService (unit)', () => {
     const notifiedVerificationEvent =
       notificationManager.upsertSuspiciousUserNotification.mock.calls[0][2];
     expect(getVerificationActionFailures(notifiedVerificationEvent.metadata)).toEqual([
-      expect.objectContaining({ action: 'case_role', message: 'Missing Permissions' }),
+      expect.objectContaining({ action: 'case_role', message: 'role_assignment_failed' }),
     ]);
 
     const serverMember = await serverMemberRepository.findByServerAndUser(guildId, userId);
@@ -943,7 +1984,7 @@ describe('SecurityActionService (unit)', () => {
     expect(serverMember?.verification_status).toBe(VerificationStatus.PENDING);
   });
 
-  it('continues notification when recording a restriction failure fails', async () => {
+  it('continues independent delivery but propagates required attention persistence failure', async () => {
     const guildId = 'guild-restrict-record-fails';
     const userId = 'user-restrict-record-fails';
     const member = buildMember(guildId, userId);
@@ -971,7 +2012,7 @@ describe('SecurityActionService (unit)', () => {
     try {
       await expect(
         buildService().handleSuspiciousMessage(member, detectionResult, message)
-      ).resolves.toBe(true);
+      ).rejects.toThrow('DB down');
     } finally {
       consoleErrorSpy.mockRestore();
     }
@@ -982,7 +2023,7 @@ describe('SecurityActionService (unit)', () => {
     const notifiedVerificationEvent =
       notificationManager.upsertSuspiciousUserNotification.mock.calls[0][2];
     expect(getVerificationActionFailures(notifiedVerificationEvent.metadata)).toEqual([
-      expect.objectContaining({ action: 'case_role', message: 'Missing Permissions' }),
+      expect.objectContaining({ action: 'case_role', message: 'role_assignment_failed' }),
     ]);
   });
 
@@ -1016,9 +2057,203 @@ describe('SecurityActionService (unit)', () => {
     const notifiedVerificationEvent =
       notificationManager.upsertSuspiciousUserNotification.mock.calls[0][2];
     expect(getVerificationActionFailures(notifiedVerificationEvent.metadata)).toEqual([
-      expect.objectContaining({ action: 'thread', message: 'Missing Access' }),
+      expect.objectContaining({ action: 'thread', message: 'thread_creation_failed' }),
     ]);
   });
+
+  it.each([
+    'membership_screening_pending',
+    'parent_channel_access_denied',
+    'parent_channel_access_pending',
+    'parent_channel_access_unverified',
+    'missing_permissions',
+    'missing_access',
+  ])('preserves the safe thread repair code %s through case creation', async (code) => {
+    const member = buildMember('safe-thread-guild', 'safe-thread-user');
+    const detection: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.9,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    threadManager.createVerificationThread.mockRejectedValueOnce(
+      Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), { code })
+    );
+    await buildService().handleSuspiciousMessage(member, detection);
+    const owner = await verificationEventRepository.findActiveByUserAndServer(
+      member.id,
+      member.guild.id
+    );
+    expect(getVerificationActionFailures(owner?.metadata)).toEqual([
+      expect.objectContaining({ action: 'thread', message: code }),
+    ]);
+    const embed = new NotificationPresentationBuilder().createSuspiciousUserEmbed(
+      member,
+      detection,
+      owner!,
+      [],
+      undefined
+    );
+    expect(JSON.stringify(embed.toJSON())).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+    expect(JSON.stringify(owner?.metadata)).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+    threadManager.repairVerificationThread.mockRejectedValueOnce(
+      Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), { code })
+    );
+    const repair = await buildService().repairActiveCase(member);
+    expect(repair.repaired).toBe(false);
+    expect(repair.message).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+    expect(
+      getVerificationActionFailures(
+        (await verificationEventRepository.findById(owner!.id))?.metadata
+      )
+    ).toEqual([expect.objectContaining({ action: 'thread', message: code })]);
+  });
+
+  it.each(['captcha_read', 'notification_link', 'case_reload'] as const)(
+    'records %s as persistence failure while retaining delivered notification and evidence',
+    async (operation) => {
+      const member = buildMember('persistence-guild', 'persistence-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.9,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      const service = buildService();
+      const error = new Error('PRIVATE_PROVIDER_SENTINEL');
+      const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const delivered = { id: 'delivered-notification', channelId: 'delivered-channel' } as Message;
+      notificationManager.upsertSuspiciousUserNotification.mockResolvedValue(delivered);
+      if (operation === 'captcha_read') {
+        Object.assign(service, {
+          captchaChallengeService: { findByCaseId: jest.fn().mockRejectedValue(error) },
+        });
+      } else if (operation === 'notification_link') {
+        const update = verificationEventRepository.update.bind(verificationEventRepository);
+        let failed = false;
+        jest.spyOn(verificationEventRepository, 'update').mockImplementation(async (id, data) => {
+          if (!failed && data.notification_message_id) {
+            failed = true;
+            throw error;
+          }
+          return update(id, data);
+        });
+      } else {
+        const find = verificationEventRepository.findById.bind(verificationEventRepository);
+        let failed = false;
+        jest.spyOn(verificationEventRepository, 'findById').mockImplementation(async (id) => {
+          if (
+            !failed &&
+            notificationManager.upsertSuspiciousUserNotification.mock.calls.length > 0
+          ) {
+            failed = true;
+            throw error;
+          }
+          return find(id);
+        });
+      }
+      try {
+        await expect(service.handleSuspiciousMessage(member, detection)).resolves.toBe(true);
+        const owner = await verificationEventRepository.findActiveByUserAndServer(
+          member.id,
+          member.guild.id
+        );
+        expect(owner?.notification_message_id).toBe(
+          operation === 'captcha_read' ? null : delivered.id
+        );
+        expect(getVerificationActionFailures(owner?.metadata)).toEqual([
+          expect.objectContaining({ action: 'persistence', message: 'persistence_failed' }),
+        ]);
+        expect(
+          (await detectionEventsRepository.findById(detection.detectionEventId!))?.metadata
+        ).toMatchObject({
+          automatic_moderation_response: {
+            action: 'restrict',
+            outcome: 'case_opened',
+            failures: [{ step: 'persistence', code: 'persistence_failed' }],
+          },
+        });
+        expect(threadManager.createPrivateEvidenceThread).toHaveBeenCalledTimes(
+          operation === 'captcha_read' ? 0 : 1
+        );
+        if (operation !== 'captcha_read') {
+          const secondEvent = notificationManager.upsertSuspiciousUserNotification.mock.calls[1][2];
+          expect(secondEvent.notification_message_id).toBe(delivered.id);
+        } else {
+          expect(notificationManager.upsertSuspiciousUserNotification).not.toHaveBeenCalled();
+        }
+        expect(JSON.stringify(owner?.metadata)).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+        expect(diagnostics).toHaveBeenCalledWith(
+          'Case action failed',
+          expect.objectContaining({
+            operation,
+            code: 'persistence_failed',
+            case_id: owner?.id,
+          })
+        );
+        expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+      } finally {
+        diagnostics.mockRestore();
+      }
+    }
+  );
+
+  it.each(['repair', 'reload'] as const)(
+    'retains safe diagnostics when delayed repair fails during %s',
+    async (stage) => {
+      jest.useFakeTimers();
+      const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const member = buildMember('delayed-diagnostics-guild', 'delayed-diagnostics-user');
+        const detection: DetectionResult = {
+          label: 'SUSPICIOUS',
+          confidence: 0.9,
+          reasons: [],
+          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+          triggerContent: '',
+        };
+        threadManager.createVerificationThread.mockRejectedValueOnce(new Error('Initial failure'));
+        await buildService().handleSuspiciousMessage(member, detection);
+        const error = Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), {
+          code: 'membership_screening_pending',
+        });
+        if (stage === 'repair') {
+          threadManager.repairVerificationThread.mockRejectedValueOnce(error);
+        } else {
+          threadManager.repairVerificationThread.mockImplementationOnce(async () => {
+            jest.spyOn(verificationEventRepository, 'findById').mockRejectedValueOnce(error);
+            return {
+              threadId: 'thread-1',
+              threadCreated: false,
+              userAdded: true,
+              promptSent: true,
+              promptAlreadyPresent: false,
+            };
+          });
+        }
+        await jest.advanceTimersByTimeAsync(70_000);
+        const owner = await verificationEventRepository.findActiveByUserAndServer(
+          member.id,
+          member.guild.id
+        );
+        expect(getVerificationActionFailures(owner?.metadata)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining(
+              stage === 'repair'
+                ? { action: 'thread', message: 'membership_screening_pending' }
+                : { action: 'persistence', message: 'persistence_failed' }
+            ),
+          ])
+        );
+        expect(JSON.stringify(owner?.metadata)).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+      } finally {
+        diagnostics.mockRestore();
+        jest.useRealTimers();
+      }
+    }
+  );
 
   it('retries failed verification thread setup after Discord propagation delay', async () => {
     jest.useFakeTimers();
@@ -1258,6 +2493,86 @@ describe('SecurityActionService (unit)', () => {
     expect(notificationManager.upsertSuspiciousUserNotification).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ['restrict', false],
+    ['kick', false],
+    ['restrict', true],
+    ['kick', true],
+  ] as const)(
+    'refreshes repaired %s response steps without inventing enforcement success (snapshot only %s)',
+    async (action, snapshotOnly) => {
+      const member = buildMember('guild-repair-response', 'user-repair-response');
+      const detection = await detectionEventsRepository.create({
+        server_id: member.guild.id,
+        user_id: member.id,
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.9,
+      });
+      Object.defineProperty(verificationEventRepository, 'nextId', {
+        value: () => 'c339ae64-cf09-4874-8174-0b0fb2490f4b',
+      });
+      const owner = await verificationEventRepository.createFromDetection(
+        detection.id,
+        member.guild.id,
+        member.id,
+        VerificationStatus.PENDING
+      );
+      const response = {
+        action,
+        outcome: action === 'kick' ? 'unknown' : 'case_opened',
+        caseId: owner.id,
+        attention: 'required',
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [
+          { step: 'role', code: 'role_assignment_failed' },
+          { step: 'thread', code: 'thread_creation_failed' },
+          { step: 'notification', code: 'notification_delivery_failed' },
+          ...(action === 'kick' ? [{ step: 'kick', code: 'kick_outcome_unknown' }] : []),
+        ],
+      };
+      await verificationEventRepository.patchMetadata(owner.id, {
+        automatic_moderation_response: snapshotOnly
+          ? {
+              ...response,
+              failures: response.failures.filter((failure) => failure.step !== 'thread'),
+            }
+          : response,
+        action_failures: snapshotOnly
+          ? []
+          : [
+              { action: 'case_role', message: 'role_assignment_failed', at: response.updatedAt },
+              { action: 'thread', message: 'thread_creation_failed', at: response.updatedAt },
+              {
+                action: 'notification',
+                message: 'notification_delivery_failed',
+                at: response.updatedAt,
+              },
+            ],
+      });
+      await detectionEventsRepository.patchMetadata(detection.id, {
+        automatic_moderation_response: {
+          ...response,
+          failures: [...response.failures, { step: 'persistence', code: 'persistence_failed' }],
+        },
+      });
+      await buildService().repairActiveCase(member);
+      const saved = await verificationEventRepository.findById(owner.id);
+      const remaining = [
+        { step: 'notification', code: 'notification_delivery_failed' },
+        ...(action === 'kick' ? [{ step: 'kick', code: 'kick_outcome_unknown' }] : []),
+      ];
+      expect(saved?.metadata).toMatchObject({
+        automatic_moderation_response: { outcome: response.outcome, failures: remaining },
+      });
+      expect((await detectionEventsRepository.findById(detection.id))?.metadata).toMatchObject({
+        automatic_moderation_response: {
+          outcome: response.outcome,
+          failures: [...remaining, { step: 'persistence', code: 'persistence_failed' }],
+        },
+      });
+    }
+  );
+
   it('repairs an active restricted case thread and reapplies the case role', async () => {
     const guildId = 'guild-case-repair';
     const userId = 'user-case-repair';
@@ -1320,7 +2635,7 @@ describe('SecurityActionService (unit)', () => {
       [VERIFICATION_ACTION_FAILURES_METADATA_KEY]: [
         {
           action: 'thread',
-          message: 'Failed to add flagged user to verification thread: Missing Access',
+          message: 'thread_creation_failed',
           at: new Date().toISOString(),
         },
         {
@@ -1340,16 +2655,12 @@ describe('SecurityActionService (unit)', () => {
     const updatedCase = await verificationEventRepository.findById(verificationEvent.id);
 
     expect(result.repaired).toBe(true);
-    expect(getVerificationActionFailures(updatedCase?.metadata)).toEqual([
-      expect.objectContaining({ action: 'case_role', message: 'Role hierarchy issue' }),
-    ]);
+    expect(getVerificationActionFailures(updatedCase?.metadata)).toEqual([]);
     expect(notificationManager.updateNotificationButtons).toHaveBeenCalledWith(
       expect.objectContaining({
         id: verificationEvent.id,
         metadata: expect.objectContaining({
-          [VERIFICATION_ACTION_FAILURES_METADATA_KEY]: [
-            expect.objectContaining({ action: 'case_role' }),
-          ],
+          [VERIFICATION_ACTION_FAILURES_METADATA_KEY]: [],
         }),
       }),
       VerificationStatus.PENDING
@@ -1430,11 +2741,11 @@ describe('SecurityActionService (unit)', () => {
         threadId: null,
         userAdded: false,
       });
-      expect(result.message).toContain('Missing Access');
+      expect(result.message).toContain('Check case warnings');
       expect(getVerificationActionFailures(updatedCase?.metadata)).toEqual([
         expect.objectContaining({
           action: 'thread',
-          message: 'Failed to add flagged user to verification thread: Missing Access',
+          message: 'thread_creation_failed',
         }),
       ]);
       expect(notificationManager.updateNotificationButtons).toHaveBeenCalledWith(
@@ -2067,7 +3378,11 @@ describe('SecurityActionService (unit)', () => {
       member,
       'Suspected compromised account: high-confidence scam activity detected by Drasil.',
       botUser,
-      detectionEvents[0].id
+      detectionEvents[0].id,
+      expect.objectContaining({
+        beforeSend: expect.any(Function),
+        acknowledged: expect.any(Function),
+      })
     );
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
     expect(threadManager.createVerificationThread).not.toHaveBeenCalled();
@@ -3863,6 +5178,43 @@ describe('SecurityActionService (unit)', () => {
     expect(notificationManager.markObservedDetectionActionTaken).not.toHaveBeenCalled();
   });
 
+  it.each(['kicked', 'unknown'] as const)(
+    'does not release an acknowledged kick claim (%s)',
+    async (outcome) => {
+      const member = buildMember('guild-claim', 'user-claim');
+      await serverRepository.getOrCreateServer(member.guild.id);
+      await serverRepository.updateSettings(member.guild.id, {
+        observed_action_kick_enabled: true,
+      });
+      const detection = await detectionEventsRepository.create({
+        server_id: member.guild.id,
+        user_id: member.id,
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.99,
+        reasons: ['Suspicious content'],
+        detected_at: new Date(),
+      });
+      userModerationService.kickUser.mockRejectedValueOnce(
+        new KickExecutionError(
+          outcome,
+          outcome === 'kicked' ? 'persistence' : 'kick',
+          new Error('interrupted')
+        )
+      );
+      const service = buildService();
+      await expect(
+        service.kickObservedDetection(member, detection.id, { id: 'moderator' } as User, 'reason')
+      ).rejects.toMatchObject({ outcome });
+      expect(
+        (await detectionEventsRepository.findById(detection.id))?.metadata?.observed_action
+      ).toBe(AdminActionType.KICK);
+      await expect(
+        service.kickObservedDetection(member, detection.id, { id: 'moderator' } as User, 'reason')
+      ).resolves.toBe(false);
+      expect(userModerationService.kickUser).toHaveBeenCalledTimes(1);
+    }
+  );
+
   it('rejects observed kick before claiming metadata when policy is disabled', async () => {
     const guildId = 'guild-observed-kick-disabled';
     const userId = 'user-observed-kick-disabled';
@@ -4005,7 +5357,7 @@ describe('SecurityActionService (unit)', () => {
       userId,
       VerificationStatus.PENDING
     );
-    threadManager.createVerificationThread.mockResolvedValueOnce(null);
+    threadManager.createVerificationThread.mockResolvedValue(null);
 
     try {
       await expect(
@@ -4023,7 +5375,7 @@ describe('SecurityActionService (unit)', () => {
     expect(getVerificationActionFailures(updatedCase?.metadata)).toEqual([
       expect.objectContaining({
         action: 'thread',
-        message: 'Failed to create verification thread for test-user#0001',
+        message: 'thread_creation_failed',
       }),
     ]);
     expect(updatedDetection?.metadata).toMatchObject({

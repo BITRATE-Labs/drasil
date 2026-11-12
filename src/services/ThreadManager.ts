@@ -45,6 +45,7 @@ import {
   REPORT_INTAKE_REJECT_CUSTOM_ID_PREFIX,
 } from './ReportIntakeService';
 import { getDiscordErrorCode } from '../utils/discordErrors';
+import { getVerificationActionFailureCode } from '../utils/verificationActionFailures';
 import { parseAdminActionCustomId } from '../utils/adminActionCustomIds';
 
 export const VERIFICATION_THREAD_TYPE_METADATA_KEY = 'thread_type';
@@ -651,7 +652,9 @@ export class ThreadManager implements IThreadManager {
 
   private buildThreadSetupError(stage: string, error: unknown): Error {
     const message = error instanceof Error && error.message ? error.message : String(error);
-    return new Error(`Failed to ${stage}: ${message || 'Unknown error'}`);
+    return Object.assign(new Error(`Failed to ${stage}: ${message || 'Unknown error'}`), {
+      code: getVerificationActionFailureCode('thread', error),
+    });
   }
 
   private async wait(delayMs: number): Promise<void> {
@@ -681,10 +684,13 @@ export class ThreadManager implements IThreadManager {
 
   private buildPendingMemberThreadAddError(member: GuildMember, error?: unknown): Error {
     const originalError = error ? ` Original Discord error: ${this.getErrorMessage(error)}` : '';
-    return new Error(
-      `Discord denied adding ${member.id} to the private verification thread because the user is still pending Discord membership screening/onboarding for this server. ` +
-        'Pending members cannot be added to private threads even when the case role and parent-channel permissions look correct. ' +
-        `Have the user complete server screening/onboarding, then run case repair; until then, use moderator-only case actions.${originalError}`
+    return Object.assign(
+      new Error(
+        `Discord denied adding ${member.id} to the private verification thread because the user is still pending Discord membership screening/onboarding for this server. ` +
+          'Pending members cannot be added to private threads even when the case role and parent-channel permissions look correct. ' +
+          `Have the user complete server screening/onboarding, then run case repair; until then, use moderator-only case actions.${originalError}`
+      ),
+      { code: 'membership_screening_pending' }
     );
   }
 
@@ -735,19 +741,28 @@ export class ThreadManager implements IThreadManager {
     const parentId = parentChannel?.id ?? this.getThreadParentId(thread) ?? 'unknown';
     const originalError = this.getErrorMessage(error);
     if (canViewParentChannel === false) {
-      return new Error(
-        `Discord denied adding ${member.id} to the private verification thread because the user cannot currently view parent channel ${parentId}. Private thread membership requires parent View Channel; check case-role/channel overwrites. Original Discord error: ${originalError}`
+      return Object.assign(
+        new Error(
+          `Discord denied adding ${member.id} to the private verification thread because the user cannot currently view parent channel ${parentId}. Private thread membership requires parent View Channel; check case-role/channel overwrites. Original Discord error: ${originalError}`
+        ),
+        { code: 'parent_channel_access_denied' }
       );
     }
 
     if (canViewParentChannel === null) {
-      return new Error(
-        `Discord denied adding ${member.id} to the private verification thread, and parent-channel access could not be verified for parent channel ${parentId}. Check both bot and target-user View Channel access on the parent channel before assuming Discord propagation delay. Original Discord error: ${originalError}`
+      return Object.assign(
+        new Error(
+          `Discord denied adding ${member.id} to the private verification thread, and parent-channel access could not be verified for parent channel ${parentId}. Check both bot and target-user View Channel access on the parent channel before assuming Discord propagation delay. Original Discord error: ${originalError}`
+        ),
+        { code: 'parent_channel_access_unverified' }
       );
     }
 
-    return new Error(
-      `Discord denied adding ${member.id} to the private verification thread after role and channel access refreshes. This usually means Discord has not propagated the user's parent-channel access yet, not that the bot lost access. Run case repair after propagation. Original Discord error: ${originalError}`
+    return Object.assign(
+      new Error(
+        `Discord denied adding ${member.id} to the private verification thread after role and channel access refreshes. This usually means Discord has not propagated the user's parent-channel access yet, not that the bot lost access. Run case repair after propagation. Original Discord error: ${originalError}`
+      ),
+      { code: 'parent_channel_access_pending' }
     );
   }
 
