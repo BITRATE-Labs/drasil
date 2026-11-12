@@ -233,6 +233,30 @@ describe('ReportIntakeService', () => {
     );
   });
 
+  it('does not restore a snapshot taken before a concurrent staff handoff', async () => {
+    const f = await preparePrompt();
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { reporter_presentation: { nextDueAt: null } },
+    });
+    const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    await f.reportIntakeRepository.update(f.intake.id, {
+      status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      metadata: { ...(before.metadata as object), handoff_pending: true },
+    });
+    const result = await f.service.closeIntakeForThread({
+      threadId: 'thread-1',
+      closedById: 'reporter-1',
+    });
+    const closed = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    expect(await f.service.restoreFailedThreadClose(before, closed, result.closeVersion)).toBe(
+      false
+    );
+    expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toHaveProperty(
+      'handoff_pending',
+      true
+    );
+  });
+
   async function stagedSetup() {
     const setup = await preparePrompt();
     jest.mocked(setup.configService.getServerConfig).mockResolvedValue({

@@ -1101,7 +1101,7 @@ export class ReportIntakeService implements IReportIntakeService {
       before.confirmed_target_user_id !== closed.confirmed_target_user_id
     )
       return false;
-    if (!closeVersion || closeVersion !== reportCloseVersion(closed)) return false;
+    if (!closeVersion || closeVersion !== reportCloseVersion(before, closed)) return false;
     // Only undo our exact close snapshot; never overwrite a concurrent report action.
     const restored = await this.reportIntakeRepository.updateIfCurrent(closed, {
       status: before.status,
@@ -1262,7 +1262,7 @@ export class ReportIntakeService implements IReportIntakeService {
         return {
           closed: true,
           ...(toRecord(updated.metadata).reporter_presentation
-            ? { closeVersion: reportCloseVersion(updated) }
+            ? { closeVersion: reportCloseVersion(intake, updated) }
             : {}),
           message: 'The thread is closed. Moderator review remains open.',
           shouldArchiveThread: true,
@@ -1277,7 +1277,7 @@ export class ReportIntakeService implements IReportIntakeService {
         return {
           closed: true,
           ...(toRecord(updated.metadata).reporter_presentation
-            ? { closeVersion: reportCloseVersion(updated) }
+            ? { closeVersion: reportCloseVersion(intake, updated) }
             : {}),
           message: REPORT_INTAKE_CANCELLED_MESSAGE,
           shouldArchiveThread: true,
@@ -1309,7 +1309,7 @@ export class ReportIntakeService implements IReportIntakeService {
         return {
           closed: true,
           ...(toRecord(updated.metadata).reporter_presentation
-            ? { closeVersion: reportCloseVersion(updated) }
+            ? { closeVersion: reportCloseVersion(intake, updated) }
             : {}),
           message,
           shouldArchiveThread: true,
@@ -2044,17 +2044,19 @@ function resolveReportHandoff(
   };
 }
 
-function reportCloseVersion(intake: ReportIntake): string {
+function reportCloseVersion(before: ReportIntake, closed: ReportIntake): string {
   return createHash('sha256')
     .update(
-      JSON.stringify([
-        intake.id,
-        intake.status,
-        intake.closed_at,
-        intake.evidence_revision,
-        intake.confirmed_target_user_id,
-        intake.metadata,
-      ])
+      JSON.stringify(
+        [before, closed].map((intake) => [
+          intake.id,
+          intake.status,
+          intake.closed_at,
+          intake.evidence_revision,
+          intake.confirmed_target_user_id,
+          intake.metadata,
+        ])
+      )
     )
     .digest('hex');
 }

@@ -274,8 +274,14 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       reporter = readReporterPresentation(intake) ?? reporter;
       const title = (payload.embeds?.[0] as EmbedBuilder | undefined)?.data.title;
       if (!title) throw new Error('Report card title missing');
+      const first =
+        state.kind === 'confirm' &&
+        !previousId &&
+        !reporter.pendingSend &&
+        !reporter.confirmationMentionReserved;
       const reserved: ReporterPresentation = {
         ...reporter,
+        ...(first ? { confirmationMentionReserved: true } : {}),
         pendingSend: {
           slot,
           revision: intake.evidence_revision,
@@ -288,7 +294,6 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       });
       if (!saved) throw new Error('Report reservation changed');
       await this.current(claim);
-      const first = state.kind === 'confirm' && !previousId && !reporter.pendingSend;
       message = await channel.send({
         ...payload,
         components: state.kind === 'confirm' ? [] : payload.components,

@@ -3,6 +3,7 @@ import type { ReportIntake } from '../repositories/types';
 
 export const reporterPresentationSchema = z.object({
   openingMessageId: z.string().optional(),
+  confirmationMentionReserved: z.boolean().optional(),
   followupMessageId: z.string().optional(),
   nextDueAt: z.string().nullable().default(null),
   pendingSend: z

@@ -334,3 +334,23 @@ it('recovers an accepted confirmation reservation even when newer evidence chang
     f.channel.send.mock.calls.filter(([payload]) => payload.allowedMentions?.users?.length)
   ).toHaveLength(1);
 });
+
+it('does not ping again when an uncertain first confirmation was deleted before recovery', async () => {
+  const f = await fixture();
+  await suggest(f);
+  const update = f.repository.updateIfCurrent.bind(f.repository);
+  let fail = true;
+  jest.spyOn(f.repository, 'updateIfCurrent').mockImplementation(async (intake, data) => {
+    if (fail && JSON.stringify(data.metadata).includes('followupMessageId":"1')) {
+      fail = false;
+      throw new Error('ID save failed');
+    }
+    return update(intake, data);
+  });
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('ID save failed');
+  f.messages.clear();
+  await f.service.reconcile(f.intake.id);
+  expect(
+    f.channel.send.mock.calls.filter(([payload]) => payload.allowedMentions?.users?.length)
+  ).toHaveLength(1);
+});
