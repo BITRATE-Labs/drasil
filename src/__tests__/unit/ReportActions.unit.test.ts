@@ -219,7 +219,8 @@ it.each([true, false])(
     await expect(
       f.actions.execute(context, { kind: 'close_report_intake', intakeId: 'intake' })
     ).rejects.toThrow("Couldn't close");
-    if (verified) expect(f.intakes.restoreFailedThreadClose).toHaveBeenCalledWith(before, current);
+    if (verified)
+      expect(f.intakes.restoreFailedThreadClose).toHaveBeenCalledWith(before, current, undefined);
     else expect(f.intakes.restoreFailedThreadClose).not.toHaveBeenCalled();
   }
 );

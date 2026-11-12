@@ -178,6 +178,33 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     const token = randomBytes(5).toString('hex');
     let state = this.project(intake, token);
     let reporter = readReporterPresentation(intake) ?? { nextDueAt: new Date().toISOString() };
+    // Account for an uncertain send before choosing the card for the latest state.
+    if (reporter.pendingSend) {
+      const reservation = reporter.pendingSend;
+      const recovered = await findAuthoredReportMessage(
+        channel,
+        this.client.user.id,
+        (candidate) =>
+          candidate.channelId === intake.thread_id &&
+          candidate.createdTimestamp >= new Date(reservation.reservedAt).getTime() &&
+          candidate.embeds.some(
+            (embed) => embed.author?.name === 'Your report' && embed.title === reservation.title
+          ),
+        new Date(reservation.reservedAt)
+      );
+      intake = await this.current(claim);
+      const resolved = { ...reporter, ...(recovered ? { [reservation.slot]: recovered.id } : {}) };
+      delete resolved.pendingSend;
+      if (
+        !(await this.repository.updateIfCurrent(intake, {
+          metadata: { ...reportRoot(intake), reporter_presentation: resolved },
+        }))
+      )
+        throw new Error('Report reservation changed');
+      intake = await this.current(claim);
+      reporter = resolved;
+      state = this.project(intake, token);
+    }
     const slot: 'openingMessageId' | 'followupMessageId' =
       reporter.followupMessageId || !['start', 'checking'].includes(state.kind)
         ? 'followupMessageId'
@@ -293,6 +320,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       metadata.last_confirmation_prompt_message_id = message.id;
       metadata.last_confirmation_prompt_token = token;
       metadata.last_confirmation_prompt_candidate_ids = [target];
+      metadata.confirmation_prompt_candidate_ids_by_token = { [token]: [target] };
       metadata.last_confirmation_prompt_revision = intake.evidence_revision;
       metadata.confirmation_prompt_message_ids = [message.id];
     }

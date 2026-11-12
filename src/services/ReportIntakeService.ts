@@ -63,6 +63,7 @@ export const REPORT_INTAKE_CONFIRM_CUSTOM_ID_PREFIX = 'report_intake_confirm';
 export const REPORT_INTAKE_REJECT_CUSTOM_ID_PREFIX = 'report_intake_reject';
 
 export interface ReportIntakeCloseResult {
+  closeVersion?: string;
   closed: boolean;
   message: string;
   shouldArchiveThread?: boolean;
@@ -98,7 +99,11 @@ export interface OpenReportIntakeInput {
 
 export interface IReportIntakeService {
   refreshPresentation?(intakeId: string): Promise<void>;
-  restoreFailedThreadClose?(before: ReportIntake, closed: ReportIntake): Promise<boolean>;
+  restoreFailedThreadClose?(
+    before: ReportIntake,
+    closed: ReportIntake,
+    closeVersion?: string
+  ): Promise<boolean>;
   publishSavedConfirmation(
     intakeId: string,
     message: Message,
@@ -1085,13 +1090,18 @@ export class ReportIntakeService implements IReportIntakeService {
     await this.clearReportThreadAttention(input.intakeId);
   }
 
-  async restoreFailedThreadClose(before: ReportIntake, closed: ReportIntake): Promise<boolean> {
+  async restoreFailedThreadClose(
+    before: ReportIntake,
+    closed: ReportIntake,
+    closeVersion?: string
+  ): Promise<boolean> {
     if (
       before.id !== closed.id ||
       before.evidence_revision !== closed.evidence_revision ||
       before.confirmed_target_user_id !== closed.confirmed_target_user_id
     )
       return false;
+    if (!closeVersion || closeVersion !== reportCloseVersion(closed)) return false;
     // Only undo our exact close snapshot; never overwrite a concurrent report action.
     const restored = await this.reportIntakeRepository.updateIfCurrent(closed, {
       status: before.status,
@@ -1251,20 +1261,24 @@ export class ReportIntakeService implements IReportIntakeService {
         if (!updated) continue;
         return {
           closed: true,
+          ...(toRecord(updated.metadata).reporter_presentation
+            ? { closeVersion: reportCloseVersion(updated) }
+            : {}),
           message: 'The thread is closed. Moderator review remains open.',
           shouldArchiveThread: true,
         };
       }
       if (this.isOpenIntakeStatus(intake.status) && !intake.confirmed_target_user_id) {
-        if (
-          !(await this.closeIntake(intake, {
-            closedById: input.closedById,
-            closedByStaff: !closedByReporter && input.closedByStaff === true,
-          }))
-        )
-          continue;
+        const updated = await this.closeIntake(intake, {
+          closedById: input.closedById,
+          closedByStaff: !closedByReporter && input.closedByStaff === true,
+        });
+        if (!updated) continue;
         return {
           closed: true,
+          ...(toRecord(updated.metadata).reporter_presentation
+            ? { closeVersion: reportCloseVersion(updated) }
+            : {}),
           message: REPORT_INTAKE_CANCELLED_MESSAGE,
           shouldArchiveThread: true,
         };
@@ -1280,21 +1294,26 @@ export class ReportIntakeService implements IReportIntakeService {
             : this.isReviewedIntakeStatus(intake.status)
               ? 'reviewed_thread_close'
               : 'selected_thread_close';
-        if (
-          !(await this.recordThreadClose(intake, {
-            closedById: input.closedById,
-            closedByStaff: !closedByReporter && input.closedByStaff === true,
-            reason,
-          }))
-        )
-          continue;
+        const updated = await this.recordThreadClose(intake, {
+          closedById: input.closedById,
+          closedByStaff: !closedByReporter && input.closedByStaff === true,
+          reason,
+        });
+        if (!updated) continue;
         const message =
           intake.status === ReportIntakeStatus.SUBMITTED
             ? REPORT_INTAKE_SUBMITTED_CLOSEOUT_MESSAGE
             : this.isReviewedIntakeStatus(intake.status)
               ? REPORT_INTAKE_REVIEWED_CLOSEOUT_MESSAGE
               : 'The selected person remains recorded for moderator review.';
-        return { closed: true, message, shouldArchiveThread: true };
+        return {
+          closed: true,
+          ...(toRecord(updated.metadata).reporter_presentation
+            ? { closeVersion: reportCloseVersion(updated) }
+            : {}),
+          message,
+          shouldArchiveThread: true,
+        };
       }
       return {
         closed: true,
@@ -1828,7 +1847,7 @@ export class ReportIntakeService implements IReportIntakeService {
       closedByStaff?: boolean;
       metadata?: Record<string, unknown>;
     }
-  ): Promise<boolean> {
+  ): Promise<ReportIntake | null> {
     const updated = await this.reportIntakeRepository.updateIfCurrent(intake, {
       status: ReportIntakeStatus.CLOSED_BY_REPORTER,
       closedAt: new Date(),
@@ -1840,10 +1859,10 @@ export class ReportIntakeService implements IReportIntakeService {
         ...(input.closedByStaff ? { closed_by_staff: true } : {}),
       },
     });
-    if (!updated) return false;
+    if (!updated) return null;
     await this.retireConfirmationPrompts(updated, getReportConfirmationMessageIds(updated));
     await this.clearReportThreadAttention(intake.id);
-    return true;
+    return updated;
   }
 
   private async recordThreadClose(
@@ -1853,7 +1872,7 @@ export class ReportIntakeService implements IReportIntakeService {
       closedByStaff?: boolean;
       reason: string;
     }
-  ): Promise<boolean> {
+  ): Promise<ReportIntake | null> {
     const now = new Date();
     const updated = await this.reportIntakeRepository.updateIfCurrent(intake, {
       closedAt: intake.closed_at ?? now,
@@ -1865,10 +1884,10 @@ export class ReportIntakeService implements IReportIntakeService {
         ...(input.closedByStaff ? { thread_closed_by_staff: true } : {}),
       },
     });
-    if (!updated) return false;
+    if (!updated) return null;
     await this.retireConfirmationPrompts(updated, getReportConfirmationMessageIds(updated));
     await this.clearReportThreadAttention(intake.id);
-    return true;
+    return updated;
   }
 
   private async clearReportThreadAttention(intakeId: string): Promise<void> {
@@ -2023,4 +2042,19 @@ function resolveReportHandoff(
         : {}),
     },
   };
+}
+
+function reportCloseVersion(intake: ReportIntake): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        intake.id,
+        intake.status,
+        intake.closed_at,
+        intake.evidence_revision,
+        intake.confirmed_target_user_id,
+        intake.metadata,
+      ])
+    )
+    .digest('hex');
 }

@@ -1,3 +1,6 @@
+import type { IThreadManager } from '../../services/ThreadManager';
+import { mock } from 'jest-mock-extended';
+import { ReportIntakeService } from '../../services/ReportIntakeService';
 import { Client, Collection, EmbedBuilder, type MessageCreateOptions } from 'discord.js';
 import { ReportIntakePresentationService } from '../../services/ReportIntakePresentationService';
 import {
@@ -70,6 +73,44 @@ async function fixture() {
   const service = new ReportIntakePresentationService(repository, client);
   return { repository, intake, channel, messages, service, client };
 }
+async function suggest(f: Awaited<ReturnType<typeof fixture>>): Promise<void> {
+  const candidate = {
+    candidateId: 'candidate',
+    discordUserId: 'target',
+    serverId: 'guild',
+    username: 'someone',
+    globalName: 'Someone',
+    nickname: null,
+    displayName: 'Someone',
+    avatarUrl: null,
+    matchedFields: ['globalName'],
+    sourceRefs: [],
+    subjectMatches: [{ subjectId: 'subject', sourceRefs: [], matchedFields: ['globalName'] }],
+  };
+  const current = (await f.repository.findById(f.intake.id))!;
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION,
+    analysisDueAt: new Date(Date.now() + 600000),
+    metadata: {
+      ...(current.metadata as object),
+      analysis: {
+        schemaVersion: 1,
+        sources: {},
+        requestReservations: [],
+        outcome: {
+          kind: 'confirm',
+          candidate,
+          coverage: { kind: 'not_required', reason: 'validated_anchor' },
+          includedEvidenceIds: [],
+          excludedEvidenceIds: [],
+        },
+        coverage: null,
+        handoff: { state: 'none' },
+      },
+    },
+  });
+}
+
 describe('durable reporter presentation', () => {
   it('edits the opening card as evidence arrives instead of adding acknowledgments', async () => {
     const f = await fixture();
@@ -111,41 +152,7 @@ describe('durable reporter presentation', () => {
   it('reuses the confirmation for a new revision and changes its authorization token', async () => {
     const f = await fixture();
     await f.service.reconcile(f.intake.id);
-    const candidate = {
-      candidateId: 'candidate',
-      discordUserId: 'target',
-      serverId: 'guild',
-      username: 'someone',
-      globalName: 'Someone',
-      nickname: null,
-      displayName: 'Someone',
-      avatarUrl: null,
-      matchedFields: ['globalName'],
-      sourceRefs: [],
-      subjectMatches: [{ subjectId: 'subject', sourceRefs: [], matchedFields: ['globalName'] }],
-    };
-    const current = (await f.repository.findById(f.intake.id))!;
-    await f.repository.update(f.intake.id, {
-      status: ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION,
-      analysisDueAt: new Date(Date.now() + 600000),
-      metadata: {
-        ...(current.metadata as object),
-        analysis: {
-          schemaVersion: 1,
-          sources: {},
-          requestReservations: [],
-          outcome: {
-            kind: 'confirm',
-            candidate,
-            coverage: { kind: 'not_required', reason: 'validated_anchor' },
-            includedEvidenceIds: [],
-            excludedEvidenceIds: [],
-          },
-          coverage: null,
-          handoff: { state: 'none' },
-        },
-      },
-    });
+    await suggest(f);
     await f.service.reconcile(f.intake.id);
     const first = JSON.stringify(f.messages.get('2')?.components);
     await f.service.reconcile(f.intake.id);
@@ -155,6 +162,31 @@ describe('durable reporter presentation', () => {
       parse: [],
       users: ['reporter'],
     });
+    const saved = (await f.repository.findById(f.intake.id))!;
+    const metadata = saved.metadata as Record<string, unknown>;
+    const intakes = new ReportIntakeService(
+      f.repository,
+      mock(),
+      mock(),
+      mock(),
+      mock(),
+      mock(),
+      mock<IThreadManager>({
+        retireReportConfirmationPrompts: jest.fn().mockResolvedValue(undefined),
+      })
+    );
+    expect(
+      await intakes.rejectCandidates({
+        intakeId: f.intake.id,
+        rejectedById: 'reporter',
+        promptMessageId: '2',
+        promptToken: String(metadata.last_confirmation_prompt_token),
+        expectedEvidenceRevision: saved.evidence_revision,
+      })
+    ).toMatchObject({ rejected: true });
+    expect((await f.repository.findById(f.intake.id))?.status).toBe(
+      ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION
+    );
   });
   it('recovers a send accepted before its message ID was persisted', async () => {
     const f = await fixture();
@@ -263,4 +295,42 @@ it('stops recovery when history is incomplete rather than duplicating an uncerta
   f.channel.messages.fetch.mockResolvedValue(page as never);
   await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('incomplete');
   expect(f.channel.send).not.toHaveBeenCalled();
+});
+
+it('recovers an accepted confirmation reservation even when newer evidence changes the card state', async () => {
+  const f = await fixture();
+  await f.service.reconcile(f.intake.id);
+  await suggest(f);
+  const update = f.repository.updateIfCurrent.bind(f.repository);
+  let fail = true;
+  jest.spyOn(f.repository, 'updateIfCurrent').mockImplementation(async (intake, data) => {
+    if (fail && JSON.stringify(data.metadata).includes('followupMessageId":"2')) {
+      fail = false;
+      throw new Error('ID save failed');
+    }
+    return update(intake, data);
+  });
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('ID save failed');
+  const current = (await f.repository.findById(f.intake.id))!;
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.COLLECTING_EVIDENCE,
+    metadata: {
+      ...(current.metadata as object),
+      analysis: {
+        schemaVersion: 1,
+        sources: {},
+        requestReservations: [],
+        handoff: { state: 'none' },
+        outcome: null,
+        coverage: null,
+      },
+    },
+  });
+  await f.service.reconcile(f.intake.id);
+  await suggest(f);
+  await f.service.reconcile(f.intake.id);
+  expect(f.messages.size).toBe(2);
+  expect(
+    f.channel.send.mock.calls.filter(([payload]) => payload.allowedMentions?.users?.length)
+  ).toHaveLength(1);
 });

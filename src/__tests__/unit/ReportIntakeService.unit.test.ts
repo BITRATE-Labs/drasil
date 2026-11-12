@@ -148,10 +148,18 @@ describe('ReportIntakeService', () => {
 
   it('restores an unchanged draft after a verified archive failure', async () => {
     const f = await preparePrompt();
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { reporter_presentation: { nextDueAt: null } },
+    });
     const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
-    await f.service.closeIntakeForThread({ threadId: 'thread-1', closedById: 'reporter-1' });
+    const closeResult = await f.service.closeIntakeForThread({
+      threadId: 'thread-1',
+      closedById: 'reporter-1',
+    });
     const closed = (await f.reportIntakeRepository.findById(f.intake.id))!;
-    expect(await f.service.restoreFailedThreadClose(before, closed)).toBe(true);
+    expect(await f.service.restoreFailedThreadClose(before, closed, closeResult.closeVersion)).toBe(
+      true
+    );
     expect(await f.reportIntakeRepository.findById(f.intake.id)).toMatchObject({
       status: before.status,
       closed_at: null,
@@ -159,11 +167,19 @@ describe('ReportIntakeService', () => {
   });
   it('does not undo a concurrent change while recovering a failed close', async () => {
     const f = await preparePrompt();
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { reporter_presentation: { nextDueAt: null } },
+    });
     const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
-    await f.service.closeIntakeForThread({ threadId: 'thread-1', closedById: 'reporter-1' });
+    const closeResult = await f.service.closeIntakeForThread({
+      threadId: 'thread-1',
+      closedById: 'reporter-1',
+    });
     const closed = (await f.reportIntakeRepository.findById(f.intake.id))!;
     await f.reportIntakeRepository.update(f.intake.id, { metadata: { other_action: true } });
-    expect(await f.service.restoreFailedThreadClose(before, closed)).toBe(false);
+    expect(await f.service.restoreFailedThreadClose(before, closed, closeResult.closeVersion)).toBe(
+      false
+    );
     expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toMatchObject({
       other_action: true,
     });
@@ -194,6 +210,28 @@ describe('ReportIntakeService', () => {
       expect((await f.reportIntakeRepository.findById(f.intake.id))?.closed_at).toBeNull();
     }
   );
+
+  it('does not mistake a moderator resolution for its own close snapshot', async () => {
+    const f = await preparePrompt();
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { reporter_presentation: { nextDueAt: null } },
+    });
+    const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    const result = await f.service.closeIntakeForThread({
+      threadId: 'thread-1',
+      closedById: 'reporter-1',
+    });
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { review_resolved_at: new Date().toISOString() },
+    });
+    const reread = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    expect(await f.service.restoreFailedThreadClose(before, reread, result.closeVersion)).toBe(
+      false
+    );
+    expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toHaveProperty(
+      'review_resolved_at'
+    );
+  });
 
   async function stagedSetup() {
     const setup = await preparePrompt();

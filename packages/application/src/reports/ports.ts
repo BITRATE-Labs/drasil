@@ -57,6 +57,7 @@ export interface ReportConfirmationResult {
   attachments?: ReportAttachment[];
 }
 export interface ReportCloseResult {
+  closeVersion?: string;
   closed: boolean;
   message: string;
   shouldArchiveThread?: boolean;

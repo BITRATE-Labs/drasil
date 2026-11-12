@@ -330,7 +330,11 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
               const verified = await loadedThread.fetch(true).catch(() => null);
               archived = verified?.archived === true;
               if (verified && !verified.archived && closed)
-                await deps.reportIntakeService.restoreFailedThreadClose?.(current, closed);
+                await deps.reportIntakeService.restoreFailedThreadClose?.(
+                  current,
+                  closed,
+                  result.closeVersion
+                );
               if (archived)
                 await deps.reportIntakeService
                   .refreshPresentation?.(intake.id)
