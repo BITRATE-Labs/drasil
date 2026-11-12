@@ -2560,7 +2560,22 @@ export class SecurityActionService implements ISecurityActionService {
         sourceMessage
       );
       const detection = await this.detectionEventsRepository.findById(detectionEventId);
-      if (!detection || readAutomaticModerationResponse(detection.metadata)) return false;
+      if (!detection) {
+        const diagnostics = {
+          code: 'detection_record_unavailable',
+          requested_action: 'kick',
+          actual_outcome: 'not_attempted',
+          detection_event_id: detectionEventId,
+        };
+        console.error('Automatic kick detection precondition failed', diagnostics);
+        recordWorkflowOutcome({
+          level: 'ERROR',
+          statusMessage: diagnostics.code,
+          output: diagnostics,
+        });
+        return false;
+      }
+      if (readAutomaticModerationResponse(detection.metadata)) return false;
       let response: Extract<AutomaticModerationResponse, { action: 'kick' }> = {
         action: 'kick',
         outcome: 'pending',
@@ -2725,21 +2740,21 @@ export class SecurityActionService implements ISecurityActionService {
       attention: unchanged && previous.attention === 'acknowledged' ? 'acknowledged' : 'required',
       caseId,
     };
+    let persisted = owner;
     try {
       // Reviewable cases own their attention even when every Discord destination is unavailable.
-      const persisted = await this.verificationEventRepository.patchMetadata(owner.id, {
+      const updated = await this.verificationEventRepository.patchMetadata(owner.id, {
         action_failures: getVerificationActionFailures(owner.metadata),
         automatic_moderation_response: response,
       });
       if (
-        !persisted ||
+        !updated ||
         !(await this.detectionEventsRepository.patchMetadata(detectionEventId, {
           automatic_moderation_response: response,
         }))
       )
         throw new Error('Could not persist automatic case response.');
-      await this.moderationQueueService?.upsertCaseMirror(persisted);
-      await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
+      persisted = updated;
     } catch (error) {
       recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'persistence_failed' });
       throw error;
@@ -2753,6 +2768,40 @@ export class SecurityActionService implements ISecurityActionService {
           : 'WARNING',
         statusMessage: 'response_incomplete',
       });
+    if (caseId) {
+      // The saved live case owns attention; projection failures must not block independent CAPTCHA.
+      for (const operation of ['case_mirror', 'observed_cleanup']) {
+        try {
+          if (operation === 'case_mirror')
+            await this.moderationQueueService?.upsertCaseMirror(persisted);
+          else await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
+        } catch {
+          const diagnostics = {
+            code: 'queue_projection_failed',
+            operation,
+            case_id: caseId,
+            detection_event_id: detectionEventId,
+            actual_outcome: response.outcome,
+            canonical_response_saved: true,
+          };
+          console.error('Automatic response queue projection failed', diagnostics);
+          recordWorkflowOutcome({
+            level: 'ERROR',
+            statusMessage: diagnostics.code,
+            output: diagnostics,
+          });
+        }
+      }
+      return;
+    }
+    // Without a live case the observed attention row remains a required durable write.
+    try {
+      await this.moderationQueueService?.upsertCaseMirror(persisted);
+      await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
+    } catch (error) {
+      recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'persistence_failed' });
+      throw error;
+    }
   }
 
   public async recordAutomaticResponseFailure(
