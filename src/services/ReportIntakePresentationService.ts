@@ -50,7 +50,10 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
   async reconcile(intakeId: string): Promise<boolean> {
     const intake = await this.repository.findById(intakeId);
     if (!intake || !projectReportIntakeState(intake).staged) return false;
-    const reporter = readReporterPresentation(intake) ?? { nextDueAt: null };
+    const storedReporter = readReporterPresentation(intake);
+    if (!storedReporter && reportRoot(intake).reporter_presentation !== undefined)
+      throw new Error('Invalid reporter presentation metadata');
+    const reporter = storedReporter ?? { nextDueAt: null };
     const saved = await this.repository.updateIfCurrent(intake, {
       metadata: {
         ...reportRoot(intake),

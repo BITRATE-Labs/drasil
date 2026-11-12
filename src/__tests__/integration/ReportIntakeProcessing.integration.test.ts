@@ -2,7 +2,10 @@ import { ModerationQueueRepository } from '../../repositories/ModerationQueueRep
 import { ReportIntakeAnalysisWorker } from '../../services/ReportIntakeAnalysisWorker';
 import type { IReportIntakeAgentService } from '../../services/ReportIntakeAgentService';
 import type { IConfigService } from '../../config/ConfigService';
-import { processingMetadata } from '../../repositories/reportIntakeProcessing';
+import {
+  ANALYSIS_CLAIM_SCAN_LIMIT,
+  processingMetadata,
+} from '../../repositories/reportIntakeProcessing';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { InMemoryReportIntakeRepository } from '../fakes/inMemoryRepositories';
@@ -62,6 +65,60 @@ describeIntegration('durable report intake processing', () => {
     };
     return { prisma, repository, intake, batch };
   }
+
+  it('keeps ordinary updates unconditional alongside concurrent processing metadata writes', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    const [updated, recorded] = await Promise.all([
+      f.repository.update(f.intake.id, { summary: 'Updated summary' }),
+      f.repository.recordEvidenceBatch(f.batch),
+    ]);
+    expect(updated).not.toBeNull();
+    expect(recorded).toBe('recorded');
+    const saved = (await f.repository.findById(f.intake.id))!;
+    expect(saved.summary).toBe('Updated summary');
+    expect(saved.evidence_revision).toBe(1);
+    expect(saved.metadata).toMatchObject({ reporter_presentation: expect.any(Object) });
+  });
+  it('preserves invalid reporter delivery metadata without blocking evidence or other presentations', async () => {
+    const invalid = { openingMessageId: 123, restoreArchive: true, nextDueAt: now.toISOString() };
+    const f = await fixture({ reporter_presentation: invalid });
+    expect(await f.repository.recordEvidenceBatch(f.batch)).toBe('recorded');
+    expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+      reporter_presentation: invalid,
+    });
+    const healthy = await f.repository.create({
+      serverId: f.intake.server_id,
+      reporterId: f.intake.reporter_id,
+      metadata: { reporter_presentation: { nextDueAt: now.toISOString() } },
+    });
+    expect((await f.repository.claimPendingPresentation(new Date()))?.intake.id).toBe(healthy.id);
+    expect(await f.repository.claimPendingPresentation(new Date(), f.intake.id)).toBeNull();
+  });
+
+  it('advances past a full batch of malformed due cards during global scanning', async () => {
+    const f = await fixture();
+    for (let index = 1; index <= ANALYSIS_CLAIM_SCAN_LIMIT + 1; index++) {
+      await f.prisma.report_intakes.create({
+        data: {
+          id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+          server_id: f.intake.server_id,
+          reporter_id: f.intake.reporter_id,
+          status: 'collecting_evidence',
+          metadata: {
+            reporter_presentation: {
+              nextDueAt: now.toISOString(),
+              ...(index <= ANALYSIS_CLAIM_SCAN_LIMIT ? { openingMessageId: 123 } : {}),
+            },
+          },
+        },
+      });
+    }
+    expect(await f.repository.claimPendingPresentation(new Date())).toBeNull();
+    const next = await f.repository.claimPendingPresentation(new Date());
+    expect(next?.intake.id).toBe(
+      `00000000-0000-4000-8000-${String(ANALYSIS_CLAIM_SCAN_LIMIT + 1).padStart(12, '0')}`
+    );
+  });
 
   it('serializes reporter presentation claims and rejects a stale claim after submission', async () => {
     const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });

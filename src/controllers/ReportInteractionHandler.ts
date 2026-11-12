@@ -438,10 +438,7 @@ export class ReportInteractionHandler {
         return;
       }
 
-      if (
-        ['thread_close', 'thread_confirm_close', 'thread_keep_open'].includes(parsed.action) &&
-        readReporterPresentation(context.intake)
-      ) {
+      if (['thread_close', 'thread_confirm_close', 'thread_keep_open'].includes(parsed.action)) {
         if (interaction.user.id !== context.intake.reporter_id && !context.canModerate) {
           await interaction.editReply({
             content: 'Only the reporter or a moderator can close this report.',
@@ -453,7 +450,7 @@ export class ReportInteractionHandler {
           await interaction.deleteReply();
           return;
         }
-        if (parsed.action === 'thread_close') {
+        if (parsed.action === 'thread_close' && readReporterPresentation(context.intake)) {
           const state = projectReportIntakeState(context.intake);
           const review =
             state.status === 'submitted' || state.status === 'needs_admin_confirmation';

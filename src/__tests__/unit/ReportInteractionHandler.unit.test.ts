@@ -1,3 +1,4 @@
+import { buildReportIntakeAdminActionCustomId } from '../../utils/reportIntakeAdminActions';
 import { handleSlashCommandConfirmationButton } from '../../utils/slashCommandConfirmations';
 import { buildReportActions, prepareReportClient } from './reportApplicationTestHarness';
 import {
@@ -1244,6 +1245,19 @@ describe('ReportInteractionHandler (unit)', () => {
       (interaction as any).message = { edit: jest.fn().mockResolvedValue(undefined) };
       return { interaction, thread };
     };
+
+    it('keeps the thread open when the confirmation outlives presentation metadata', async () => {
+      const service = createReportIntakeService();
+      service.findIntakeById.mockResolvedValue(buildReportIntake());
+      const { interaction, thread } = buildThreadCloseInteraction('reporter-1');
+      prepareReportClient(client, interaction);
+      await createHandler(service).handleReportIntakeAdminAction(
+        interaction,
+        buildReportIntakeAdminActionCustomId('thread_keep_open', 'intake-1')
+      );
+      expect(service.closeIntakeForThread).not.toHaveBeenCalled();
+      expect(thread.setArchived).not.toHaveBeenCalled();
+    });
 
     it('asks before closing a card-based report', async () => {
       const service = createReportIntakeService();

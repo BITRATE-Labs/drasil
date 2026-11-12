@@ -1,6 +1,7 @@
 import {
   readReporterPresentation,
   reporterViewKey,
+  reportRoot,
 } from '../utils/reportIntakePresentationMetadata';
 import {
   reportAnalysisMetadataSchema,
@@ -398,6 +399,12 @@ export function presentationMetadata(intake: ReportIntake): ReturnType<typeof pr
 
 export function canPresent(intake: ReportIntake): boolean {
   if (readReporterPresentation(intake)) return true;
+  if (reportRoot(intake).reporter_presentation !== undefined) {
+    console.warn(
+      `Invalid reporter presentation metadata for intake ${intake.id}; delivery blocked`
+    );
+    return false;
+  }
   return (
     OPEN_ANALYSIS_STATUSES.includes(intake.status) &&
     !intake.closed_at &&
@@ -427,7 +434,10 @@ export function presentationClaimChange(
     const leaseToken = randomUUID();
     analysis.presentation = {
       revision: intake.evidence_revision,
-      attempts: (analysis.presentation?.attempts ?? 0) + 1,
+      attempts:
+        (reporter.attemptViewKey === reporterViewKey(intake)
+          ? (analysis.presentation?.attempts ?? 0)
+          : 0) + 1,
       nextDueAt: reporter.nextDueAt,
       lease: {
         token: leaseToken,
@@ -435,7 +445,11 @@ export function presentationClaimChange(
       },
     };
     const change = {
-      metadata: { ...metadata, analysis } as ReportIntake['metadata'],
+      metadata: {
+        ...metadata,
+        analysis,
+        reporter_presentation: { ...reporter, attemptViewKey: reporterViewKey(intake) },
+      } as ReportIntake['metadata'],
       updated_at: now,
     };
     return {
@@ -523,7 +537,7 @@ export function completePresentationChange(
   if (reporter) metadata.reporter_presentation = { ...reporter, nextDueAt };
   analysis.presentation = {
     revision: claim.revision,
-    attempts,
+    attempts: success && reporter ? 0 : attempts,
     nextDueAt,
     lease: null,
     lastFailure: success ? null : 'delivery_unavailable',

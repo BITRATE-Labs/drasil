@@ -4,6 +4,7 @@ import type { ReportIntake } from '../repositories/types';
 export const reporterPresentationSchema = z.object({
   restoreArchive: z.boolean().optional(),
   closedCardView: z.string().optional(),
+  attemptViewKey: z.string().optional(),
   openingMessageId: z.string().optional(),
   confirmationMentionReserved: z.boolean().optional(),
   followupMessageId: z.string().optional(),
@@ -24,7 +25,8 @@ export function reportRoot(intake: ReportIntake): Record<string, unknown> {
 }
 export function readReporterPresentation(intake: ReportIntake): ReporterPresentation | null {
   const value = reportRoot(intake).reporter_presentation;
-  return value === undefined ? null : reporterPresentationSchema.parse(value);
+  const parsed = reporterPresentationSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 export function reporterViewKey(intake: ReportIntake): string {
   const m = reportRoot(intake);

@@ -459,3 +459,27 @@ it('retires confirmation controls if the rollout is disabled during their edit',
   );
   expect(f.messages.get('1')!.components).toEqual([]);
 });
+
+it('starts a fresh short retry delay after successful card updates', async () => {
+  const f = await fixture();
+  for (let i = 0; i < 5; i++) await f.service.reconcile(f.intake.id);
+  f.channel.messages.fetch.mockRejectedValue(new Error('temporary outage'));
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('temporary outage');
+  const saved = (await f.repository.findById(f.intake.id))!;
+  const presentation = (saved.metadata as { reporter_presentation: { nextDueAt: string } })
+    .reporter_presentation;
+  expect(new Date(presentation.nextDueAt).getTime() - Date.now()).toBeLessThanOrEqual(30000);
+});
+it('preserves malformed presentation metadata and blocks only its delivery', async () => {
+  const f = await fixture();
+  await f.repository.update(f.intake.id, {
+    metadata: { workflow: 'staged', reporter_presentation: { openingMessageId: 123 } },
+  });
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow(
+    'Invalid reporter presentation metadata'
+  );
+  expect(f.channel.send).not.toHaveBeenCalled();
+  expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+    reporter_presentation: { openingMessageId: 123 },
+  });
+});
