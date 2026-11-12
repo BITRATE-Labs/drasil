@@ -1143,6 +1143,57 @@ describe('NotificationPresentationBuilder (unit)', () => {
     }
   );
 
+  it.each(['failed', 'unknown', 'kicked'] as const)(
+    'shows the case kick %s snapshot alongside independent thread warnings',
+    (outcome) => {
+      const event = buildVerificationEvent({
+        metadata: {
+          automatic_moderation_response: {
+            action: 'kick',
+            outcome,
+            attention: 'required',
+            caseId: '11111111-1111-4111-8111-111111111111',
+            updatedAt: '2026-11-12T00:00:00Z',
+            failures: [
+              {
+                step: outcome === 'kicked' ? 'persistence' : 'kick',
+                code:
+                  outcome === 'kicked'
+                    ? 'persistence_failed'
+                    : outcome === 'unknown'
+                      ? 'kick_outcome_unknown'
+                      : 'kick_rejected',
+              },
+            ],
+          },
+          action_failures: [
+            {
+              action: 'thread',
+              message: 'membership_screening_pending',
+              at: '2026-11-12T00:00:00Z',
+            },
+          ],
+        },
+      });
+      const embed = builder.createSuspiciousUserEmbed(
+        buildMember(),
+        buildDetectionResult(),
+        event,
+        []
+      );
+      const warning = getField(embed, 'Moderation Action Warning');
+      expect(warning).toContain(
+        outcome === 'failed'
+          ? 'Automatic kick failed.'
+          : outcome === 'unknown'
+            ? 'Kick outcome could not be confirmed.'
+            : 'Member kicked.'
+      );
+      expect(warning).toContain('Member must complete server screening');
+      expect(warning).not.toContain('Notification delivery failed');
+    }
+  );
+
   it('keeps only the latest three warnings and omits invalid timestamps', () => {
     const embed = new EmbedBuilder();
     builder.upsertVerificationActionFailureField(

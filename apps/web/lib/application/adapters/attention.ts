@@ -44,9 +44,12 @@ export class PostgresQueueAttentionRepository implements QueueAttentionRepositor
       const event = rows.rows[0];
       const metadata = event && acknowledgeAutomaticResponseMetadata(event.metadata);
       if (!metadata) return 'already_handled';
+      const queueMetadata = {
+        automatic_moderation_response: metadata.automatic_moderation_response,
+      };
       const updated = await client.query(
-        `update moderation_queue_items set metadata=$4::jsonb, updated_at=$5 where id=$1::uuid and server_id=$2 and detection_event_id=$3::uuid and item_type='observed_alert_mirror' returning id`,
-        [input.itemId, input.guildId, event.id, JSON.stringify(metadata), input.acknowledgedAt]
+        `update moderation_queue_items set metadata=coalesce(metadata, '{}'::jsonb) || $4::jsonb, updated_at=$5 where id=$1::uuid and server_id=$2 and detection_event_id=$3::uuid and item_type='observed_alert_mirror' returning id`,
+        [input.itemId, input.guildId, event.id, JSON.stringify(queueMetadata), input.acknowledgedAt]
       );
       if (!updated.rows[0]) return 'already_handled';
       await client.query(`update detection_events set metadata=$2::jsonb where id=$1::uuid`, [

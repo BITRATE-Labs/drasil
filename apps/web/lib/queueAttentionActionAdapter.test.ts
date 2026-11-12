@@ -237,6 +237,11 @@ describe('automatic response acknowledgement repository', () => {
     ).toBe('acknowledged');
     const writes = runtime.query.mock.calls.filter(([sql]) => String(sql).startsWith('update'));
     expect(writes).toHaveLength(2);
+    const queuePatch = JSON.parse(String(writes[0][1][3]));
+    expect(queuePatch).toEqual({
+      automatic_moderation_response: { ...response, attention: 'acknowledged' },
+    });
+    expect(String(writes[0][0])).toContain("coalesce(metadata, '{}'::jsonb) ||");
     const saved = JSON.parse(String(writes[1][1][1]));
     expect(saved).toEqual({
       ...metadata,

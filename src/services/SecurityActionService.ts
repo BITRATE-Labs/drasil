@@ -2800,18 +2800,21 @@ export class SecurityActionService implements ISecurityActionService {
         output: { verdict: detectionResult.label, actual_outcome: response.outcome },
       });
       if (owner) {
+        const caseFailures = response.failures.reduce<Record<string, unknown>>(
+          (metadata, failure) => {
+            // Kick facts stay in the response snapshot, independent of case workflow failures.
+            if (failure.step === 'kick') return metadata;
+            return appendVerificationActionFailure(metadata, {
+              action: failure.step === 'role' ? 'case_role' : failure.step,
+              message: failure.code,
+              at: response.updatedAt,
+            });
+          },
+          this.metadataToRecord(owner.metadata)
+        );
         const updated = await this.verificationEventRepository.patchMetadata(owner.id, {
           automatic_moderation_response: response,
-          action_failures: appendVerificationActionFailure(owner.metadata, {
-            action:
-              response.failures[0]?.step === 'role'
-                ? 'case_role'
-                : response.failures[0]?.step === 'thread'
-                  ? 'thread'
-                  : 'notification',
-            message: response.failures[0]?.code ?? 'persistence_failed',
-            at: response.updatedAt,
-          }).action_failures,
+          action_failures: getVerificationActionFailures(caseFailures),
         });
         if (!updated) throw new Error('Could not persist case-owned automatic response failure.');
         await this.moderationQueueService?.upsertCaseMirror(updated);
@@ -3224,7 +3227,13 @@ export class SecurityActionService implements ISecurityActionService {
               caseId: null,
               failures: [{ step: 'persistence', code: 'persistence_failed' }],
             };
-      await this.recordAutomaticResponseFailure(member, detectionResult, response, sourceMessage);
+      console.error('Automatic moderation response failed', {
+        requested_action: response.action,
+        actual_outcome: response.outcome,
+        failed_steps: response.failures.map((failure) => failure.step),
+        failure_codes: response.failures.map((failure) => failure.code),
+        detection_event_id: detectionResult.detectionEventId,
+      });
       recordWorkflowOutcome({
         level: 'ERROR',
         statusMessage: 'response_incomplete',
@@ -3233,6 +3242,22 @@ export class SecurityActionService implements ISecurityActionService {
           actual_outcome: response.outcome,
         },
       });
+      try {
+        await this.recordAutomaticResponseFailure(member, detectionResult, response, sourceMessage);
+      } catch {
+        const diagnostics = {
+          code: 'persistence_failed',
+          requested_action: response.action,
+          actual_outcome: response.outcome,
+          detection_event_id: detectionResult.detectionEventId,
+        };
+        console.error('Automatic response failure recording failed', diagnostics);
+        recordWorkflowOutcome({
+          level: 'ERROR',
+          statusMessage: 'persistence_failed',
+          output: diagnostics,
+        });
+      }
       throw error;
     }
   }
@@ -3276,7 +3301,13 @@ export class SecurityActionService implements ISecurityActionService {
               caseId: null,
               failures: [{ step: 'persistence', code: 'persistence_failed' }],
             };
-      await this.recordAutomaticResponseFailure(member, detectionResult, response);
+      console.error('Automatic moderation response failed', {
+        requested_action: response.action,
+        actual_outcome: response.outcome,
+        failed_steps: response.failures.map((failure) => failure.step),
+        failure_codes: response.failures.map((failure) => failure.code),
+        detection_event_id: detectionResult.detectionEventId,
+      });
       recordWorkflowOutcome({
         level: 'ERROR',
         statusMessage: 'response_incomplete',
@@ -3285,6 +3316,22 @@ export class SecurityActionService implements ISecurityActionService {
           actual_outcome: response.outcome,
         },
       });
+      try {
+        await this.recordAutomaticResponseFailure(member, detectionResult, response);
+      } catch {
+        const diagnostics = {
+          code: 'persistence_failed',
+          requested_action: response.action,
+          actual_outcome: response.outcome,
+          detection_event_id: detectionResult.detectionEventId,
+        };
+        console.error('Automatic response failure recording failed', diagnostics);
+        recordWorkflowOutcome({
+          level: 'ERROR',
+          statusMessage: 'persistence_failed',
+          output: diagnostics,
+        });
+      }
       throw error;
     }
   }

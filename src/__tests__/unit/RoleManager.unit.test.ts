@@ -1,4 +1,10 @@
-import { Collection, GuildMember, PermissionFlagsBits, PermissionsBitField } from 'discord.js';
+import {
+  Collection,
+  GuildMember,
+  PermissionFlagsBits,
+  PermissionsBitField,
+  Role,
+} from 'discord.js';
 import { IConfigService } from '../../config/ConfigService';
 import { RoleManager } from '../../services/RoleManager';
 
@@ -14,6 +20,7 @@ function fixture() {
     guild: {
       id: 'guild',
       roles: { fetch: jest.fn().mockResolvedValue(role) },
+      members: { me: {} as unknown, fetchMe: jest.fn(), resolve: jest.fn() },
       channels: { fetch: jest.fn().mockResolvedValue(channels) },
     },
     roles: {
@@ -125,6 +132,41 @@ describe('RoleManager grant safety', () => {
     await expect(manager.assignCaseRole(member as unknown as GuildMember)).rejects.toThrow();
     expect(member.guild.roles.fetch).toHaveBeenNthCalledWith(2, 'case-role', { force: true });
     expect(member.guild.channels.fetch).toHaveBeenCalledTimes(2);
+    expect(member.roles.add).not.toHaveBeenCalled();
+  });
+
+  it('loads an uncached bot member before evaluating Discord role editability', async () => {
+    const { manager, member, role } = fixture();
+    member.guild.members.me = null;
+    member.guild.members.resolve.mockImplementation(() => member.guild.members.me);
+    member.guild.members.fetchMe.mockImplementation(async () => {
+      const bot = {
+        permissions: new PermissionsBitField(PermissionFlagsBits.ManageRoles),
+        roles: { highest: { comparePositionTo: () => 1 } },
+      };
+      member.guild.members.me = bot;
+      return bot;
+    });
+    const editable = Object.getOwnPropertyDescriptor(Role.prototype, 'editable')!.get!;
+    Object.defineProperty(role, 'editable', {
+      get: () =>
+        editable.call({ managed: false, guild: member.guild, client: { user: { id: 'bot' } } }),
+    });
+    await expect(
+      manager.assignCaseRole(member as unknown as GuildMember, 'case-role')
+    ).resolves.toBe(true);
+    expect(member.guild.members.fetchMe).toHaveBeenCalledTimes(1);
+    expect(member.roles.add).toHaveBeenCalledWith('case-role');
+  });
+
+  it('does not mutate roles when the uncached bot member cannot be loaded', async () => {
+    const { manager, member } = fixture();
+    member.guild.members.me = null;
+    const error = new Error('PRIVATE_PROVIDER_SENTINEL');
+    member.guild.members.fetchMe.mockRejectedValueOnce(error);
+    await expect(
+      manager.assignCaseRole(member as unknown as GuildMember, 'case-role')
+    ).rejects.toBe(error);
     expect(member.roles.add).not.toHaveBeenCalled();
   });
 

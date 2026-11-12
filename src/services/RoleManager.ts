@@ -43,6 +43,9 @@ export class RoleManager implements IRoleManager {
 
   public async assertSafeCaseRole(member: GuildMember, roleId: string): Promise<void> {
     const role = await member.guild.roles.fetch(roleId, { force: true });
+    if (!member.guild.members.me) await member.guild.members.fetchMe();
+    if (!member.guild.members.me)
+      throw new Error('Bot membership is unavailable for role validation.');
     if (
       !role ||
       role.id === member.guild.id ||

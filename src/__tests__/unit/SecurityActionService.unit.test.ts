@@ -1394,6 +1394,117 @@ describe('SecurityActionService (unit)', () => {
     }
   );
 
+  it.each(['kick', 'persistence', 'combined'] as const)(
+    'preserves case-owned %s failures without inventing notification failure',
+    async (kind) => {
+      const member = buildMember('owned-failure-guild', 'owned-failure-user');
+      const owner = await verificationEventRepository.createFromDetection(
+        null,
+        member.guild.id,
+        member.id,
+        VerificationStatus.PENDING,
+        {
+          action_failures: [
+            { action: 'thread', message: 'thread_creation_failed', at: '2026-11-11T00:00:00Z' },
+          ],
+        }
+      );
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.9,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      const failures: AutomaticModerationResponse['failures'] =
+        kind === 'kick'
+          ? [{ step: 'kick', code: 'kick_rejected' }]
+          : kind === 'persistence'
+            ? [{ step: 'persistence', code: 'persistence_failed' }]
+            : [
+                { step: 'kick', code: 'kick_rejected' },
+                { step: 'persistence', code: 'persistence_failed' },
+                { step: 'notification', code: 'notification_delivery_failed' },
+              ];
+      await buildService().recordAutomaticResponseFailure(member, detection, {
+        action: 'kick',
+        outcome: 'failed',
+        attention: 'required',
+        caseId: owner.id,
+        updatedAt: '2026-11-12T00:00:00Z',
+        failures,
+      });
+      const saved = await verificationEventRepository.findById(owner.id);
+      expect(
+        getVerificationActionFailures(saved?.metadata).map(({ action, message }) => ({
+          action,
+          message,
+        }))
+      ).toEqual([
+        { action: 'thread', message: 'thread_creation_failed' },
+        ...(kind !== 'kick' ? [{ action: 'persistence', message: 'persistence_failed' }] : []),
+        ...(kind === 'combined'
+          ? [{ action: 'notification', message: 'notification_delivery_failed' }]
+          : []),
+      ]);
+      expect(saved?.metadata).toMatchObject({
+        automatic_moderation_response: { action: 'kick', outcome: 'failed', failures },
+      });
+    }
+  );
+
+  it.each(['message', 'join'] as const)(
+    'preserves original %s kick error when failure recording also fails',
+    async (source) => {
+      const member = buildMember('double-failure-guild', 'double-failure-user');
+      await serverRepository.upsertByGuildId(member.guild.id, {
+        settings: {
+          message_detection_auto_kick_enabled: true,
+          join_detection_auto_kick_enabled: true,
+          auto_kick_min_confidence_threshold: 95,
+        },
+      });
+      const service = buildService({ user: { id: 'bot' } } as Client);
+      const original = new KickExecutionError(
+        'unknown',
+        'kick',
+        new Error('PRIVATE_ORIGINAL_SENTINEL')
+      );
+      userModerationService.kickUser.mockRejectedValueOnce(original);
+      jest
+        .spyOn(service, 'recordAutomaticResponseFailure')
+        .mockRejectedValueOnce(new Error('PRIVATE_SECONDARY_SENTINEL'));
+      const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.99,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      try {
+        await expect(
+          source === 'message'
+            ? service.handleSuspiciousMessage(member, detection)
+            : service.handleSuspiciousJoin(member, detection)
+        ).rejects.toBe(original);
+        expect(userModerationService.kickUser).toHaveBeenCalledTimes(1);
+        expect(service.recordAutomaticResponseFailure).toHaveBeenCalledTimes(1);
+        expect(diagnostics).toHaveBeenCalledWith(
+          'Automatic response failure recording failed',
+          expect.objectContaining({
+            code: 'persistence_failed',
+            actual_outcome: 'unknown',
+            detection_event_id: detection.detectionEventId,
+          })
+        );
+        expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('PRIVATE_');
+      } finally {
+        diagnostics.mockRestore();
+      }
+    }
+  );
+
   it('reuses case-owned attention when the same failing detection is processed repeatedly', async () => {
     const service = buildService();
     const member = buildMember('repeat-guild', 'repeat-user');

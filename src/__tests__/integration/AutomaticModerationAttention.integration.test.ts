@@ -978,6 +978,37 @@ suite('automatic moderation attention', () => {
     expect(await f.queue.findByObservedAlert(f.event.id)).toBeNull();
     expect((await f.detections.findById(f.event.id))?.metadata?.observed_action).toBe('kick');
   });
+  it('acknowledgement keeps detection evidence out of queue metadata', async () => {
+    const f = await fixture();
+    await f.detections.patchMetadata(f.event.id, { detection_only: 'PRIVATE_EVIDENCE_SENTINEL' });
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    const item = (await f.queue.findByObservedAlert(f.event.id))!;
+    await f.prisma.moderation_queue_items.update({
+      where: { id: item.id },
+      data: {
+        metadata: { automatic_moderation_response: response, queue_only: 'queue-owned' },
+      },
+    });
+    expect(
+      await f.queue.acknowledgeAutomaticResponse({
+        itemId: item.id,
+        guildId: f.server.guild_id,
+        actorId: 'moderator',
+        acknowledgedAt: new Date(),
+      })
+    ).toBe('acknowledged');
+    const queued = await f.queue.findByObservedAlert(f.event.id);
+    expect(queued?.metadata).toEqual({
+      automatic_moderation_response: { ...response, attention: 'acknowledged' },
+      queue_only: 'queue-owned',
+    });
+    expect((await f.detections.findById(f.event.id))?.metadata).toMatchObject({
+      detection_only: 'PRIVATE_EVIDENCE_SENTINEL',
+      observed_action: 'kick',
+      automatic_moderation_response: { ...response, attention: 'acknowledged' },
+    });
+  });
+
   it('acknowledgement preserves the action outcome and unresolved row', async () => {
     const f = await fixture();
     await f.service.upsertObservedAlertMirrorById(f.event.id);

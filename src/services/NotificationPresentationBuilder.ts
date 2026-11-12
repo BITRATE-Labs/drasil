@@ -1531,7 +1531,12 @@ export class NotificationPresentationBuilder {
 
   private formatVerificationActionFailureFieldValue(metadata: unknown): string | null {
     const failures = getVerificationActionFailures(metadata);
-    if (failures.length === 0) {
+    const response = readAutomaticModerationResponse(metadata);
+    const kickSummary =
+      response?.action === 'kick' && response.failures.length
+        ? formatAutomaticModerationResponse(response)
+        : null;
+    if (failures.length === 0 && !kickSummary) {
       return null;
     }
 
@@ -1602,7 +1607,7 @@ export class NotificationPresentationBuilder {
       })
       .join('\n\n');
 
-    return `${value}\n\nCase saved.`;
+    return [kickSummary, value, 'Case saved.'].filter(Boolean).join('\n\n');
   }
 
   private formatRoleQuarantineFieldValue(metadata: unknown): string | null {

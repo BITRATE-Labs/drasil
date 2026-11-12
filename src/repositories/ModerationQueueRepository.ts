@@ -504,16 +504,16 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
       if (!event) return 'already_handled';
       const metadata = acknowledgeAutomaticResponseMetadata(event.metadata);
       if (!metadata) return 'already_handled';
-      const updated = await transaction.moderation_queue_items.updateMany({
-        where: {
-          id: input.itemId,
-          server_id: input.guildId,
-          detection_event_id: event.id,
-          item_type: 'observed_alert_mirror',
-        },
-        data: { metadata: metadata as Prisma.InputJsonValue, updated_at: input.acknowledgedAt },
-      });
-      if (!updated.count) return 'already_handled';
+      const queueMetadata = {
+        automatic_moderation_response: metadata.automatic_moderation_response,
+      };
+      const updated = await transaction.$executeRaw`
+        UPDATE moderation_queue_items
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(queueMetadata)}::jsonb,
+            updated_at = ${input.acknowledgedAt}
+        WHERE id = ${input.itemId}::uuid AND server_id = ${input.guildId}
+          AND detection_event_id = ${event.id}::uuid AND item_type = 'observed_alert_mirror'`;
+      if (!updated) return 'already_handled';
       await transaction.detection_events.update({
         where: { id: event.id },
         data: { metadata: metadata as Prisma.InputJsonValue },
