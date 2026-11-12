@@ -32,7 +32,7 @@ describe('trusted report extraction fixture entry', () => {
     expect(result).toMatchObject({ kind: 'extracted', includedEvidenceIds: [imageRef.evidenceId] });
     expect(f.create).toHaveBeenCalledTimes(1);
     expect(f.create.mock.calls[0][0]).toMatchObject({
-      max_output_tokens: 4096,
+      max_output_tokens: 16_384,
       store: false,
       input: [
         {
