@@ -1,5 +1,7 @@
 import {
   acknowledgeIdentityReviewMetadata,
+  acknowledgeAutomaticResponseMetadata,
+  isAutomaticResponseItem,
   isIdentityReviewItem,
   reportSubmissionProgressSchema,
 } from '@drasil/application';
@@ -15,11 +17,47 @@ import { getPostgresPool } from '../../setupDataAdapter';
 export class PostgresQueueAttentionRepository implements QueueAttentionRepository {
   public async findById(id: string): Promise<QueueAttentionItemRecord | null> {
     const result = await getPostgresPool().query<QueueAttentionItemRecord>(
-      `select id, server_id, item_type, queue_channel_id, queue_message_id, report_intake_id, metadata, attention_cleanup_pending
+      `select id, server_id, item_type, queue_channel_id, queue_message_id, report_intake_id, detection_event_id, metadata, attention_cleanup_pending
        from moderation_queue_items where id = $1 limit 1`,
       [id]
     );
     return result.rows[0] ?? null;
+  }
+  public async acknowledgeAutomaticResponse(input: {
+    itemId: string;
+    guildId: string;
+    actorId: string;
+    acknowledgedAt: Date;
+  }): Promise<'acknowledged' | 'already_handled'> {
+    return createWebDelegationDatabase().transaction(async (client) => {
+      const found = await client.query<QueueAttentionItemRecord & Record<string, unknown>>(
+        `select * from moderation_queue_items where id=$1::uuid and server_id=$2`,
+        [input.itemId, input.guildId]
+      );
+      const item = found.rows[0];
+      if (!item || !isAutomaticResponseItem(item) || !item.detection_event_id)
+        return 'already_handled';
+      const rows = await client.query<{ id: string; metadata: unknown }>(
+        `select id, metadata from detection_events where id=$1::uuid and server_id=$2 for update`,
+        [item.detection_event_id, input.guildId]
+      );
+      const event = rows.rows[0];
+      const metadata = event && acknowledgeAutomaticResponseMetadata(event.metadata);
+      if (!metadata) return 'already_handled';
+      const queueMetadata = {
+        automatic_moderation_response: metadata.automatic_moderation_response,
+      };
+      const updated = await client.query(
+        `update moderation_queue_items set metadata=coalesce(metadata, '{}'::jsonb) || $4::jsonb, updated_at=$5 where id=$1::uuid and server_id=$2 and detection_event_id=$3::uuid and item_type='observed_alert_mirror' returning id`,
+        [input.itemId, input.guildId, event.id, JSON.stringify(queueMetadata), input.acknowledgedAt]
+      );
+      if (!updated.rows[0]) return 'already_handled';
+      await client.query(`update detection_events set metadata=$2::jsonb where id=$1::uuid`, [
+        event.id,
+        JSON.stringify(metadata),
+      ]);
+      return 'acknowledged';
+    });
   }
   public async acknowledgeIdentityReview(input: {
     itemId: string;
@@ -29,7 +67,7 @@ export class PostgresQueueAttentionRepository implements QueueAttentionRepositor
   }): Promise<'acknowledged' | 'already_handled'> {
     return createWebDelegationDatabase().transaction(async (client) => {
       const found = await client.query<QueueAttentionItemRecord & Record<string, unknown>>(
-        `select id, server_id, item_type, queue_channel_id, queue_message_id, report_intake_id, metadata, attention_cleanup_pending from moderation_queue_items where id=$1::uuid`,
+        `select id, server_id, item_type, queue_channel_id, queue_message_id, report_intake_id, detection_event_id, metadata, attention_cleanup_pending from moderation_queue_items where id=$1::uuid`,
         [input.itemId]
       );
       const item = found.rows[0];

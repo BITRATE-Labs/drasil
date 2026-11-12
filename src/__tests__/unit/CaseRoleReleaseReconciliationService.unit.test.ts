@@ -60,6 +60,7 @@ function buildService(options: {
     client,
     options.verificationEvents,
     options.roleManager ?? {
+      assertSafeCaseRole: jest.fn().mockResolvedValue(undefined),
       assignCaseRole: jest.fn().mockResolvedValue(true),
       removeCaseRole: jest.fn(),
     },
@@ -116,6 +117,7 @@ describe('CaseRoleReleaseReconciliationService (unit)', () => {
     };
     let reconciliationAttemptId: string | null = null;
     const roleManager = {
+      assertSafeCaseRole: jest.fn().mockResolvedValue(undefined),
       assignCaseRole: jest.fn().mockImplementation(async () => {
         const claimed = await verificationEvents.findById(verificationEvent.id);
         reconciliationAttemptId = claimed?.quarantine_attempt_id ?? null;
@@ -173,6 +175,7 @@ describe('CaseRoleReleaseReconciliationService (unit)', () => {
     const member = { id: 'user-1', roles: { cache: new Map() } };
     const guild = { id: 'guild-1', members: { fetch: jest.fn().mockResolvedValue(member) } };
     const roleManager = {
+      assertSafeCaseRole: jest.fn().mockResolvedValue(undefined),
       assignCaseRole: jest.fn().mockResolvedValue(true),
       removeCaseRole: jest.fn(),
     };
@@ -232,6 +235,7 @@ describe('CaseRoleReleaseReconciliationService (unit)', () => {
       client: { guilds: { cache: new Map([['guild-1', guild]]), fetch: jest.fn() } },
       verificationEvents,
       roleManager: {
+        assertSafeCaseRole: jest.fn().mockResolvedValue(undefined),
         assignCaseRole: jest.fn().mockResolvedValue(false),
         removeCaseRole: jest.fn(),
       },

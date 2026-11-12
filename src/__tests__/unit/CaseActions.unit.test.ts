@@ -55,6 +55,7 @@ async function arrange() {
   );
   const roleManager = {
     getCaseRoleId: jest.fn(async () => 'case-role'),
+    assertSafeCaseRole: jest.fn().mockResolvedValue(undefined),
     assignCaseRole: jest.fn(async () => true),
     removeCaseRole: jest.fn(async () => true),
   } satisfies IRoleManager;

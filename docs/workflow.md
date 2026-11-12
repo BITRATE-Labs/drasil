@@ -305,3 +305,13 @@ yet. The most likely future hardening points are:
 - Thread creation/reopen/resolve
 - Notification upsert/logging
 - Discord ban action
+
+### Incomplete automatic responses
+
+A qualifying automatic message or join detection attempts its configured response even when general setup diagnostics report errors. Explicit response modes, thresholds, exemptions, kick opt-ins, authorization, and operation-specific role safeguards still apply. Setup diagnostics remain available for repairs.
+
+The existing moderation inbox records incomplete responses before Discord delivery. It shows the confirmed action separately from failed role, thread, bookkeeping, or notification steps. An applied case role does not prove full channel isolation. Missing Discord destinations or failed sends leave the durable inbox item available.
+
+A reviewable pending case owns its failure evidence and one case mirror. A terminal or parked case retains its historical evidence and link, while the detection owns actionable response attention. Failure processing does not reopen historical cases or change a parked case's state. Reconciliation retains unresolved response attention and never replays a kick.
+
+Confirmed, unknown, and pending kicks offer inspection and acknowledgement rather than repeat enforcement on the response row. Acknowledgement records staff awareness, preserves the actual outcome, and leaves unresolved failures visible. Use existing case repair and notification refresh actions for case-owned failures. New or changed failures require renewed attention.

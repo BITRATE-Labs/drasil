@@ -42,7 +42,7 @@ function fixture(path: 'member' | 'by_id' | 'kick') {
       : path === 'by_id'
         ? service.banUserById(guild, user.id, 'reason', moderator, undefined, lifecycle)
         : service.banUser(member, 'reason', moderator, undefined, lifecycle);
-  return { service, provider, run };
+  return { service, provider, run, repository };
 }
 it.each(['member', 'by_id', 'kick'] as const)(
   'persists %s send marker before provider and acknowledgement before later work',
@@ -94,3 +94,32 @@ it.each(['member', 'by_id', 'kick'] as const)(
     expect(f.provider).toHaveBeenCalledTimes(1);
   }
 );
+
+it('preserves confirmed kick when follow-up fails', async () => {
+  const f = fixture('kick');
+  await expect(
+    f.run({
+      beforeSend: async () => undefined,
+      acknowledged: async () => {
+        throw new Error('bookkeeping unavailable');
+      },
+    })
+  ).rejects.toMatchObject({ outcome: 'kicked', step: 'persistence' });
+  expect(f.provider).toHaveBeenCalledTimes(1);
+});
+it('does not retry uncertain kicks', async () => {
+  const f = fixture('kick');
+  jest.mocked(f.provider).mockRejectedValueOnce(new Error('timeout'));
+  await expect(
+    f.run({ beforeSend: async () => undefined, acknowledged: jest.fn() })
+  ).rejects.toMatchObject({ outcome: 'unknown', step: 'kick' });
+  expect(f.provider).toHaveBeenCalledTimes(1);
+});
+it('classifies an explicit Discord rejection as failed', async () => {
+  const f = fixture('kick');
+  jest.mocked(f.provider).mockRejectedValueOnce({ status: 403, code: 50013 });
+  await expect(
+    f.run({ beforeSend: async () => undefined, acknowledged: jest.fn() })
+  ).rejects.toMatchObject({ outcome: 'failed', step: 'kick' });
+  expect(f.provider).toHaveBeenCalledTimes(1);
+});

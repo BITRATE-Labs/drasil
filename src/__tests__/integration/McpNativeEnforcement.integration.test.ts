@@ -2,7 +2,7 @@ import { mockDeep } from 'jest-mock-extended';
 import { PermissionsBitField } from 'discord.js';
 import { createDelegatedCaseActions } from '../../application/adapters/delegatedCases';
 import type { BotCaseDependencies } from '../../application/adapters/cases';
-import { UserModerationService } from '../../services/UserModerationService';
+import { UserModerationService, KickExecutionError } from '../../services/UserModerationService';
 import { createCaseConfirmationStore } from '../../application/context';
 import { Pool } from 'pg';
 import { getPrismaClient } from '../testDb';
@@ -471,6 +471,27 @@ integration('MCP native enforcement', () => {
       expect((await pool.query('select * from mcp_native_enforcements')).rows).toHaveLength(0);
     }
   );
+  it('preserves a confirmed kick when native acknowledgement persistence fails', async () => {
+    const f = await fixture('kick_user', false);
+    const send = jest.fn();
+    jest.spyOn(f.native, 'acknowledge').mockRejectedValue(new Error('ack database unavailable'));
+    const runtime = actualRuntime(f, send, 'kick');
+    await worker(f, runtime).processPendingRequests();
+    expect(await f.service.status(f.principal, f.accepted.executionId!)).toMatchObject({
+      state: 'partial',
+      code: 'provider_acknowledged_updates_pending',
+    });
+    expect(
+      (await pool.query('select acknowledged_at from mcp_native_enforcements')).rows[0]
+        .acknowledged_at
+    ).toBeNull();
+    expect(await f.native.reconcileNativeEnforcement(f.accepted.executionId!)).toMatchObject({
+      state: 'partial',
+      code: 'provider_acknowledged_updates_pending',
+    });
+    await worker(f, runtime).processPendingRequests();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
   it('does not repeat enforcement after a lost provider acknowledgement', async () => {
     const f = await fixture();
     const discordBan = jest.fn(async () => {
@@ -506,7 +527,11 @@ integration('MCP native enforcement', () => {
             const token = await f.native.start(execution);
             send();
             await f.native.acknowledge(execution.executionId, token);
-            throw new Error('bookkeeping interrupted');
+            throw new KickExecutionError(
+              'kicked',
+              'persistence',
+              new Error('bookkeeping interrupted')
+            );
           },
         }),
       };

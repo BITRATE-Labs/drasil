@@ -1,3 +1,4 @@
+import { readAutomaticModerationResponse } from '@drasil/application';
 import { injectable, inject, unmanaged } from 'inversify';
 import {
   Client,
@@ -240,6 +241,13 @@ interface ObservedDetectionMetadata {
   observed_action?: string;
 }
 
+export class NotificationPreparationError extends Error {
+  constructor(readonly operation: 'captcha_read' | 'notification_config' | 'notification_history') {
+    super('Case notification data could not be loaded.');
+    this.name = 'NotificationPreparationError';
+  }
+}
+
 /**
  * Service for managing notifications to admin/summary channels
  * It is NOT intended to perform any action secondary actions
@@ -280,7 +288,9 @@ export class NotificationManager implements INotificationManager {
     sourceMessage?: Message,
     captchaChallenge?: CaptchaChallenge | null
   ): Promise<Message | null> {
-    const serverConfig = await this.configService.getServerConfig(member.guild.id);
+    const serverConfig = await this.configService.getServerConfig(member.guild.id).catch(() => {
+      throw new NotificationPreparationError('notification_config');
+    });
     const responseSettings = getDetectionResponseSettings(serverConfig.settings);
     const notificationChannel = await this.getModerationNotificationChannel(
       member.guild.id,
@@ -291,11 +301,12 @@ export class NotificationManager implements INotificationManager {
       return null;
     }
 
+    const detectionEvents = await this.detectionEventsRepository
+      .findByServerAndUser(member.guild.id, member.id)
+      .catch(() => {
+        throw new NotificationPreparationError('notification_history');
+      });
     try {
-      const detectionEvents = await this.detectionEventsRepository.findByServerAndUser(
-        member.guild.id,
-        member.id
-      );
       const embed = this.presentationBuilder.createSuspiciousUserEmbed(
         member,
         detectionResult,
@@ -381,18 +392,34 @@ export class NotificationManager implements INotificationManager {
         sourceMessage
       );
       const actionDetectionEventId = detectionResult.detectionEventId ?? detectionEvents[0]?.id;
-      const components = actionDetectionEventId
-        ? this.presentationBuilder.createObservedActionRows(
-            member.id,
-            actionDetectionEventId,
-            member.guild.id,
-            {
-              includeBanAction: responseSettings.moderatorBanActionEnabled,
-              kind:
-                detectionResult.triggerSource === DetectionType.USER_REPORT ? 'report' : 'alert',
-            }
-          )
-        : [];
+      const response = readAutomaticModerationResponse(
+        detectionEvents.find((event) => event.id === actionDetectionEventId)?.metadata
+      );
+      const components =
+        actionDetectionEventId &&
+        (!response ||
+          (response.action !== 'kick' &&
+            response.caseId === null &&
+            response.attention !== 'resolved'))
+          ? this.presentationBuilder.createObservedActionRows(
+              member.id,
+              actionDetectionEventId,
+              member.guild.id,
+              {
+                includeBanAction: responseSettings.moderatorBanActionEnabled,
+                closeResponse: Boolean(response),
+                kind:
+                  detectionResult.triggerSource === DetectionType.USER_REPORT ? 'report' : 'alert',
+              }
+            )
+          : actionDetectionEventId && response?.caseId === null && response.attention !== 'resolved'
+            ? [
+                this.presentationBuilder.createAutomaticResponseCloseRow(
+                  member.id,
+                  actionDetectionEventId
+                ),
+              ]
+            : [];
 
       let notificationMessage: Message | null = null;
       if (existingNotification?.observed_notification_message_id) {
@@ -420,12 +447,7 @@ export class NotificationManager implements INotificationManager {
       }
 
       if (detectionResult.detectionEventId) {
-        const currentDetection = detectionEvents.find(
-          (event) => event.id === detectionResult.detectionEventId
-        );
-        const metadata = this.metadataToRecord(currentDetection?.metadata);
-        await this.detectionEventsRepository.updateMetadata(detectionResult.detectionEventId, {
-          ...metadata,
+        await this.detectionEventsRepository.patchMetadata(detectionResult.detectionEventId, {
           observed_notification_channel_id: notificationMessage.channelId,
           observed_notification_message_id: notificationMessage.id,
           observed_notification_last_notified_at: new Date().toISOString(),
@@ -862,7 +884,10 @@ export class NotificationManager implements INotificationManager {
     const actionedMessageIds = new Set(
       detectionEvents
         .map((event) => this.metadataToRecord(event.metadata) as ObservedDetectionMetadata)
-        .filter((metadata) => metadata.observed_action)
+        .filter((metadata) => {
+          const response = readAutomaticModerationResponse(metadata);
+          return metadata.observed_action || response?.attention === 'resolved' || response?.caseId;
+        })
         .map((metadata) => metadata.observed_notification_message_id)
         .filter((messageId): messageId is string => typeof messageId === 'string')
     );

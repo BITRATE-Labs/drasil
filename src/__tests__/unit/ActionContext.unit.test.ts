@@ -27,6 +27,7 @@ it('creates direct correlation without a durable request and preserves source', 
       }),
     },
     repository: {
+      acknowledgeAutomaticResponse: async () => 'already_handled',
       acknowledgeIdentityReview: async () => 'already_handled',
       findById: async () => null,
       reserveOrdinaryAcknowledgement: async () => null,

@@ -1,5 +1,9 @@
 import {
   acknowledgeIdentityReviewMetadata,
+  acknowledgeAutomaticResponseMetadata,
+  readAutomaticModerationResponse,
+  hasAutomaticResponseAttention,
+  isAutomaticResponseItem,
   projectReportIntakeState,
   isIdentityReviewItem,
   type QueueAttentionItemRecord,
@@ -11,6 +15,8 @@ import { Prisma, PrismaClient, moderation_queue_item_type } from '../db/prisma';
 import { TYPES } from '../di/symbols';
 import { RepositoryError } from './BaseRepository';
 import {
+  VerificationStatus,
+  CaseAttentionState,
   ModerationQueueItem,
   ModerationQueueItemType,
   ModerationQueueItemUpsert,
@@ -20,8 +26,14 @@ import {
 
 export interface IModerationQueueRepository extends Pick<
   QueueAttentionRepository,
-  'reserveOrdinaryAcknowledgement' | 'completeOrdinaryAcknowledgement'
+  | 'reserveOrdinaryAcknowledgement'
+  | 'completeOrdinaryAcknowledgement'
+  | 'acknowledgeAutomaticResponse'
 > {
+  upsertAutomaticResponseAttention(
+    data: ModerationQueueItemUpsert,
+    deleteMessage: (item: ModerationQueueItem) => Promise<boolean>
+  ): Promise<ModerationQueueItem | null>;
   findById(id: string): Promise<ModerationQueueItem | null>;
   findByCase(verificationEventId: string): Promise<ModerationQueueItem | null>;
   listByCase(verificationEventId: string): Promise<ModerationQueueItem[]>;
@@ -63,6 +75,10 @@ export interface IModerationQueueRepository extends Pick<
     actorId: string;
     acknowledgedAt: Date;
   }): Promise<'acknowledged' | 'already_handled'>;
+  deleteStaleCaseMirror(
+    item: ModerationQueueItem,
+    deleteMessage: (item: ModerationQueueItem) => Promise<boolean>
+  ): Promise<void>;
   deleteById(id: string): Promise<ModerationQueueItem | null>;
 }
 
@@ -306,6 +322,53 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
     }
   }
 
+  async upsertAutomaticResponseAttention(
+    data: ModerationQueueItemUpsert,
+    deleteMessage: (item: ModerationQueueItem) => Promise<boolean>
+  ): Promise<ModerationQueueItem | null> {
+    if (!data.detectionEventId || data.itemType !== ModerationQueueItemType.OBSERVED_ALERT_MIRROR)
+      return null;
+    return this.prisma.$transaction(async (transaction) => {
+      // Detection-first locking matches acknowledgement; supplied response snapshots can be stale.
+      const rows = await transaction.$queryRaw<
+        Array<{ id: string; user_id: string | null; metadata: Prisma.JsonValue }>
+      >`
+        SELECT id, user_id, metadata FROM detection_events WHERE id=${data.detectionEventId}::uuid AND server_id=${data.serverId} FOR UPDATE`;
+      const event = rows.at(0);
+      if (!event?.user_id) return null;
+      const response = readAutomaticModerationResponse(event.metadata);
+      if (!response) return null;
+      const writeData = this.toPrismaWriteData({
+        ...data,
+        userId: event.user_id,
+        metadata: { automatic_moderation_response: response },
+      });
+      const existing = await transaction.moderation_queue_items.findFirst({
+        where: {
+          server_id: data.serverId,
+          detection_event_id: event.id,
+          item_type: 'observed_alert_mirror',
+          attention_cleanup_pending: false,
+        },
+      });
+      if (!hasAutomaticResponseAttention(event.metadata)) {
+        // Keep renewal serialized until the obsolete Discord message and exact row are removed.
+        if (existing && (await deleteMessage(existing as ModerationQueueItem))) {
+          await transaction.moderation_queue_items.delete({ where: { id: existing.id } });
+        }
+        return null;
+      }
+      return (
+        existing
+          ? await transaction.moderation_queue_items.update({
+              where: { id: existing.id },
+              data: { ...writeData, updated_at: new Date() },
+            })
+          : await transaction.moderation_queue_items.create({ data: writeData })
+      ) as ModerationQueueItem;
+    });
+  }
+
   async upsert(data: ModerationQueueItemUpsert): Promise<ModerationQueueItem> {
     try {
       if (
@@ -418,6 +481,47 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
     return deleted.count > 0;
   }
 
+  async acknowledgeAutomaticResponse(input: {
+    itemId: string;
+    guildId: string;
+    actorId: string;
+    acknowledgedAt: Date;
+  }): Promise<'acknowledged' | 'already_handled'> {
+    return this.prisma.$transaction(async (transaction) => {
+      const snapshot = await transaction.moderation_queue_items.findUnique({
+        where: { id: input.itemId },
+      });
+      if (
+        !snapshot ||
+        snapshot.server_id !== input.guildId ||
+        !snapshot.detection_event_id ||
+        !isAutomaticResponseItem(snapshot)
+      )
+        return 'already_handled';
+      const rows = await transaction.$queryRaw<Array<{ id: string; metadata: Prisma.JsonValue }>>`
+        SELECT id, metadata FROM detection_events WHERE id=${snapshot.detection_event_id}::uuid AND server_id=${input.guildId} FOR UPDATE`;
+      const event = rows.at(0);
+      if (!event) return 'already_handled';
+      const metadata = acknowledgeAutomaticResponseMetadata(event.metadata);
+      if (!metadata) return 'already_handled';
+      const queueMetadata = {
+        automatic_moderation_response: metadata.automatic_moderation_response,
+      };
+      const updated = await transaction.$executeRaw`
+        UPDATE moderation_queue_items
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(queueMetadata)}::jsonb,
+            updated_at = ${input.acknowledgedAt}
+        WHERE id = ${input.itemId}::uuid AND server_id = ${input.guildId}
+          AND detection_event_id = ${event.id}::uuid AND item_type = 'observed_alert_mirror'`;
+      if (!updated) return 'already_handled';
+      await transaction.detection_events.update({
+        where: { id: event.id },
+        data: { metadata: metadata as Prisma.InputJsonValue },
+      });
+      return 'acknowledged';
+    });
+  }
+
   async acknowledgeIdentityReview(input: {
     itemId: string;
     guildId: string;
@@ -463,6 +567,41 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
         data: { metadata: metadata as Prisma.InputJsonValue, updated_at: input.acknowledgedAt },
       });
       return 'acknowledged';
+    });
+  }
+
+  async deleteStaleCaseMirror(
+    item: ModerationQueueItem,
+    deleteMessage: (item: ModerationQueueItem) => Promise<boolean>
+  ): Promise<void> {
+    if (item.item_type !== ModerationQueueItemType.CASE_MIRROR || !item.verification_event_id)
+      return;
+    await this.prisma.$transaction(async (transaction) => {
+      // Hold the case lock through cleanup so a renewed review cannot lose its mirror.
+      const owners = await transaction.$queryRaw<
+        Array<{
+          status: VerificationStatus;
+          attention_state: CaseAttentionState;
+        }>
+      >`SELECT status, attention_state FROM verification_events
+          WHERE id=${item.verification_event_id}::uuid AND server_id=${item.server_id} FOR UPDATE`;
+      const owner = owners.at(0);
+      if (
+        owner?.status === VerificationStatus.PENDING &&
+        owner.attention_state === CaseAttentionState.REVIEW_REQUIRED
+      )
+        return;
+      const current = await transaction.moderation_queue_items.findFirst({
+        where: {
+          id: item.id,
+          server_id: item.server_id,
+          verification_event_id: item.verification_event_id,
+          item_type: ModerationQueueItemType.CASE_MIRROR,
+        },
+      });
+      if (current && (await deleteMessage(current as ModerationQueueItem))) {
+        await transaction.moderation_queue_items.delete({ where: { id: current.id } });
+      }
     });
   }
 

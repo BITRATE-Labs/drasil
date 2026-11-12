@@ -927,3 +927,88 @@ for (const kind of ['report', 'detection'] as const) {
     expect(state.request).toHaveBeenCalledTimes(2);
   });
 }
+
+it.each(['kicked', 'failed', 'unknown', 'pending'])(
+  'does not offer repeat kick in selected response detail (%s)',
+  async (outcome) => {
+    const response = {
+      action: 'kick',
+      outcome,
+      attention: 'required',
+      caseId: null,
+      updatedAt: '2026-11-11T00:00:00.000Z',
+      failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+    };
+    state.query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('from detection_events de')
+        ? [
+            {
+              id: 'det-1',
+              server_id: 'guild-1',
+              user_id: 'user-1',
+              detection_type: 'suspicious_content',
+              confidence: 0.8,
+              detected_at: '2026-11-11T00:00:00.000Z',
+              reasons: [],
+              metadata: { observed_action: 'kick', automatic_moderation_response: response },
+              latest_verification_event_id: null,
+              admin_action: null,
+              admin_action_at: null,
+              admin_action_by: null,
+              channel_id: null,
+              message_id: null,
+              latest_accounting_action_type: null,
+              latest_accounting_action_at: null,
+            },
+          ]
+        : sql.includes('from moderation_queue_items')
+          ? [{ id: 'response-queue', metadata: { automatic_moderation_response: response } }]
+          : [],
+    }));
+    const result = await createModerationWorkspaceDataAdapter(actor).getInboxItemDetail({
+      guildId: 'guild-1',
+      itemId: 'detection:det-1',
+    });
+    expect(result?.item.allowedActions).not.toContain('kick_user');
+    expect(result?.item.allowedActions).toContain('acknowledge');
+    expect(result?.item.allowedActions).toContain('dismiss_no_action');
+    expect(result?.item.statusLabel).not.toBe('kick');
+    if (outcome === 'failed' || outcome === 'unknown') {
+      expect(result?.item.summary).not.toContain('Member kicked.');
+      if (result?.kind === 'observed_alert') expect(result.detection.observedAction).toBeNull();
+    }
+    expect(result?.item.queueItemId).toBe('response-queue');
+  }
+);
+
+it.each(['resolved', 'required'])(
+  'projects the last saved review closure on %s response attention',
+  async (attention) => {
+    const row = observedReadRow();
+    row.metadata = {
+      observed_action: 'kick',
+      automatic_response_resolved_by: '123456789012345678',
+      automatic_response_resolved_at: '2026-11-12T00:00:00.000Z',
+      automatic_moderation_response: {
+        action: 'kick',
+        outcome: 'unknown',
+        attention,
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [{ step: 'kick', code: 'kick_outcome_unknown' }],
+      },
+    };
+    state.query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('from detection_events de') ? [row] : [],
+    }));
+    const result = await createModerationWorkspaceDataAdapter(actor).getInboxItemDetail({
+      guildId: 'guild-1',
+      itemId: 'detection:observed-read',
+    });
+    expect(result).toMatchObject({
+      kind: 'observed_alert',
+      reviewClosure: { actorId: '123456789012345678', closedAt: '2026-11-12T00:00:00.000Z' },
+    });
+    expect(result?.item.summary).toContain('Kick outcome could not be confirmed.');
+  }
+);

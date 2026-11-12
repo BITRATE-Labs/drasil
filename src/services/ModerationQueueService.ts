@@ -41,6 +41,10 @@ import { getModerationQueueSettings } from '../utils/moderationQueueSettings';
 import { NotificationPresentationBuilder } from './NotificationPresentationBuilder';
 import {
   projectReportIntakeState,
+  readAutomaticModerationResponse,
+  formatAutomaticModerationResponse,
+  formatCaseActionFailures,
+  hasAutomaticResponseAttention,
   type ReportAnalysisOutcome,
   type QueueAttentionItemRecord,
 } from '@drasil/application';
@@ -176,11 +180,6 @@ export class ModerationQueueService implements IModerationQueueService {
   }
 
   public async syncServerQueue(serverId: string): Promise<void> {
-    const serverConfig = await this.configService.getServerConfig(serverId);
-    if (!getModerationQueueSettings(serverConfig.settings).channelId) {
-      return;
-    }
-
     const pendingCases =
       await this.verificationEventRepository.findReviewablePendingByServer(serverId);
     const observedAlerts =
@@ -220,12 +219,7 @@ export class ModerationQueueService implements IModerationQueueService {
       return;
     }
 
-    const serverConfig = await this.configService.getServerConfig(verificationEvent.server_id);
-    const queueChannel = await this.getQueueChannel(serverConfig.settings);
-    if (!queueChannel) {
-      return;
-    }
-
+    // The web inbox uses this durable mirror for case failure summaries without a Discord queue.
     const item = await this.moderationQueueRepository.upsert({
       serverId: verificationEvent.server_id,
       userId: verificationEvent.user_id,
@@ -234,6 +228,12 @@ export class ModerationQueueService implements IModerationQueueService {
       detectionEventId: verificationEvent.detection_event_id,
       metadata: this.toJson({ refreshed_at: new Date().toISOString() }),
     });
+
+    const serverConfig = await this.configService.getServerConfig(verificationEvent.server_id);
+    const queueChannel = await this.getQueueChannel(serverConfig.settings);
+    if (!queueChannel) {
+      return;
+    }
 
     const responseSettings = getDetectionResponseSettings(serverConfig.settings);
     const message = await this.sendOrEditQueueMessage(
@@ -267,34 +267,54 @@ export class ModerationQueueService implements IModerationQueueService {
   }
 
   public async upsertObservedAlertMirror(detectionEvent: DetectionEvent): Promise<void> {
+    const response = readAutomaticModerationResponse(detectionEvent.metadata);
     if (
       !detectionEvent.server_id ||
-      this.hasObservedAction(detectionEvent) ||
-      !this.hasObservedNotification(detectionEvent)
+      (response === null &&
+        (this.hasObservedAction(detectionEvent) || !this.hasObservedNotification(detectionEvent)))
     ) {
       await this.deleteObservedAlertMirror(detectionEvent.id);
       return;
     }
 
-    const serverConfig = await this.configService.getServerConfig(detectionEvent.server_id);
-    const queueChannel = await this.getQueueChannel(serverConfig.settings);
-    if (!queueChannel) {
-      return;
-    }
-
-    const item = await this.moderationQueueRepository.upsert({
-      serverId: detectionEvent.server_id,
+    const serverId = detectionEvent.server_id;
+    const data = {
+      serverId,
       userId: detectionEvent.user_id,
       itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
       detectionEventId: detectionEvent.id,
-      metadata: this.toJson({ refreshed_at: new Date().toISOString() }),
-    });
+      metadata: this.toJson(
+        response
+          ? { automatic_moderation_response: response }
+          : { refreshed_at: new Date().toISOString() }
+      ),
+    };
+    const durableItem = response
+      ? await this.moderationQueueRepository.upsertAutomaticResponseAttention(data, (item) =>
+          this.deleteQueueMessage(item)
+        )
+      : null;
+    if (response && !durableItem) return;
+    if (durableItem) {
+      detectionEvent = {
+        ...detectionEvent,
+        metadata: { ...detectionEvent.metadata, ...this.toRecord(durableItem.metadata) },
+      };
+    }
+    const serverConfig = await this.configService.getServerConfig(serverId);
+    const queueChannel = await this.getQueueChannel(serverConfig.settings);
+    if (!queueChannel) return;
+    const item = durableItem ?? (await this.moderationQueueRepository.upsert(data));
 
     const responseSettings = getDetectionResponseSettings(serverConfig.settings);
     const message = await this.sendOrEditQueueMessage(
       item,
       queueChannel,
-      this.buildObservedAlertPayload(detectionEvent, responseSettings.moderatorBanActionEnabled)
+      this.buildObservedAlertPayload(
+        detectionEvent,
+        responseSettings.moderatorBanActionEnabled,
+        item.id
+      )
     );
     if (message) {
       await this.moderationQueueRepository.updateDiscordMessage(
@@ -786,8 +806,27 @@ export class ModerationQueueService implements IModerationQueueService {
       const staleObserved =
         item.item_type === ModerationQueueItemType.OBSERVED_ALERT_MIRROR &&
         (!item.detection_event_id || !activeObservedIds.has(item.detection_event_id));
-      if (staleCase || staleObserved) {
-        await this.deleteQueueItems([item]);
+      try {
+        if (
+          staleObserved &&
+          item.detection_event_id &&
+          readAutomaticModerationResponse(item.metadata)
+        ) {
+          // Revalidate under the detection lock; source enumeration predates concurrent responses.
+          await this.upsertObservedAlertMirrorById(item.detection_event_id);
+        } else if (staleCase && item.verification_event_id) {
+          await this.moderationQueueRepository.deleteStaleCaseMirror(item, (current) =>
+            this.deleteQueueMessage(current)
+          );
+        } else if (staleCase || staleObserved) {
+          await this.deleteQueueItems([item]);
+        }
+      } catch (error) {
+        console.warn('Stale moderation queue cleanup incomplete', {
+          queue_item_id: item.id,
+          item_type: item.item_type,
+          error_kind: error instanceof Error ? 'error' : 'non_error',
+        });
       }
     }
   }
@@ -987,6 +1026,9 @@ export class ModerationQueueService implements IModerationQueueService {
       });
     }
 
+    const failureSummary = formatCaseActionFailures(verificationEvent.metadata);
+    if (failureSummary) embed.addFields({ name: 'Response incomplete', value: failureSummary });
+
     return {
       allowedMentions: { parse: [] },
       embeds: [embed],
@@ -1011,8 +1053,54 @@ export class ModerationQueueService implements IModerationQueueService {
 
   private buildObservedAlertPayload(
     detectionEvent: DetectionEvent,
-    includeBanAction: boolean
+    includeBanAction: boolean,
+    itemId: string
   ): QueueMessagePayload {
+    const response = readAutomaticModerationResponse(detectionEvent.metadata);
+    if (response && hasAutomaticResponseAttention(detectionEvent.metadata)) {
+      return {
+        allowedMentions: { parse: [] },
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0xffc107)
+            .setTitle('Automatic Response Needs Review')
+            .setDescription(
+              `<@${detectionEvent.user_id}>: ${formatAutomaticModerationResponse(response)}`
+            )
+            .addFields({
+              name: 'Failures',
+              value:
+                response.failures.map((failure) => failure.step).join(', ') ||
+                'Response pending confirmation.',
+            }),
+        ],
+        components: [
+          ...(response.attention === 'required'
+            ? [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(ModerationQueueService.buildAcknowledgeCustomId(itemId))
+                    .setLabel('Acknowledge')
+                    .setStyle(ButtonStyle.Secondary)
+                ),
+              ]
+            : []),
+          ...(response.action === 'kick'
+            ? [
+                this.presentationBuilder.createAutomaticResponseCloseRow(
+                  detectionEvent.user_id,
+                  detectionEvent.id
+                ),
+              ]
+            : this.presentationBuilder.createObservedActionRows(
+                detectionEvent.user_id,
+                detectionEvent.id,
+                detectionEvent.server_id ?? undefined,
+                { includeBanAction, closeResponse: true }
+              )),
+        ],
+      };
+    }
     const detectedAt = new Date(detectionEvent.detected_at);
     const embed = new EmbedBuilder()
       .setColor(0xffc107)

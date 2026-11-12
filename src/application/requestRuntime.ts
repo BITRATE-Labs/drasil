@@ -1,3 +1,4 @@
+import { KickExecutionError } from '../services/UserModerationService';
 import { ReportInstructionsRollbackRequiredError } from '../controllers/ReportInstructionsManager';
 import { SetupEffectsStateChangedError } from './adapters/approvedSetup';
 import {
@@ -223,6 +224,16 @@ export async function prepareQueuedRequest(input: {
                 state: 'uncertain',
                 code: 'stale_state_after_external_effects',
               };
+            if (
+              command.kind === 'kick_user' &&
+              error instanceof KickExecutionError &&
+              error.outcome === 'kicked'
+            )
+              return {
+                action_type: 'delegated_admission',
+                state: 'partial',
+                code: 'provider_acknowledged_updates_pending',
+              };
             if (command.kind === 'ban_user' || command.kind === 'kick_user') {
               const receipt = await delegation?.reconcileNativeEnforcement?.(
                 admission.execution.executionId
@@ -230,8 +241,19 @@ export async function prepareQueuedRequest(input: {
               if (receipt?.code === 'execution_interrupted_before_send')
                 return {
                   action_type: 'delegated_admission',
-                  state: error instanceof ActionDeniedError ? 'denied' : 'failed',
-                  code: error instanceof ActionDeniedError ? error.code : receipt.code,
+                  state:
+                    error instanceof ActionDeniedError ||
+                    (error instanceof KickExecutionError &&
+                      error.cause instanceof ActionDeniedError)
+                      ? 'denied'
+                      : 'failed',
+                  code:
+                    error instanceof ActionDeniedError
+                      ? error.code
+                      : error instanceof KickExecutionError &&
+                          error.cause instanceof ActionDeniedError
+                        ? error.cause.code
+                        : receipt.code,
                 };
               return {
                 action_type: 'delegated_admission',

@@ -138,3 +138,13 @@ Run `src/__tests__/integration/ReportIntakeStagedFlow.integration.test.ts` only 
 Run `node -r ts-node/register src/scripts/evaluateReportIntake.ts` to validate the synthetic PNG assets and labels with zero provider requests. Paid execution requires separate approval and `--execute-paid`. The tool never creates a Discord client or performs moderation.
 
 See the [acceptance report and controlled rollout checklist](superpowers/reports/2026-11-03-staged-report-intake-acceptance.md) for actual results, live checks still pending, rollout/rollback steps and the known failed-submission recovery limitation. Local mocks are not live acceptance.
+
+### Automatic response outcomes
+
+- Qualifying message and join detections still attempt configured restriction or eligible kick when general setup diagnostics report errors or cannot run. Explicit off/record-only/notify-only policy, thresholds, exemptions, and kick opt-ins retain their behavior.
+- Reject unsafe role grants without applying the role. Preserve the durable case and show role failure. When the role succeeds and the thread fails, show the applied role separately from the failed thread, without claiming full isolation.
+- Distinguish a rejected kick, uncertain kick, pending kick, and confirmed kick followed by bookkeeping or delivery failure. Response attention must offer no repeat kick. Reconciliation must not enforce again.
+- With every Discord notification and queue link missing or inaccessible, retain one durable attention item and show its actual outcome in the web inbox and selected detail. Never route evidence to an arbitrary fallback destination.
+- A reviewable case absorbs failure attention without a duplicate observed row. Terminal and parked case failures retain historical linkage and one detection-owned attention row. Do not reopen or unpark the case.
+- Acknowledge validated response attention through the existing control. Confirm that staff acknowledgement preserves the kicked/failed/unknown outcome and unresolved failure details, including after reconciliation. Ordinary or malformed observed rows must not offer this control.
+- Coalesced alert updates show changed failure details. Successful enforcement and notification continue through the existing successful path.

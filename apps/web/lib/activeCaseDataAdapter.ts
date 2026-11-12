@@ -1,5 +1,7 @@
 import {
   evaluateCasePolicy,
+  formatCaseActionFailures,
+  readAutomaticModerationResponse,
   readCasePolicy,
   type CaptchaIssuanceConfiguration,
 } from '@drasil/application';
@@ -132,6 +134,7 @@ interface CaseSummaryRow {
   user_username: string | null;
   user_metadata: unknown;
   member_user_id: string | null;
+  case_role_active?: boolean;
   captcha_method?: 'turnstile' | 'discord_image' | null;
   captcha_method_revision?: number | null;
   captcha_id?: string | null;
@@ -486,6 +489,7 @@ export function parseCaseSummaryRow(row: CaseSummaryRow, now = new Date()): Case
   const staleHours = Math.max(0, Math.floor((now.getTime() - updatedAt.getTime()) / 3_600_000));
   const presenceState = resolvePresenceState(row);
   const policy = readCasePolicy(metadataToRecord(row.server_settings));
+  const response = readAutomaticModerationResponse(row.metadata);
   const quarantine = readNestedRecord(metadataToRecord(row.metadata), 'account_quarantine');
   const quarantineEffects =
     row.case_kind === 'compromised_account'
@@ -521,6 +525,8 @@ export function parseCaseSummaryRow(row: CaseSummaryRow, now = new Date()): Case
     lastActionAt: toNullableIsoString(row.last_action_at),
     surfaces: buildSurfaces(row),
     allowedActions: resolveAllowedActions(row, presenceState).filter((action) => {
+      if (action === 'kick_user' && response?.action === 'kick' && response.outcome !== 'failed')
+        return false;
       if (action === 'ban_user' || action === 'ban_by_id')
         return (
           evaluateCasePolicy({ kind: 'ban_case_user', reason: null }, policy) !== 'policy_disabled'
@@ -703,6 +709,7 @@ const SUMMARY_QUERY = `
     u.username as user_username,
     u.metadata as user_metadata,
     sm.user_id as member_user_id,
+    sm.case_role_active,
     cc.provider as captcha_method,
     cc.method_revision as captcha_method_revision,
     cc.id::text as captcha_id,
@@ -910,9 +917,20 @@ export class PostgresActiveCaseDataAdapter implements ActiveCaseDataAdapter {
     return caseDetailSchema.parse({
       ...parseCaseSummaryRow(row),
       notes: row.notes,
-      evidenceItems: evidenceResult.rows.map((evidenceRow) =>
-        parseEvidenceRow(evidenceRow, guildId)
-      ),
+      evidenceItems: [
+        ...(formatCaseActionFailures(row.metadata, row.case_role_active)
+          ? [
+              {
+                id: `case-response:${row.id}`,
+                kind: 'Moderation response incomplete',
+                content: formatCaseActionFailures(row.metadata, row.case_role_active),
+                createdAt: toIsoString(row.updated_at),
+                url: null,
+              },
+            ]
+          : []),
+        ...evidenceResult.rows.map((evidenceRow) => parseEvidenceRow(evidenceRow, guildId)),
+      ],
       messageContext: messageContextResult.rows.map((contextRow) =>
         parseMessageContextRow(contextRow, guildId, sourceMessageId)
       ),
