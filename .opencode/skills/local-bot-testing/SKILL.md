@@ -67,6 +67,10 @@ These counts identify work to inspect, not proof that every worker is idle. Revi
 
 Prepare the selected `DRASIL_DEV_GUILD_ID` in the owned environment. After preflight and authorization, use `npm run dev` in an owned interactive session. This selects `src/dev.ts`, initializes local diagnostic capture, disables remote Langfuse/PostHog export, then imports the existing bootstrap. It is a real bot, not a dry-run or an automatic identity check. The normal `npm start` entry does not activate guild scoping and still registers global commands. Remote-exporter testing through that entry is separate app-wide work; do not use it as a scoped test or against an app whose global Entry Point must be preserved.
 
+The scoped entry deliberately ignores interactions outside the selected guild, including DMs and group DMs. It registers guild commands only. User-install/DM reporting acceptance requires a separately authorized app-wide dev run with the normal entry and a dedicated app whose global commands may be replaced. Missing DM commands or unanswered out-of-scope interactions do not establish a handler failure.
+
+Before every startup or restart, assert that the configured server rows contain only the selected guild. Stop and correct the owned connection if any other guild appears. The dispatch guard does not constrain ready-time workers, which use all rows in that database.
+
 Record the watcher and child PID/start time. Wait for login, configuration, command registration and relevant workers, not just the generic startup line. Verify the selected guild setup and pending work before the fixture action.
 
 For an initial zero-provider smoke, disable automatic features, use a dummy OpenAI key with a closed loopback endpoint, and run `/ping` selecting the dev app. Verify its private `Pong!` response. Use the currently supported signed-in Discord UI directly when available; hand off only when an actual access or UI capability gap requires the user. Historical browser failures are not current access proof. This smoke verifies gateway/command behavior, not report extraction or provider acceptance.

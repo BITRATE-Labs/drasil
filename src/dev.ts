@@ -12,6 +12,6 @@ process.env.LANGFUSE_TRACING_ENABLED = 'false';
 process.env.POSTHOG_PRODUCT_ANALYTICS_ENABLED = 'false';
 initLocalDiagnostics();
 console.log(
-  `[local-diagnostics] DEVELOPMENT ONLY; pid=${process.pid}; guild=${guildId}; other guild events ignored; remote telemetry disabled`
+  `[local-diagnostics] DEVELOPMENT ONLY; pid=${process.pid}; guild=${guildId}; gateway dispatch and commands scoped; workers use all configured DB rows; remote telemetry disabled`
 );
 void import('./index');
