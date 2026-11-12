@@ -83,6 +83,14 @@ const buildMessage = (guildId: string, channelId: string): Message =>
     url: `https://discord.com/channels/${guildId}/${channelId}/message-1`,
   }) as Message;
 
+const buildDetection = (confidence = 0.8): DetectionResult => ({
+  label: 'SUSPICIOUS',
+  confidence,
+  reasons: [],
+  triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+  triggerContent: '',
+});
+
 describe('SecurityActionService (unit)', () => {
   let detectionEventsRepository: InMemoryDetectionEventsRepository;
   let serverMemberRepository: InMemoryServerMemberRepository;
@@ -983,13 +991,7 @@ describe('SecurityActionService (unit)', () => {
         auto_kick_min_confidence_threshold: 95,
       },
     });
-    const result: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.99,
-      reasons: [],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: '',
-    };
+    const result: DetectionResult = buildDetection(0.99);
     userModerationService.kickUser.mockImplementationOnce(
       async (_member, _reason, _actor, _id, lifecycle) => {
         await lifecycle?.beforeSend();
@@ -1417,13 +1419,7 @@ describe('SecurityActionService (unit)', () => {
 
   it('persists detection-owned restriction attention when the case is parked during follow-up', async () => {
     const member = buildMember('parked-follow-up-guild', 'parked-follow-up-user');
-    const detection: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.8,
-      reasons: [],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: '',
-    };
+    const detection: DetectionResult = buildDetection();
     notificationManager.upsertSuspiciousUserNotification.mockImplementation(
       async (_member, _detection, owner) => {
         await verificationEventRepository.update(owner.id, {
@@ -1479,13 +1475,7 @@ describe('SecurityActionService (unit)', () => {
     'persists one case-owned response when %s fails',
     async (step) => {
       const member = buildMember('failure-guild', 'failure-user');
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
-        confidence: 0.8,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: '',
-      };
+      const detection: DetectionResult = buildDetection();
       if (step === 'role')
         userModerationService.applyCaseRole.mockRejectedValue(new Error('private error'));
       if (step === 'thread')
@@ -1529,13 +1519,7 @@ describe('SecurityActionService (unit)', () => {
     'retains evidence-thread and subsequent notification failures (first failure write unavailable: %s)',
     async (writeUnavailable) => {
       const member = buildMember('combined-failure-guild', 'combined-failure-user');
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
-        confidence: 0.8,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: '',
-      };
+      const detection: DetectionResult = buildDetection();
       threadManager.createPrivateEvidenceThread.mockRejectedValueOnce(
         new Error('evidence unavailable')
       );
@@ -1607,13 +1591,7 @@ describe('SecurityActionService (unit)', () => {
           ],
         }
       );
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
-        confidence: 0.9,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: '',
-      };
+      const detection: DetectionResult = buildDetection(0.9);
       const failures: AutomaticModerationResponse['failures'] =
         kind === 'kick'
           ? [{ step: 'kick', code: 'kick_rejected' }]
@@ -1673,13 +1651,7 @@ describe('SecurityActionService (unit)', () => {
         .spyOn(service, 'recordAutomaticResponseFailure')
         .mockRejectedValueOnce(new Error('PRIVATE_SECONDARY_SENTINEL'));
       const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
-        confidence: 0.99,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: '',
-      };
+      const detection: DetectionResult = buildDetection(0.99);
       try {
         await expect(
           source === 'message'
@@ -1706,13 +1678,7 @@ describe('SecurityActionService (unit)', () => {
   it('reuses case-owned attention when the same failing detection is processed repeatedly', async () => {
     const service = buildService();
     const member = buildMember('repeat-guild', 'repeat-user');
-    const result: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.8,
-      reasons: [],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: '',
-    };
+    const result: DetectionResult = buildDetection();
     notificationManager.upsertSuspiciousUserNotification.mockResolvedValue(null);
     const caseIds = new Set<string>();
     const observed = jest.fn();
@@ -1738,13 +1704,7 @@ describe('SecurityActionService (unit)', () => {
       .mockReturnValue('11111111-1111-4111-8111-111111111111');
     const service = buildService();
     const member = buildMember('ack-guild', 'ack-user');
-    const result: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.8,
-      reasons: [],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: '',
-    };
+    const result: DetectionResult = buildDetection();
     (service as any).moderationQueueService = {
       upsertCaseMirror: jest.fn().mockResolvedValue(undefined),
       upsertObservedAlertMirrorById: jest.fn().mockResolvedValue(undefined),
@@ -1783,13 +1743,7 @@ describe('SecurityActionService (unit)', () => {
     async (delivery, alreadyFailed) => {
       const service = buildService();
       const member = buildMember('delivery-failure-guild', 'delivery-failure-user');
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
-        confidence: 0.8,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: '',
-      };
+      const detection: DetectionResult = buildDetection();
       const id = await service.recordSuspiciousMessage(member, detection);
       const initial: AutomaticModerationResponse = {
         action: 'kick',
@@ -1848,13 +1802,7 @@ describe('SecurityActionService (unit)', () => {
     async (failure) => {
       const service = buildService();
       const member = buildMember('write-failure-guild', 'write-failure-user');
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
-        confidence: 0.8,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: '',
-      };
+      const detection: DetectionResult = buildDetection();
       const mirror = jest.fn().mockResolvedValue(undefined);
       (
         service as unknown as { moderationQueueService: Partial<IModerationQueueService> }
@@ -1914,13 +1862,7 @@ describe('SecurityActionService (unit)', () => {
   it('persists no-case failure attention before configured delivery and propagates a failed write', async () => {
     const service = buildService();
     const member = buildMember('failure-guild', 'failure-user');
-    const detection: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.8,
-      reasons: [],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: '',
-    };
+    const detection: DetectionResult = buildDetection();
     const mirror = jest.fn().mockRejectedValue(new Error('queue write failed'));
     (service as any).moderationQueueService = { upsertObservedAlertMirrorById: mirror };
     await expect(
@@ -2070,13 +2012,7 @@ describe('SecurityActionService (unit)', () => {
     'missing_access',
   ])('preserves the safe thread repair code %s through case creation', async (code) => {
     const member = buildMember('safe-thread-guild', 'safe-thread-user');
-    const detection: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: [],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: '',
-    };
+    const detection: DetectionResult = buildDetection(0.9);
     threadManager.createVerificationThread.mockRejectedValueOnce(
       Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), { code })
     );
@@ -2114,13 +2050,7 @@ describe('SecurityActionService (unit)', () => {
     'records %s as persistence failure while retaining delivered notification and evidence',
     async (operation) => {
       const member = buildMember('persistence-guild', 'persistence-user');
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
-        confidence: 0.9,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: '',
-      };
+      const detection: DetectionResult = buildDetection(0.9);
       const service = buildService();
       const error = new Error('PRIVATE_PROVIDER_SENTINEL');
       const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -2207,13 +2137,7 @@ describe('SecurityActionService (unit)', () => {
       const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
         const member = buildMember('delayed-diagnostics-guild', 'delayed-diagnostics-user');
-        const detection: DetectionResult = {
-          label: 'SUSPICIOUS',
-          confidence: 0.9,
-          reasons: [],
-          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-          triggerContent: '',
-        };
+        const detection: DetectionResult = buildDetection(0.9);
         threadManager.createVerificationThread.mockRejectedValueOnce(new Error('Initial failure'));
         await buildService().handleSuspiciousMessage(member, detection);
         const error = Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), {

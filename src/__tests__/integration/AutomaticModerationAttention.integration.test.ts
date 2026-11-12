@@ -70,30 +70,44 @@ suite('automatic moderation attention', () => {
       detections,
       queue
     );
-    return { prisma, server, detections, queue, event, service };
+    function buildSecurity({
+      notifications = {} as INotificationManager,
+      cases = new VerificationEventRepository(prisma),
+      moderation = {} as IUserModerationService & ICombinedBanLifecycleService,
+    }: {
+      notifications?: INotificationManager;
+      cases?: VerificationEventRepository;
+      moderation?: IUserModerationService & ICombinedBanLifecycleService;
+    } = {}): SecurityActionService {
+      return new SecurityActionService(
+        notifications,
+        detections,
+        new ServerMemberRepository(prisma),
+        cases,
+        new UserRepository(prisma),
+        new ServerRepository(prisma),
+        {} as IAdminActionService,
+        {} as IThreadManager,
+        moderation,
+        {} as Client,
+        undefined,
+        undefined,
+        service
+      );
+    }
+    return { prisma, server, detections, queue, event, service, buildSecurity };
   }
   it.each(['identical', 'new_failure', 'new_followup'] as const)(
     'failure recording racing Close preserves completion unless facts change (%s)',
     async (change) => {
       const f = await fixture();
       const cases = new VerificationEventRepository(f.prisma);
-      const security = new SecurityActionService(
-        {
+      const security = f.buildSecurity({
+        notifications: {
           upsertObservedDetectionNotification: jest.fn().mockResolvedValue(null),
         } as unknown as INotificationManager,
-        f.detections,
-        new ServerMemberRepository(f.prisma),
         cases,
-        new UserRepository(f.prisma),
-        new ServerRepository(f.prisma),
-        {} as IAdminActionService,
-        {} as IThreadManager,
-        {} as IUserModerationService & ICombinedBanLifecycleService,
-        {} as Client,
-        undefined,
-        undefined,
-        f.service
-      );
+      });
       let loaded!: () => void;
       let resume!: () => void;
       const captured = new Promise<void>((resolve) => {
@@ -296,21 +310,7 @@ suite('automatic moderation attention', () => {
         automatic_moderation_response: { ...response, outcome },
       });
       await f.service.upsertObservedAlertMirrorById(f.event.id);
-      const security = new SecurityActionService(
-        {} as INotificationManager,
-        f.detections,
-        new ServerMemberRepository(f.prisma),
-        new VerificationEventRepository(f.prisma),
-        new UserRepository(f.prisma),
-        new ServerRepository(f.prisma),
-        {} as IAdminActionService,
-        {} as IThreadManager,
-        {} as IUserModerationService & ICombinedBanLifecycleService,
-        {} as Client,
-        undefined,
-        undefined,
-        f.service
-      );
+      const security = f.buildSecurity();
       expect(
         await security.dismissObservedDetection(
           f.server.guild_id,
@@ -345,23 +345,11 @@ suite('automatic moderation attention', () => {
     const cleanup = jest
       .spyOn(f.service, 'deleteQueueMessage')
       .mockRejectedValue(new Error('Discord unavailable'));
-    const security = new SecurityActionService(
-      {
+    const security = f.buildSecurity({
+      notifications: {
         upsertObservedDetectionNotification: jest.fn().mockResolvedValue(null),
       } as unknown as INotificationManager,
-      f.detections,
-      new ServerMemberRepository(f.prisma),
-      new VerificationEventRepository(f.prisma),
-      new UserRepository(f.prisma),
-      new ServerRepository(f.prisma),
-      {} as IAdminActionService,
-      {} as IThreadManager,
-      {} as IUserModerationService & ICombinedBanLifecycleService,
-      {} as Client,
-      undefined,
-      undefined,
-      f.service
-    );
+    });
     expect(
       await security.dismissObservedDetection(
         f.server.guild_id,
@@ -488,21 +476,7 @@ suite('automatic moderation attention', () => {
         await paused;
         return result;
       });
-    const security = new SecurityActionService(
-      {} as INotificationManager,
-      f.detections,
-      new ServerMemberRepository(f.prisma),
-      new VerificationEventRepository(f.prisma),
-      new UserRepository(f.prisma),
-      new ServerRepository(f.prisma),
-      {} as IAdminActionService,
-      {} as IThreadManager,
-      {} as IUserModerationService & ICombinedBanLifecycleService,
-      {} as Client,
-      undefined,
-      undefined,
-      f.service
-    );
+    const security = f.buildSecurity();
     const closing = security.dismissObservedDetection(
       f.server.guild_id,
       'attention-user',
@@ -606,22 +580,14 @@ suite('automatic moderation attention', () => {
       } as unknown as INotificationManager;
       const cases = new VerificationEventRepository(f.prisma);
       const enforce = jest.fn();
-      const security = new SecurityActionService(
+      const security = f.buildSecurity({
         notifications,
-        f.detections,
-        new ServerMemberRepository(f.prisma),
         cases,
-        new UserRepository(f.prisma),
-        new ServerRepository(f.prisma),
-        {} as IAdminActionService,
-        {} as IThreadManager,
-        { applyCaseRole: enforce, kickUser: enforce } as unknown as IUserModerationService &
-          ICombinedBanLifecycleService,
-        {} as Client,
-        undefined,
-        undefined,
-        f.service
-      );
+        moderation: {
+          applyCaseRole: enforce,
+          kickUser: enforce,
+        } as unknown as IUserModerationService & ICombinedBanLifecycleService,
+      });
       const config = {
         initialize: jest.fn().mockResolvedValue(undefined),
         getCachedServerConfig: () => f.server,
@@ -726,21 +692,11 @@ suite('automatic moderation attention', () => {
         });
         return null;
       });
-      const security = new SecurityActionService(
-        { upsertObservedDetectionNotification: deliver } as unknown as INotificationManager,
-        f.detections,
-        new ServerMemberRepository(f.prisma),
-        new VerificationEventRepository(f.prisma),
-        new UserRepository(f.prisma),
-        new ServerRepository(f.prisma),
-        {} as IAdminActionService,
-        {} as IThreadManager,
-        {} as IUserModerationService & ICombinedBanLifecycleService,
-        {} as Client,
-        undefined,
-        undefined,
-        f.service
-      );
+      const security = f.buildSecurity({
+        notifications: {
+          upsertObservedDetectionNotification: deliver,
+        } as unknown as INotificationManager,
+      });
       await security.recordAutomaticResponseFailure(
         {
           id: 'attention-user',
@@ -800,21 +756,7 @@ suite('automatic moderation attention', () => {
         failures: [{ step: 'role', code: 'role_assignment_failed' }],
       },
     });
-    const security = new SecurityActionService(
-      {} as INotificationManager,
-      f.detections,
-      new ServerMemberRepository(f.prisma),
-      cases,
-      new UserRepository(f.prisma),
-      new ServerRepository(f.prisma),
-      {} as IAdminActionService,
-      {} as IThreadManager,
-      {} as IUserModerationService & ICombinedBanLifecycleService,
-      {} as Client,
-      undefined,
-      undefined,
-      f.service
-    );
+    const security = f.buildSecurity({ cases });
     const member = {
       id: 'attention-user',
       guild: { id: f.server.guild_id },
@@ -891,21 +833,7 @@ suite('automatic moderation attention', () => {
           failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
         },
       });
-      const security = new SecurityActionService(
-        {} as INotificationManager,
-        f.detections,
-        new ServerMemberRepository(f.prisma),
-        cases,
-        new UserRepository(f.prisma),
-        new ServerRepository(f.prisma),
-        {} as IAdminActionService,
-        {} as IThreadManager,
-        {} as IUserModerationService & ICombinedBanLifecycleService,
-        {} as Client,
-        undefined,
-        undefined,
-        f.service
-      );
+      const security = f.buildSecurity({ cases });
       const member = {
         id: 'attention-user',
         guild: { id: f.server.guild_id },
