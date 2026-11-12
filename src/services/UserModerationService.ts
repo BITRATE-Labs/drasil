@@ -61,7 +61,33 @@ import {
 /** Only these explicit target denials are safe to display directly to moderators. */
 export class BanTargetError extends Error {}
 
-/** Injected only by trusted delegated native execution; absent on direct Discord paths. */
+export class KickExecutionError extends Error {
+  readonly code:
+    | 'kick_rejected'
+    | 'kick_outcome_unknown'
+    | 'persistence_failed'
+    | 'notification_delivery_failed';
+  readonly cause: unknown;
+  constructor(
+    readonly outcome: 'failed' | 'unknown' | 'kicked',
+    readonly step: 'kick' | 'persistence' | 'notification',
+    cause: unknown
+  ) {
+    super(cause instanceof Error ? cause.message : 'Kick execution failed.');
+    this.name = 'KickExecutionError';
+    this.cause = cause;
+    this.code =
+      step === 'persistence'
+        ? 'persistence_failed'
+        : step === 'notification'
+          ? 'notification_delivery_failed'
+          : outcome === 'unknown'
+            ? 'kick_outcome_unknown'
+            : 'kick_rejected';
+  }
+}
+
+/** Injected by trusted internal automatic moderation or delegated native execution callers. */
 export interface NativeEnforcementLifecycle {
   beforeSend(): Promise<void>;
   acknowledged(): Promise<void>;
@@ -2386,6 +2412,9 @@ export class UserModerationService implements IUserModerationService, ICombinedB
     detectionEventId?: string,
     nativeLifecycle?: NativeEnforcementLifecycle
   ): Promise<boolean> {
+    let acknowledged = false;
+    let dispatched = false;
+    let step: KickExecutionError['step'] = 'persistence';
     try {
       const pendingVerificationEvents = await this.getPendingVerificationEvents(member);
       const terminalClaim = await this.claimPendingTerminalActions(pendingVerificationEvents);
@@ -2396,14 +2425,33 @@ export class UserModerationService implements IUserModerationService, ICombinedB
 
       try {
         await nativeLifecycle?.beforeSend();
+        step = 'kick';
+        dispatched = true;
         await member.kick(reason);
+        acknowledged = true;
+        step = 'persistence';
         await nativeLifecycle?.acknowledged();
       } catch (error) {
-        await this.rollbackPendingTerminalActions(
-          terminalClaim.originalEvents,
-          terminalClaim.attemptId
+        const rejected =
+          !dispatched ||
+          (error !== null &&
+            typeof error === 'object' &&
+            'status' in error &&
+            typeof error.status === 'number' &&
+            error.status >= 400 &&
+            error.status < 500 &&
+            error.status !== 429);
+        if (!acknowledged && rejected) {
+          await this.rollbackPendingTerminalActions(
+            terminalClaim.originalEvents,
+            terminalClaim.attemptId
+          );
+        }
+        throw new KickExecutionError(
+          acknowledged ? 'kicked' : rejected ? 'failed' : 'unknown',
+          step,
+          error
         );
-        throw error;
       }
       console.log(`Kicked user ${member.user.tag}. Reason: ${reason}`);
       let resolvedEvents: Array<{
@@ -2434,6 +2482,7 @@ export class UserModerationService implements IUserModerationService, ICombinedB
           last_status_change: new Date(),
         });
 
+        step = 'notification';
         for (const resolvedEvent of resolvedEvents) {
           await this.finalizeResolvedVerificationEvent(
             this.getModerationTarget(member),
@@ -2480,7 +2529,12 @@ export class UserModerationService implements IUserModerationService, ICombinedB
       return true;
     } catch (error) {
       console.error(`Failed to kick user ${member.user.tag}:`, error);
-      throw error;
+      if (error instanceof KickExecutionError) throw error;
+      throw new KickExecutionError(
+        acknowledged ? 'kicked' : dispatched ? 'unknown' : 'failed',
+        step,
+        error
+      );
     }
   }
 

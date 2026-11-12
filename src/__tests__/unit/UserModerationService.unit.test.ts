@@ -2774,7 +2774,7 @@ describe('UserModerationService (unit)', () => {
     );
   });
 
-  it('surfaces post-kick case update failures to callers', async () => {
+  it('preserves confirmed kick when follow-up fails', async () => {
     const guildId = 'guild-kick-update-fails';
     const userId = 'user-kick-update-fails';
     const moderator = { id: 'mod-kick' } as User;
@@ -2812,9 +2812,59 @@ describe('UserModerationService (unit)', () => {
       moderationOutcomeService
     );
 
-    await expect(service.kickUser(member, 'unresolved legitimacy', moderator)).rejects.toThrow(
-      'DB down'
+    await expect(
+      service.kickUser(member, 'unresolved legitimacy', moderator)
+    ).rejects.toMatchObject({ outcome: 'kicked', step: 'persistence' });
+    expect(member.kick).toHaveBeenCalledTimes(1);
+    expect(member.kick).toHaveBeenCalledWith('unresolved legitimacy');
+  });
+
+  it('does not release an acknowledged kick claim', async () => {
+    const guildId = 'guild-kick-update-fails';
+    const userId = 'user-kick-update-fails';
+    const moderator = { id: 'mod-kick' } as User;
+    const member = buildMember(guildId, userId);
+
+    await serverRepository.getOrCreateServer(guildId);
+    await userRepository.getOrCreateUser(userId, 'test-user');
+
+    const detectionEvent = await detectionEventsRepository.create({
+      server_id: guildId,
+      user_id: userId,
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.8,
+      reasons: ['Initial detection'],
+      detected_at: new Date(),
+    });
+    await verificationEventRepository.createFromDetection(
+      detectionEvent.id,
+      guildId,
+      userId,
+      VerificationStatus.PENDING
     );
+    const rollback = jest.spyOn(verificationEventRepository, 'updateQuarantineAttempt');
+
+    const service = new UserModerationService(
+      serverMemberRepository,
+      notificationManager,
+      roleManager,
+      verificationEventRepository,
+      adminActionService,
+      threadManager,
+      undefined,
+      moderationOutcomeService
+    );
+
+    await expect(
+      service.kickUser(member, 'unresolved legitimacy', moderator, undefined, {
+        beforeSend: async () => undefined,
+        acknowledged: async () => {
+          throw new Error('ack unavailable');
+        },
+      })
+    ).rejects.toMatchObject({ outcome: 'kicked', step: 'persistence' });
+    expect(rollback).not.toHaveBeenCalled();
+    expect(member.kick).toHaveBeenCalledTimes(1);
     expect(member.kick).toHaveBeenCalledWith('unresolved legitimacy');
   });
 

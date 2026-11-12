@@ -3,7 +3,13 @@ import {
   ReportBanTransition,
   reportBanTransitionPatch,
 } from '../utils/reportBanState';
-import type { RoleIntakeResult, RoleIntakeProgress, ObservedBanResult } from '@drasil/application';
+import {
+  readAutomaticModerationResponse,
+  type AutomaticModerationResponse,
+  type RoleIntakeResult,
+  type RoleIntakeProgress,
+  type ObservedBanResult,
+} from '@drasil/application';
 export type {
   RoleIntakeFailure,
   RoleIntakeResult,
@@ -76,7 +82,11 @@ import {
   VerificationThreadRepairResult,
   VERIFICATION_THREAD_TYPE_METADATA_KEY,
 } from './ThreadManager';
-import { ICombinedBanLifecycleService, IUserModerationService } from './UserModerationService';
+import {
+  ICombinedBanLifecycleService,
+  IUserModerationService,
+  KickExecutionError,
+} from './UserModerationService';
 import { IAdminActionService } from './AdminActionService';
 import { getUserReportSettings } from '../utils/userReportSettings';
 import type {
@@ -2328,56 +2338,111 @@ export class SecurityActionService implements ISecurityActionService {
         detectionResult,
         sourceMessage
       );
-      const activeVerificationEvent =
-        await this.verificationEventRepository.findActiveByUserAndServer(
-          member.id,
-          member.guild.id
+      const detection = await this.detectionEventsRepository.findById(detectionEventId);
+      if (!detection || readAutomaticModerationResponse(detection.metadata)) return false;
+      let response: Extract<AutomaticModerationResponse, { action: 'kick' }> = {
+        action: 'kick',
+        outcome: 'pending',
+        updatedAt: new Date().toISOString(),
+        failures: [],
+        attention: 'required',
+        caseId: null,
+      };
+      const claimed = await this.detectionEventsRepository.claimObservedAction(detectionEventId, {
+        observed_action: AdminActionType.KICK,
+        observed_action_by: actor.id,
+        observed_action_at: response.updatedAt,
+        automatic_moderation_response: response,
+      });
+      if (!claimed) return false;
+      const persistResponse = async (): Promise<void> => {
+        response = { ...response, updatedAt: new Date().toISOString() };
+        if (
+          !(await this.detectionEventsRepository.patchMetadata(detectionEventId, {
+            automatic_moderation_response: response,
+          }))
+        )
+          throw new Error('Could not persist automatic kick outcome.');
+      };
+      try {
+        const activeVerificationEvent =
+          await this.verificationEventRepository.findActiveByUserAndServer(
+            member.id,
+            member.guild.id
+          );
+        const kicked = await this.userModerationService.kickUser(
+          member,
+          AUTO_KICK_DEFAULT_REASON,
+          actor,
+          detectionEventId,
+          {
+            beforeSend: async (): Promise<void> => undefined,
+            acknowledged: async (): Promise<void> => {
+              response = { ...response, outcome: 'kicked' };
+              await persistResponse();
+            },
+          }
         );
-      const kicked = await this.userModerationService.kickUser(
-        member,
-        AUTO_KICK_DEFAULT_REASON,
-        actor,
-        detectionEventId
-      );
-      this.requireModerationSuccess(kicked, 'kick', member);
+        this.requireModerationSuccess(kicked, 'kick', member);
 
-      if (!activeVerificationEvent) {
-        await this.adminActionService.recordAction({
-          server_id: member.guild.id,
-          user_id: member.id,
-          admin_id: actor.id,
-          verification_event_id: null,
-          detection_event_id: detectionEventId,
-          action_type: AdminActionType.KICK,
-          previous_status: null,
-          new_status: VerificationStatus.KICKED,
-          notes: AUTO_KICK_DEFAULT_REASON,
-          metadata: {
-            source: 'auto_kick_policy',
-            kick_policy_source: source,
-            confidence: detectionResult.confidence,
+        if (!activeVerificationEvent) {
+          await this.adminActionService.recordAction({
+            server_id: member.guild.id,
+            user_id: member.id,
+            admin_id: actor.id,
+            verification_event_id: null,
+            detection_event_id: detectionEventId,
+            action_type: AdminActionType.KICK,
+            previous_status: null,
+            new_status: VerificationStatus.KICKED,
+            notes: AUTO_KICK_DEFAULT_REASON,
+            metadata: {
+              source: 'auto_kick_policy',
+              kick_policy_source: source,
+              confidence: detectionResult.confidence,
+            },
+          });
+        }
+
+        this.captureMemberAnalytics(
+          member,
+          'auto kick completed',
+          {
+            source,
+            confidence_bucket: getConfidenceBucket(detectionResult.confidence),
+          },
+          { detectionEventId }
+        );
+
+        recordWorkflowOutcome({
+          output: {
+            verdict: detectionResult.label,
+            actual_outcome: 'kicked',
+            detection_event_id: detectionEventId,
           },
         });
+        return true;
+      } catch (error) {
+        const failure =
+          error instanceof KickExecutionError
+            ? error
+            : new KickExecutionError(
+                response.outcome === 'kicked' ? 'kicked' : 'failed',
+                'persistence',
+                error
+              );
+        response = {
+          ...response,
+          outcome: failure.outcome,
+          failures: [{ step: failure.step, code: failure.code }],
+        };
+        try {
+          await persistResponse();
+        } catch (persistenceError) {
+          throw new KickExecutionError(failure.outcome, 'persistence', persistenceError);
+        }
+        throw failure;
       }
-
-      this.captureMemberAnalytics(
-        member,
-        'auto kick completed',
-        {
-          source,
-          confidence_bucket: getConfidenceBucket(detectionResult.confidence),
-        },
-        { detectionEventId }
-      );
-
-      recordWorkflowOutcome({
-        output: {
-          verdict: detectionResult.label,
-          actual_outcome: 'kicked',
-          detection_event_id: detectionEventId,
-        },
-      });
-      return true;
     });
   }
 
@@ -3818,7 +3883,7 @@ export class SecurityActionService implements ISecurityActionService {
       );
       return true;
     } catch (error) {
-      if (!actionApplied) {
+      if (!actionApplied && !(error instanceof KickExecutionError && error.outcome !== 'failed')) {
         await this.releaseDetectionMetadataForObservedAction(
           detectionEvent,
           moderator,

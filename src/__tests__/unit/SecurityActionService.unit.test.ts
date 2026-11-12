@@ -32,6 +32,7 @@ import {
 } from '../../services/ThreadManager';
 import {
   UserModerationService,
+  KickExecutionError,
   IUserModerationService,
   ICombinedBanLifecycleService,
 } from '../../services/UserModerationService';
@@ -481,6 +482,18 @@ describe('SecurityActionService (unit)', () => {
       triggerContent: message.content,
     };
 
+    userModerationService.kickUser.mockImplementationOnce(
+      async (_member, _reason, _moderator, _id, lifecycle) => {
+        await lifecycle?.beforeSend();
+        const events = await detectionEventsRepository.findByServerAndUser(guildId, userId);
+        expect(events[0].metadata?.automatic_moderation_response).toMatchObject({
+          action: 'kick',
+          outcome: 'pending',
+        });
+        await lifecycle?.acknowledged();
+        return true;
+      }
+    );
     await expect(
       buildService({ user: botUser } as Client).handleSuspiciousMessage(
         member,
@@ -494,8 +507,16 @@ describe('SecurityActionService (unit)', () => {
       member,
       'Suspected compromised account: high-confidence scam activity detected by Drasil.',
       botUser,
-      detectionEvents[0].id
+      detectionEvents[0].id,
+      expect.objectContaining({
+        beforeSend: expect.any(Function),
+        acknowledged: expect.any(Function),
+      })
     );
+    expect(detectionEvents[0].metadata?.automatic_moderation_response).toMatchObject({
+      action: 'kick',
+      outcome: 'kicked',
+    });
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
     expect(threadManager.createVerificationThread).not.toHaveBeenCalled();
     expect(adminActionService.recordAction).toHaveBeenCalledWith(
@@ -509,6 +530,49 @@ describe('SecurityActionService (unit)', () => {
       })
     );
   });
+
+  it.each(['failed', 'unknown', 'kicked'] as const)(
+    'does not replay automatic kick outcome %s',
+    async (outcome) => {
+      const member = buildMember('guild-auto-replay', 'user-auto-replay');
+      const message = buildMessage(member.guild.id, 'channel-1');
+      await serverRepository.upsertByGuildId(member.guild.id, {
+        settings: {
+          message_detection_auto_kick_enabled: true,
+          auto_kick_min_confidence_threshold: 95,
+        },
+      });
+      const result: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.99,
+        reasons: ['Suspicious content'],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: message.content,
+      };
+      userModerationService.kickUser.mockRejectedValueOnce(
+        new KickExecutionError(
+          outcome,
+          outcome === 'kicked' ? 'persistence' : 'kick',
+          new Error('interrupted')
+        )
+      );
+      const service = buildService({ user: { id: 'bot-1' } } as Client);
+      await expect(service.handleSuspiciousMessage(member, result, message)).rejects.toMatchObject({
+        outcome,
+      });
+      const events = await detectionEventsRepository.findByServerAndUser(
+        member.guild.id,
+        member.id
+      );
+      expect(events[0].metadata?.automatic_moderation_response).toMatchObject({
+        action: 'kick',
+        outcome,
+        attention: 'required',
+      });
+      await expect(service.handleSuspiciousMessage(member, result, message)).resolves.toBe(false);
+      expect(userModerationService.kickUser).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('falls back to restriction when auto-kick confidence is below threshold', async () => {
     const guildId = 'guild-auto-kick-under-threshold';
@@ -2072,7 +2136,11 @@ describe('SecurityActionService (unit)', () => {
       member,
       'Suspected compromised account: high-confidence scam activity detected by Drasil.',
       botUser,
-      detectionEvents[0].id
+      detectionEvents[0].id,
+      expect.objectContaining({
+        beforeSend: expect.any(Function),
+        acknowledged: expect.any(Function),
+      })
     );
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
     expect(threadManager.createVerificationThread).not.toHaveBeenCalled();
@@ -3867,6 +3935,43 @@ describe('SecurityActionService (unit)', () => {
     expect(adminActionService.recordAction).not.toHaveBeenCalled();
     expect(notificationManager.markObservedDetectionActionTaken).not.toHaveBeenCalled();
   });
+
+  it.each(['kicked', 'unknown'] as const)(
+    'does not release an acknowledged kick claim (%s)',
+    async (outcome) => {
+      const member = buildMember('guild-claim', 'user-claim');
+      await serverRepository.getOrCreateServer(member.guild.id);
+      await serverRepository.updateSettings(member.guild.id, {
+        observed_action_kick_enabled: true,
+      });
+      const detection = await detectionEventsRepository.create({
+        server_id: member.guild.id,
+        user_id: member.id,
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.99,
+        reasons: ['Suspicious content'],
+        detected_at: new Date(),
+      });
+      userModerationService.kickUser.mockRejectedValueOnce(
+        new KickExecutionError(
+          outcome,
+          outcome === 'kicked' ? 'persistence' : 'kick',
+          new Error('interrupted')
+        )
+      );
+      const service = buildService();
+      await expect(
+        service.kickObservedDetection(member, detection.id, { id: 'moderator' } as User, 'reason')
+      ).rejects.toMatchObject({ outcome });
+      expect(
+        (await detectionEventsRepository.findById(detection.id))?.metadata?.observed_action
+      ).toBe(AdminActionType.KICK);
+      await expect(
+        service.kickObservedDetection(member, detection.id, { id: 'moderator' } as User, 'reason')
+      ).resolves.toBe(false);
+      expect(userModerationService.kickUser).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('rejects observed kick before claiming metadata when policy is disabled', async () => {
     const guildId = 'guild-observed-kick-disabled';
