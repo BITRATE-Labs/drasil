@@ -1,3 +1,4 @@
+import { setLocalGuildScope } from '../../localGuildScope';
 import { EventEmitter } from 'node:events';
 import { WebSocketShardEvents } from '@discordjs/ws';
 import { ReportCandidateService } from '../../services/ReportCandidateService';
@@ -454,6 +455,34 @@ describe('EventHandler (unit)', () => {
     directory.invalidate.mockClear();
     await client.on.mock.calls.find(([name]) => name === Events.GuildDelete)![1]({ id: 'guild-1' });
     expect(directory.invalidate).toHaveBeenCalledWith('guild-1');
+  });
+
+  it('ignores out-of-scope guild events in a local run before invoking handlers', async () => {
+    const selectedGuild = '100000000000000001';
+    const client = { on: jest.fn(), user: { id: 'bot-1' } };
+    const reports = { handleThreadMessageDelete: jest.fn().mockResolvedValue(undefined) };
+    const config = { updateServerConfig: jest.fn().mockResolvedValue({}) };
+    const handler = buildHandler({ client, reportIntakeService: reports, configService: config });
+    await handler.setupEventHandlers();
+    const deleted = client.on.mock.calls.find(([name]) => name === Events.MessageDelete)?.[1];
+    const left = client.on.mock.calls.find(([name]) => name === Events.GuildDelete)?.[1];
+    setLocalGuildScope(selectedGuild);
+    try {
+      await deleted({ guildId: '100000000000000002', channelId: 'thread', id: 'message' });
+      await left({ id: '100000000000000002' });
+      expect(reports.handleThreadMessageDelete).not.toHaveBeenCalled();
+      expect(config.updateServerConfig).not.toHaveBeenCalled();
+      await deleted({ guildId: selectedGuild, channelId: 'thread', id: 'message' });
+      await left({ id: selectedGuild });
+      expect(reports.handleThreadMessageDelete).toHaveBeenCalledWith({
+        guildId: selectedGuild,
+        threadId: 'thread',
+        messageId: 'message',
+      });
+      expect(config.updateServerConfig).toHaveBeenCalledWith(selectedGuild, { is_active: false });
+    } finally {
+      setLocalGuildScope(undefined);
+    }
   });
 
   it('registers Discord event handlers with current event names', async () => {

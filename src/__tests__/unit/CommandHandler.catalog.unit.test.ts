@@ -1,3 +1,4 @@
+import { setLocalGuildScope } from '../../localGuildScope';
 import {
   ApplicationCommandType,
   ApplicationIntegrationType,
@@ -5,6 +6,7 @@ import {
   InteractionContextType,
   MessageFlags,
   PermissionFlagsBits,
+  REST,
 } from 'discord.js';
 import {
   DISCORD_APPLICATION_COMMAND_TEXT_LIMIT,
@@ -15,6 +17,28 @@ import { buildHandler, restoreUserInstallReportingEnvAfterEach } from './command
 
 describe('CommandHandler command catalog (unit)', () => {
   restoreUserInstallReportingEnvAfterEach();
+
+  it('registers local commands only in the selected guild and preserves the normal global route', async () => {
+    const previous = process.env.DISCORD_TOKEN;
+    process.env.DISCORD_TOKEN = 'synthetic-token';
+    const put = jest.spyOn(REST.prototype, 'put').mockResolvedValue([]);
+    const { handler } = buildHandler({ client: { user: { id: 'test-app' } } });
+    try {
+      setLocalGuildScope('100000000000000001');
+      await handler.registerCommands();
+      expect(put).toHaveBeenLastCalledWith(
+        '/applications/test-app/guilds/100000000000000001/commands',
+        expect.any(Object)
+      );
+      setLocalGuildScope(undefined);
+      await handler.registerCommands();
+      expect(put).toHaveBeenLastCalledWith('/applications/test-app/commands', expect.any(Object));
+    } finally {
+      setLocalGuildScope(undefined);
+      if (previous === undefined) delete process.env.DISCORD_TOKEN;
+      else process.env.DISCORD_TOKEN = previous;
+    }
+  });
 
   it('registers /ban with default BanMembers permission', () => {
     const { handler } = buildHandler();

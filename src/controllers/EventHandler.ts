@@ -1,3 +1,4 @@
+import { isInLocalGuildScope } from '../localGuildScope';
 import { IReportMemberDirectory } from '../services/ReportMemberDirectory';
 import { withObservation, recordWorkflowOutcome } from '../observability/langfuse';
 import { hashIdentifier } from '../observability/hash';
@@ -287,7 +288,8 @@ export class EventHandler implements IEventHandler {
         'guild_id' in data &&
         typeof data.guild_id === 'string'
       ) {
-        this.reportMemberDirectory?.invalidate(data.guild_id);
+        if (isInLocalGuildScope({ guildId: data.guild_id }))
+          this.reportMemberDirectory?.invalidate(data.guild_id);
       }
     });
     this.client.on(Events.UserUpdate, () => this.reportMemberDirectory?.invalidate());
@@ -375,6 +377,7 @@ export class EventHandler implements IEventHandler {
   ): (...args: TArguments) => Promise<void> {
     return async (...args: TArguments): Promise<void> => {
       try {
+        if (!isInLocalGuildScope(args[0])) return;
         await handler(...args);
       } catch (error) {
         console.error(`Unexpected error in recoverable Discord event "${eventName}":`, error);

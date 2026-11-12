@@ -1,6 +1,9 @@
+jest.mock('dotenv', () => ({ config: jest.fn() }));
+
 describe('local development entry', () => {
   it('disables inherited remote telemetry before diagnostics and normal bootstrap', async () => {
     const previous = { ...process.env };
+    process.env.DRASIL_DEV_GUILD_ID = '100000000000000001';
     process.env.LANGFUSE_TRACING_ENABLED = 'true';
     process.env.POSTHOG_PRODUCT_ANALYTICS_ENABLED = 'true';
     const init = jest.fn(() => {
@@ -26,4 +29,22 @@ describe('local development entry', () => {
       jest.dontMock('../../__mocks__/index');
     }
   });
+  it.each([undefined, 'invalid'])(
+    'rejects missing or malformed guild scope %s before bootstrap',
+    (value) => {
+      const previous = process.env.DRASIL_DEV_GUILD_ID;
+      if (value === undefined) delete process.env.DRASIL_DEV_GUILD_ID;
+      else process.env.DRASIL_DEV_GUILD_ID = value;
+      try {
+        expect(() =>
+          jest.isolateModules(() => {
+            require('../../dev');
+          })
+        ).toThrow();
+      } finally {
+        if (previous === undefined) delete process.env.DRASIL_DEV_GUILD_ID;
+        else process.env.DRASIL_DEV_GUILD_ID = previous;
+      }
+    }
+  );
 });
