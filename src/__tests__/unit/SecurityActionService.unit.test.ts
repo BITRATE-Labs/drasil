@@ -1015,6 +1015,66 @@ describe('SecurityActionService (unit)', () => {
     );
   });
 
+  it('persists detection-owned restriction attention when the case is parked during follow-up', async () => {
+    const member = buildMember('parked-follow-up-guild', 'parked-follow-up-user');
+    const detection: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    notificationManager.upsertSuspiciousUserNotification.mockImplementation(
+      async (_member, _detection, owner) => {
+        await verificationEventRepository.update(owner.id, {
+          attention_state: CaseAttentionState.PARKED,
+          parked_at: new Date(),
+          parked_by: 'moderator',
+        });
+        return null;
+      }
+    );
+    const mirror = jest.fn().mockResolvedValue(undefined);
+    const observed = jest.fn().mockResolvedValue(undefined);
+    const service = new SecurityActionService(
+      notificationManager,
+      detectionEventsRepository,
+      serverMemberRepository,
+      verificationEventRepository,
+      userRepository,
+      serverRepository,
+      adminActionService,
+      threadManager,
+      userModerationService,
+      {} as Client,
+      gptService as any,
+      undefined,
+      {
+        upsertCaseMirror: mirror,
+        upsertObservedAlertMirrorById: observed,
+      } as unknown as IModerationQueueService
+    );
+    await expect(service.handleSuspiciousMessage(member, detection)).resolves.toBe(true);
+    const event = await detectionEventsRepository.findById(detection.detectionEventId!);
+    const owner = await verificationEventRepository.findById(event!.latest_verification_event_id!);
+    expect(owner).toMatchObject({
+      status: VerificationStatus.PENDING,
+      attention_state: CaseAttentionState.PARKED,
+    });
+    expect(event?.metadata).toMatchObject({
+      automatic_moderation_response: {
+        action: 'restrict',
+        outcome: 'case_opened',
+        caseId: null,
+        attention: 'required',
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      },
+    });
+    expect(owner?.metadata).toMatchObject({ automatic_moderation_response: { caseId: null } });
+    expect(observed).toHaveBeenCalledWith(event!.id);
+    expect(userModerationService.kickUser).not.toHaveBeenCalled();
+  });
+
   it.each(['role', 'thread', 'notification'] as const)(
     'persists one case-owned response when %s fails',
     async (step) => {
