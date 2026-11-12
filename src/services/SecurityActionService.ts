@@ -157,6 +157,12 @@ export interface ReportBanReviewReference {
   targetUserId: string;
 }
 export interface ISecurityActionService {
+  recordAutomaticResponseFailure(
+    member: GuildMember,
+    detectionResult: DetectionResult,
+    response: AutomaticModerationResponse,
+    sourceMessage?: Message
+  ): Promise<void>;
   prepareReportBanReview(
     guild: Guild,
     operationId: string,
@@ -1069,11 +1075,7 @@ export class SecurityActionService implements ISecurityActionService {
         `Failed to create admin evidence thread for ${member.user.tag}; continuing case flow:`,
         error
       );
-      return this.recordVerificationActionFailure(
-        verificationEvent,
-        'private_evidence_thread',
-        error
-      );
+      return this.recordVerificationActionFailure(verificationEvent, 'private_evidence_thread');
     }
   }
 
@@ -1301,26 +1303,47 @@ export class SecurityActionService implements ISecurityActionService {
     verificationEvent: VerificationEvent,
     sourceMessage?: Message
   ): Promise<VerificationEvent> {
-    const notificationMessage = await this.upsertNotification(
-      member,
-      detectionResult,
-      verificationEvent,
-      sourceMessage
-    );
-    const evidenceEvent = await this.ensurePrivateEvidenceThread(
-      member,
-      verificationEvent,
-      detectionResult,
-      notificationMessage,
-      sourceMessage
-    );
-
-    // Discord evidence delivery can outlive a departure or moderation action.
-    const updatedEvent =
-      (await this.verificationEventRepository.findById(verificationEvent.id)) ?? evidenceEvent;
-    await this.upsertNotification(member, detectionResult, updatedEvent, sourceMessage);
-
-    return updatedEvent;
+    try {
+      const notificationMessage = await this.upsertNotification(
+        member,
+        detectionResult,
+        verificationEvent,
+        sourceMessage
+      );
+      const evidenceEvent = await this.ensurePrivateEvidenceThread(
+        member,
+        verificationEvent,
+        detectionResult,
+        notificationMessage,
+        sourceMessage
+      );
+      let updatedEvent =
+        (await this.verificationEventRepository.findById(verificationEvent.id)) ?? evidenceEvent;
+      // Retain in-memory failure evidence if an earlier write failed while independent delivery continued.
+      const failures = getVerificationActionFailures(verificationEvent.metadata);
+      if (failures.length) {
+        const current = getVerificationActionFailures(updatedEvent.metadata);
+        updatedEvent = {
+          ...updatedEvent,
+          metadata: this.mergeVerificationMetadata(updatedEvent.metadata, {
+            action_failures: [
+              ...current,
+              ...failures.filter(
+                (failure) =>
+                  !current.some(
+                    (existing) => existing.action === failure.action && existing.at === failure.at
+                  )
+              ),
+            ].map((failure) => ({ ...failure })),
+          }),
+        };
+      }
+      await this.upsertNotification(member, detectionResult, updatedEvent, sourceMessage);
+      return updatedEvent;
+    } catch {
+      recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'notification_delivery_failed' });
+      return this.recordVerificationActionFailure(verificationEvent, 'notification');
+    }
   }
 
   private formatActionFailureMessage(error: unknown): string {
@@ -1333,14 +1356,21 @@ export class SecurityActionService implements ISecurityActionService {
 
   private async recordVerificationActionFailure(
     verificationEvent: VerificationEvent,
-    action: VerificationActionFailureKind,
-    error: unknown
+    action: VerificationActionFailureKind
   ): Promise<VerificationEvent> {
-    const updatedMetadata = appendVerificationActionFailure(verificationEvent.metadata, {
-      action,
-      message: this.formatActionFailureMessage(error),
-      at: new Date().toISOString(),
-    });
+    const updatedMetadata = appendVerificationActionFailure(
+      clearVerificationActionFailures(verificationEvent.metadata, [action]),
+      {
+        action,
+        message:
+          action === 'case_role' || action === 'restrict'
+            ? 'role_assignment_failed'
+            : action === 'notification'
+              ? 'notification_delivery_failed'
+              : 'thread_creation_failed',
+        at: new Date().toISOString(),
+      }
+    );
 
     const fallbackEvent = {
       ...verificationEvent,
@@ -1502,7 +1532,7 @@ export class SecurityActionService implements ISecurityActionService {
         `Failed to apply case role to ${member.user.tag}; continuing case flow:`,
         error
       );
-      return this.recordVerificationActionFailure(verificationEvent, 'case_role', error);
+      return this.recordVerificationActionFailure(verificationEvent, 'case_role');
     }
   }
 
@@ -1533,7 +1563,7 @@ export class SecurityActionService implements ISecurityActionService {
         `Failed to create case thread for ${member.user.tag}; continuing notification:`,
         error
       );
-      return this.recordVerificationActionFailure(verificationEvent, 'thread', error);
+      return this.recordVerificationActionFailure(verificationEvent, 'thread');
     }
   }
 
@@ -2404,6 +2434,9 @@ export class SecurityActionService implements ISecurityActionService {
           });
         }
 
+        response = { ...response, outcome: 'kicked', attention: 'resolved' };
+        await persistResponse();
+
         this.captureMemberAnalytics(
           member,
           'auto kick completed',
@@ -2435,6 +2468,7 @@ export class SecurityActionService implements ISecurityActionService {
           ...response,
           outcome: failure.outcome,
           failures: [{ step: failure.step, code: failure.code }],
+          attention: 'required',
         };
         try {
           await persistResponse();
@@ -2444,6 +2478,169 @@ export class SecurityActionService implements ISecurityActionService {
         throw failure;
       }
     });
+  }
+
+  private async persistAutomaticCaseResponse(
+    detectionEventId: string,
+    owner: VerificationEvent
+  ): Promise<void> {
+    const failures: AutomaticModerationResponse['failures'] = getVerificationActionFailures(
+      owner.metadata
+    )
+      .map<AutomaticModerationResponse['failures'][number]>((failure) => {
+        if (
+          failure.action === 'case_role' ||
+          failure.action === 'restrict' ||
+          failure.action === 'role_quarantine'
+        )
+          return { step: 'role', code: 'role_assignment_failed' };
+        if (failure.action === 'notification')
+          return { step: 'notification', code: 'notification_delivery_failed' };
+        return { step: 'thread', code: 'thread_creation_failed' };
+      })
+      .filter(
+        (failure, index, all) =>
+          all.findIndex(
+            (existing) => existing.step === failure.step && existing.code === failure.code
+          ) === index
+      )
+      .sort((left, right) => left.step.localeCompare(right.step));
+    if (!failures.length) {
+      await this.runModerationQueueTask(
+        `mirror case ${owner.id} to the live moderation queue`,
+        (service) => service.upsertCaseMirror(owner)
+      );
+      return;
+    }
+    const previous = readAutomaticModerationResponse(
+      (await this.detectionEventsRepository.findById(detectionEventId))?.metadata
+    );
+    const unchanged =
+      previous?.action === 'restrict' &&
+      previous.caseId === owner.id &&
+      JSON.stringify(previous.failures) === JSON.stringify(failures);
+    const response: AutomaticModerationResponse = {
+      action: 'restrict',
+      outcome: 'case_opened',
+      updatedAt: new Date().toISOString(),
+      failures,
+      attention: unchanged && previous.attention === 'acknowledged' ? 'acknowledged' : 'required',
+      caseId: owner.id,
+    };
+    try {
+      // The case owns its attention even when every Discord destination is unavailable.
+      const persisted = await this.verificationEventRepository.patchMetadata(owner.id, {
+        action_failures: getVerificationActionFailures(owner.metadata),
+        automatic_moderation_response: response,
+      });
+      if (
+        !persisted ||
+        !(await this.detectionEventsRepository.patchMetadata(detectionEventId, {
+          automatic_moderation_response: response,
+        }))
+      )
+        throw new Error('Could not persist automatic case response.');
+      await this.moderationQueueService?.upsertCaseMirror(persisted);
+      await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
+    } catch (error) {
+      recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'persistence_failed' });
+      throw error;
+    }
+    if (failures.length)
+      recordWorkflowOutcome({
+        level: failures.some(
+          (failure) => failure.step === 'notification' || failure.step === 'persistence'
+        )
+          ? 'ERROR'
+          : 'WARNING',
+        statusMessage: 'response_incomplete',
+      });
+  }
+
+  public async recordAutomaticResponseFailure(
+    member: GuildMember,
+    detectionResult: DetectionResult,
+    response: AutomaticModerationResponse,
+    sourceMessage?: Message
+  ): Promise<void> {
+    try {
+      const detectionEventId = await this.recordSuspiciousMessage(
+        member,
+        detectionResult,
+        sourceMessage
+      );
+      const detection = await this.detectionEventsRepository.findById(detectionEventId);
+      if (!detection) throw new Error('Missing automatic response detection.');
+      const owner = detection.latest_verification_event_id
+        ? await this.verificationEventRepository.findById(detection.latest_verification_event_id)
+        : await this.verificationEventRepository.findActiveByUserAndServer(
+            member.id,
+            member.guild.id
+          );
+      const previous = readAutomaticModerationResponse(detection.metadata);
+      // Reprocessing cannot rewrite a completed kick or reopen its resolved attention.
+      if (previous?.action === 'kick') response = previous;
+      if (response.attention === 'resolved') {
+        recordWorkflowOutcome({
+          output: { verdict: detectionResult.label, actual_outcome: response.outcome },
+        });
+        return;
+      }
+      response = { ...response, caseId: owner?.id ?? null };
+      if (owner && response.action === 'restrict')
+        response = { ...response, outcome: 'case_opened' };
+      if (
+        !(await this.detectionEventsRepository.patchMetadata(detectionEventId, {
+          automatic_moderation_response: response,
+        }))
+      )
+        throw new Error('Could not persist automatic response failure.');
+      recordWorkflowOutcome({
+        level: response.failures.some(
+          (failure) => failure.step === 'persistence' || failure.step === 'notification'
+        )
+          ? 'ERROR'
+          : 'WARNING',
+        statusMessage: 'response_incomplete',
+        output: { verdict: detectionResult.label, actual_outcome: response.outcome },
+      });
+      if (owner) {
+        const updated = await this.verificationEventRepository.patchMetadata(owner.id, {
+          automatic_moderation_response: response,
+          action_failures: appendVerificationActionFailure(owner.metadata, {
+            action:
+              response.failures[0]?.step === 'role'
+                ? 'case_role'
+                : response.failures[0]?.step === 'thread'
+                  ? 'thread'
+                  : 'notification',
+            message: response.failures[0]?.code ?? 'persistence_failed',
+            at: response.updatedAt,
+          }).action_failures,
+        });
+        if (!updated) throw new Error('Could not persist case-owned automatic response failure.');
+        await this.moderationQueueService?.upsertCaseMirror(updated);
+        await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
+        return;
+      }
+      await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
+    } catch (error) {
+      recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'persistence_failed' });
+      throw error;
+    }
+    if (response.action === 'notify') return;
+    // The durable attention write above must succeed before attempting delivery.
+    try {
+      const delivered = await this.notificationManager.upsertObservedDetectionNotification(
+        member,
+        detectionResult,
+        sourceMessage
+      );
+      if (!delivered)
+        recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'notification_delivery_failed' });
+    } catch {
+      recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'notification_delivery_failed' });
+    }
   }
 
   private async handleSuspiciousMember(
@@ -2565,11 +2762,7 @@ export class SecurityActionService implements ISecurityActionService {
             active_case_existed: true,
           }
         );
-        await this.runModerationQueueTask(
-          `mirror case ${notificationVerificationEvent.id} to the live moderation queue`,
-          (moderationQueueService) =>
-            moderationQueueService.upsertCaseMirror(notificationVerificationEvent)
-        );
+        await this.persistAutomaticCaseResponse(detectionEventId, notificationVerificationEvent);
         recordWorkflowOutcome({
           output: {
             verdict: detectionResult.label,
@@ -2665,10 +2858,7 @@ export class SecurityActionService implements ISecurityActionService {
           active_case_existed: false,
         }
       );
-      await this.runModerationQueueTask(
-        `mirror case ${newVerificationEvent.id} to the live moderation queue`,
-        (moderationQueueService) => moderationQueueService.upsertCaseMirror(newVerificationEvent)
-      );
+      await this.persistAutomaticCaseResponse(detectionEventId, newVerificationEvent);
 
       if (automaticCaptchaForNewCase) {
         await this.maybeRequestAutomaticCaptcha(newVerificationEvent);
@@ -2798,7 +2988,33 @@ export class SecurityActionService implements ISecurityActionService {
       }
       return await this.handleSuspiciousMember(member, detectionResult, { sourceMessage });
     } catch (error) {
-      console.error(`Failed to handle suspicious message for ${member.user.tag}:`, error);
+      const response: AutomaticModerationResponse =
+        error instanceof KickExecutionError
+          ? {
+              action: 'kick',
+              outcome: error.outcome,
+              updatedAt: new Date().toISOString(),
+              attention: 'required',
+              caseId: null,
+              failures: [{ step: error.step, code: error.code }],
+            }
+          : {
+              action: 'restrict',
+              outcome: 'failed',
+              updatedAt: new Date().toISOString(),
+              attention: 'required',
+              caseId: null,
+              failures: [{ step: 'persistence', code: 'persistence_failed' }],
+            };
+      await this.recordAutomaticResponseFailure(member, detectionResult, response, sourceMessage);
+      recordWorkflowOutcome({
+        level: 'ERROR',
+        statusMessage: 'response_incomplete',
+        output: {
+          verdict: detectionResult.label,
+          actual_outcome: response.outcome,
+        },
+      });
       throw error;
     }
   }
@@ -2824,7 +3040,33 @@ export class SecurityActionService implements ISecurityActionService {
         automaticCaptchaForNewCase: true,
       });
     } catch (error) {
-      console.error(`Failed to handle suspicious join for ${member.user.tag}:`, error);
+      const response: AutomaticModerationResponse =
+        error instanceof KickExecutionError
+          ? {
+              action: 'kick',
+              outcome: error.outcome,
+              updatedAt: new Date().toISOString(),
+              attention: 'required',
+              caseId: null,
+              failures: [{ step: error.step, code: error.code }],
+            }
+          : {
+              action: 'restrict',
+              outcome: 'failed',
+              updatedAt: new Date().toISOString(),
+              attention: 'required',
+              caseId: null,
+              failures: [{ step: 'persistence', code: 'persistence_failed' }],
+            };
+      await this.recordAutomaticResponseFailure(member, detectionResult, response);
+      recordWorkflowOutcome({
+        level: 'ERROR',
+        statusMessage: 'response_incomplete',
+        output: {
+          verdict: detectionResult.label,
+          actual_outcome: response.outcome,
+        },
+      });
       throw error;
     }
   }
@@ -3072,7 +3314,7 @@ export class SecurityActionService implements ISecurityActionService {
       threadRepair = await this.threadManager.repairVerificationThread(member, repairCase);
     } catch (error) {
       console.error(`Failed to repair active case thread for ${member.user.tag}:`, error);
-      repairCase = await this.recordVerificationActionFailure(repairCase, 'thread', error);
+      repairCase = await this.recordVerificationActionFailure(repairCase, 'thread');
 
       try {
         await this.notificationManager.updateNotificationButtons(
@@ -3102,7 +3344,7 @@ export class SecurityActionService implements ISecurityActionService {
       const error = new Error(
         `Could not create or repair the verification thread for ${member.user.tag}.`
       );
-      repairCase = await this.recordVerificationActionFailure(repairCase, 'thread', error);
+      repairCase = await this.recordVerificationActionFailure(repairCase, 'thread');
 
       try {
         await this.notificationManager.updateNotificationButtons(
@@ -3235,7 +3477,7 @@ export class SecurityActionService implements ISecurityActionService {
         `Failed to ensure user-facing case thread for ${member.user.tag}; continuing case-role flow:`,
         error
       );
-      return this.recordVerificationActionFailure(activeCase, 'thread', error);
+      return this.recordVerificationActionFailure(activeCase, 'thread');
     }
   }
 

@@ -420,12 +420,7 @@ export class NotificationManager implements INotificationManager {
       }
 
       if (detectionResult.detectionEventId) {
-        const currentDetection = detectionEvents.find(
-          (event) => event.id === detectionResult.detectionEventId
-        );
-        const metadata = this.metadataToRecord(currentDetection?.metadata);
-        await this.detectionEventsRepository.updateMetadata(detectionResult.detectionEventId, {
-          ...metadata,
+        await this.detectionEventsRepository.patchMetadata(detectionResult.detectionEventId, {
           observed_notification_channel_id: notificationMessage.channelId,
           observed_notification_message_id: notificationMessage.id,
           observed_notification_last_notified_at: new Date().toISOString(),

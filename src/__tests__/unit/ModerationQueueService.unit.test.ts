@@ -311,8 +311,9 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
   }
   async upsertAutomaticResponseAttention(
     data: Parameters<IModerationQueueRepository['upsert']>[0],
-    _deleteMessage: Parameters<IModerationQueueRepository['upsertAutomaticResponseAttention']>[1]
+    deleteMessage: Parameters<IModerationQueueRepository['upsertAutomaticResponseAttention']>[1]
   ): Promise<ModerationQueueItem | null> {
+    void deleteMessage;
     return this.upsert(data);
   }
 
@@ -1591,6 +1592,14 @@ describe('ModerationQueueService', () => {
 });
 
 describe('automatic response attention', () => {
+  it('persists case-owned attention before unavailable Discord destination lookup', async () => {
+    const { service, queueRepository } = buildService({
+      channelFetchError: new Error('channel unavailable'),
+    });
+    await service.upsertCaseMirror(buildVerificationEvent());
+    expect(queueRepository.items).toHaveLength(1);
+    expect(queueRepository.items[0].item_type).toBe(ModerationQueueItemType.CASE_MIRROR);
+  });
   const response = {
     action: 'kick',
     outcome: 'kicked',

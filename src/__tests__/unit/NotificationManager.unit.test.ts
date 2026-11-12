@@ -542,6 +542,42 @@ describe('NotificationManager (unit)', () => {
     ]);
   });
 
+  it('preserves outcome metadata written while observed notification delivery is in flight', async () => {
+    const event = await detectionRepository.create({
+      server_id: 'guild-1',
+      user_id: 'user-1',
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.8,
+    });
+    const response = {
+      action: 'kick',
+      outcome: 'kicked',
+      attention: 'required',
+      caseId: null,
+      updatedAt: new Date().toISOString(),
+      failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+    };
+    adminChannel.send.mockImplementation(async () => {
+      await detectionRepository.patchMetadata(event.id, {
+        automatic_moderation_response: response,
+      });
+      return { id: 'notification-1', channelId: 'admin-channel' };
+    });
+    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    await manager.upsertObservedDetectionNotification(buildMember('guild-1', 'user-1'), {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+      detectionEventId: event.id,
+    });
+    expect((await detectionRepository.findById(event.id))?.metadata).toMatchObject({
+      automatic_moderation_response: response,
+      observed_notification_message_id: 'notification-1',
+    });
+  });
+
   it('sends an observe-only detection notification with action buttons', async () => {
     (configService.getServerConfig as jest.Mock).mockResolvedValue({
       admin_notification_role_id: 'role-1',

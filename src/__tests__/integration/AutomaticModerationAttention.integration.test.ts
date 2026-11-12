@@ -1,13 +1,29 @@
+import { SecurityActionService } from '../../services/SecurityActionService';
+import { ServerMemberRepository } from '../../repositories/ServerMemberRepository';
+import type { INotificationManager } from '../../services/NotificationManager';
+import type { IAdminActionService } from '../../services/AdminActionService';
+import type { IThreadManager } from '../../services/ThreadManager';
+import type {
+  IUserModerationService,
+  ICombinedBanLifecycleService,
+} from '../../services/UserModerationService';
 import { createAttentionActions, readAutomaticModerationResponse } from '@drasil/application';
 import { DetectionEventsRepository } from '../../repositories/DetectionEventsRepository';
 import { ModerationQueueRepository } from '../../repositories/ModerationQueueRepository';
 import { ServerRepository } from '../../repositories/ServerRepository';
 import { UserRepository } from '../../repositories/UserRepository';
 import { ModerationQueueService } from '../../services/ModerationQueueService';
-import { DetectionType } from '../../repositories/types';
+import {
+  VerificationEventRepository,
+  type IVerificationEventRepository,
+} from '../../repositories/VerificationEventRepository';
+import {
+  DetectionType,
+  VerificationStatus,
+  ModerationQueueItemType,
+} from '../../repositories/types';
 import type { IConfigService } from '../../config/ConfigService';
-import type { IVerificationEventRepository } from '../../repositories/VerificationEventRepository';
-import type { Client } from 'discord.js';
+import type { Client, GuildMember } from 'discord.js';
 import { getPrismaClient } from '../testDb';
 const suite = process.env.JEST_INTEGRATION === '1' ? describe : describe.skip;
 const response = {
@@ -47,6 +63,86 @@ suite('automatic moderation attention', () => {
     );
     return { prisma, server, detections, queue, event, service };
   }
+  it('persists one case mirror with no Discord destinations and never an observed failure duplicate', async () => {
+    const f = await fixture();
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    expect(await f.queue.findByObservedAlert(f.event.id)).not.toBeNull();
+    const cases = new VerificationEventRepository(f.prisma);
+    const owner = await cases.createFromDetection(
+      f.event.id,
+      f.server.guild_id,
+      'attention-user',
+      VerificationStatus.PENDING,
+      {
+        action_failures: [
+          { action: 'case_role', message: 'role_assignment_failed', at: new Date().toISOString() },
+        ],
+      }
+    );
+    await f.detections.linkToVerificationEvent(f.event.id, owner.id);
+    await f.detections.patchMetadata(f.event.id, {
+      automatic_moderation_response: {
+        action: 'restrict',
+        outcome: 'case_opened',
+        updatedAt: new Date().toISOString(),
+        attention: 'required',
+        caseId: owner.id,
+        failures: [{ step: 'role', code: 'role_assignment_failed' }],
+      },
+    });
+    const security = new SecurityActionService(
+      {} as INotificationManager,
+      f.detections,
+      new ServerMemberRepository(f.prisma),
+      cases,
+      new UserRepository(f.prisma),
+      new ServerRepository(f.prisma),
+      {} as IAdminActionService,
+      {} as IThreadManager,
+      {} as IUserModerationService & ICombinedBanLifecycleService,
+      {} as Client,
+      undefined,
+      undefined,
+      f.service
+    );
+    const member = {
+      id: 'attention-user',
+      guild: { id: f.server.guild_id },
+      user: { id: 'attention-user', username: 'synthetic' },
+    } as GuildMember;
+    const detection = {
+      label: 'SUSPICIOUS' as const,
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+      detectionEventId: f.event.id,
+    };
+    await security.recordAutomaticResponseFailure(member, detection, {
+      action: 'restrict',
+      outcome: 'case_opened',
+      updatedAt: new Date().toISOString(),
+      attention: 'required',
+      caseId: owner.id,
+      failures: [{ step: 'role', code: 'role_assignment_failed' }],
+    });
+    await security.recordAutomaticResponseFailure(member, detection, {
+      action: 'restrict',
+      outcome: 'case_opened',
+      updatedAt: new Date().toISOString(),
+      attention: 'required',
+      caseId: owner.id,
+      failures: [{ step: 'role', code: 'role_assignment_failed' }],
+    });
+    const rows = await f.queue.listByCase(owner.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      item_type: ModerationQueueItemType.CASE_MIRROR,
+      queue_message_id: null,
+    });
+    expect(await f.queue.findByObservedAlert(f.event.id)).toBeNull();
+  });
+
   it('persists response attention without Discord delivery and retains unresolved attention through reconciliation', async () => {
     const f = await fixture();
     await f.service.upsertObservedAlertMirrorById(f.event.id);

@@ -217,12 +217,6 @@ export class ModerationQueueService implements IModerationQueueService {
       return;
     }
 
-    const serverConfig = await this.configService.getServerConfig(verificationEvent.server_id);
-    const queueChannel = await this.getQueueChannel(serverConfig.settings);
-    if (!queueChannel) {
-      return;
-    }
-
     const item = await this.moderationQueueRepository.upsert({
       serverId: verificationEvent.server_id,
       userId: verificationEvent.user_id,
@@ -231,6 +225,12 @@ export class ModerationQueueService implements IModerationQueueService {
       detectionEventId: verificationEvent.detection_event_id,
       metadata: this.toJson({ refreshed_at: new Date().toISOString() }),
     });
+
+    const serverConfig = await this.configService.getServerConfig(verificationEvent.server_id);
+    const queueChannel = await this.getQueueChannel(serverConfig.settings);
+    if (!queueChannel) {
+      return;
+    }
 
     const responseSettings = getDetectionResponseSettings(serverConfig.settings);
     const message = await this.sendOrEditQueueMessage(
