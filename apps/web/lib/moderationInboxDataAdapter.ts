@@ -1,5 +1,12 @@
 import { reportIntakeStatusLabel } from '@drasil/contracts';
-import { getAttentionCleanupSource, isIdentityReviewItem } from '@drasil/application';
+import {
+  getAttentionCleanupSource,
+  isIdentityReviewItem,
+  isAutomaticResponseItem,
+  readAutomaticModerationResponse,
+  formatAutomaticModerationResponse,
+  formatCaseActionFailures,
+} from '@drasil/application';
 import {
   moderationInboxItemSchema,
   sortModerationInboxItems,
@@ -51,6 +58,9 @@ export interface ModerationQueueRow {
   detection_reasons: string[] | null;
   detection_metadata: unknown;
   case_status: string | null;
+  linked_case_id?: string | null;
+  case_metadata?: unknown;
+  case_role_active?: boolean;
   report_target_user_id?: string | null;
   report_status: string | null;
   report_summary: string | null;
@@ -241,6 +251,19 @@ function queueAllowedActions(
   kind: ModerationInboxItemKind,
   row: ModerationQueueRow
 ): ModerationInboxAction[] {
+  const response =
+    row.item_type === 'observed_alert_mirror'
+      ? readAutomaticModerationResponse(row.metadata)
+      : null;
+  if (response) {
+    return [
+      ...(isAutomaticResponseItem(row) && response.attention === 'required'
+        ? ['acknowledge' as const]
+        : []),
+      'view_history',
+      ...(row.queue_message_id ? ['open_discord' as const] : []),
+    ];
+  }
   const staticActions = staticQueueActionsByKind[kind];
   return staticActions ? [...staticActions] : observedAlertActions(row);
 }
@@ -337,6 +360,10 @@ export function parseModerationQueueRow(
 
   const updatedAt = toIsoString(row.updated_at);
   const staleHours = staleHoursFrom(updatedAt, now);
+  const response =
+    row.item_type === 'observed_alert_mirror'
+      ? readAutomaticModerationResponse(row.metadata)
+      : null;
   const metadata = metadataToRecord(row.metadata);
   const detectionMetadata = metadataToRecord(row.detection_metadata);
   const links: ModerationInboxLink[] = [];
@@ -366,6 +393,9 @@ export function parseModerationQueueRow(
         )
       : null
   );
+
+  if (response && row.linked_case_id)
+    pushLink(links, 'Linked case', `/admin/guild/${row.server_id}/cases/${row.linked_case_id}`);
 
   const sourceId =
     kind === 'observed_alert'
@@ -432,14 +462,24 @@ export function parseModerationQueueRow(
             avatarUrl: null,
           }
         : subjectFromQueueRow(row),
-    title: queueTitle(kind, row.item_type),
-    summary,
+    title: response ? 'Automatic response needs review' : queueTitle(kind, row.item_type),
+    summary: response
+      ? formatAutomaticModerationResponse(response)
+      : kind === 'case'
+        ? (formatCaseActionFailures(row.case_metadata, row.case_role_active) ?? summary)
+        : summary,
     summarySource: resolveReportSummarySource(row.report_summary, row.report_metadata),
-    statusLabel: row.attention_cleanup_pending
-      ? 'Acknowledged, cleanup pending'
-      : kind === 'report_attention' && row.report_status === 'needs_admin_confirmation'
-        ? reportIntakeStatusLabel(row.report_status, row.report_metadata)
-        : queueStatusLabel(kind, row),
+    statusLabel: response
+      ? response.attention === 'acknowledged'
+        ? 'Acknowledged, response incomplete'
+        : response.attention === 'resolved'
+          ? 'Response resolved'
+          : 'Response needs review'
+      : row.attention_cleanup_pending
+        ? 'Acknowledged, cleanup pending'
+        : kind === 'report_attention' && row.report_status === 'needs_admin_confirmation'
+          ? reportIntakeStatusLabel(row.report_status, row.report_metadata)
+          : queueStatusLabel(kind, row),
     signalLabel: confidenceSignal(row.detection_confidence),
     createdAt: toIsoString(row.created_at),
     updatedAt,
@@ -494,7 +534,10 @@ export class PostgresModerationInboxDataAdapter implements ModerationInboxDataAd
            de.detected_at as detection_detected_at,
            de.reasons as detection_reasons,
            de.metadata as detection_metadata,
+           de.latest_verification_event_id as linked_case_id,
            ve.status as case_status,
+           ve.metadata as case_metadata,
+           sm.case_role_active,
            ve.case_kind,
            sm.discord_member_pending_since,
            sm.discord_member_pending_last_checked_at,
@@ -517,16 +560,25 @@ export class PostgresModerationInboxDataAdapter implements ModerationInboxDataAd
       ),
     ]);
     const activeCaseIds = new Set(cases.map((item) => item.id));
-    const queueItems = dedupeCaseMirrors(
-      queueResult.rows.flatMap((row) => {
-        const item = parseModerationQueueRow(row);
-        return item ? [item] : [];
-      }),
-      activeCaseIds
-    );
+    const parsedQueueItems = queueResult.rows.flatMap((row) => {
+      const item = parseModerationQueueRow(row);
+      return item ? [item] : [];
+    });
+    const queueItems = dedupeCaseMirrors(parsedQueueItems, activeCaseIds);
 
     return sortModerationInboxItems([
-      ...cases.map(caseSummaryToInboxItem),
+      ...cases.map((summary) => {
+        const item = caseSummaryToInboxItem(summary);
+        const mirror = parsedQueueItems.find(
+          (candidate) => candidate.kind === 'case' && candidate.sourceId === summary.id
+        );
+        const failureRow = queueResult.rows.find(
+          (row) => row.verification_event_id === summary.id && row.item_type === 'case_mirror'
+        );
+        return mirror && formatCaseActionFailures(failureRow?.case_metadata)
+          ? { ...item, summary: mirror.summary }
+          : item;
+      }),
       ...reports.map(reportQueueItemToInboxItem),
       ...queueItems,
     ]);

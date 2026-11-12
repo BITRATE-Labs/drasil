@@ -58,11 +58,14 @@ function requestTarget(detail: WorkspaceItemDetail): WorkspaceRequestTarget {
     kind:
       detail.kind === 'report_attention' ||
       detail.kind === 'support_attention' ||
-      detail.kind === 'pending_screening'
+      detail.kind === 'pending_screening' ||
+      (detail.kind === 'observed_alert' && detail.item.allowedActions.includes('acknowledge'))
         ? 'attention'
         : detail.kind,
     recordId:
-      detail.kind === 'report_attention' || detail.kind === 'support_attention'
+      detail.kind === 'report_attention' ||
+      detail.kind === 'support_attention' ||
+      (detail.kind === 'observed_alert' && detail.item.allowedActions.includes('acknowledge'))
         ? (detail.item.queueItemId ?? detail.item.sourceId)
         : detail.item.sourceId,
     targetUserId: detail.item.subject.userId,
@@ -118,6 +121,7 @@ function detailActions(detail: WorkspaceItemDetail): readonly ModerationInboxAct
     case 'submitted_report':
       return ['open_case', 'ban_user', 'mark_actioned', 'dismiss_no_action', 'mark_false_positive'];
     case 'observed_alert':
+      if (detail.item.allowedActions.includes('acknowledge')) return ['acknowledge'];
       return ['open_case', 'kick_user', 'ban_user', 'dismiss_no_action', 'mark_false_positive'];
     case 'report_attention':
     case 'support_attention':
@@ -149,6 +153,7 @@ function actionLabel(action: ModerationInboxAction, detail: WorkspaceItemDetail)
     case 'mark_actioned':
       return 'Mark report actioned';
     case 'acknowledge':
+      if (detail.kind === 'observed_alert') return 'Acknowledge response';
       return detail.item.sourceMetadata?.identityReview
         ? 'Acknowledge review'
         : detail.item.sourceMetadata?.attentionCleanupPending
@@ -180,6 +185,8 @@ function actionEffect(action: ModerationInboxAction, detail: WorkspaceItemDetail
     case 'mark_actioned':
       return 'Record that this report has been actioned.';
     case 'acknowledge':
+      if (detail.kind === 'observed_alert')
+        return 'Record that staff has seen this response. This does not change the recorded action outcome.';
       if (detail.item.sourceMetadata?.identityReview)
         return 'Record that staff has seen this review. The review remains open until resolved.';
       return `Clear this reply from the attention queue. The conversation remains available in Discord.${detail.kind === 'support_attention' && detail.subtype !== 'support_reply' ? ' This does not establish account recovery or release quarantine.' : ''}`;
@@ -231,6 +238,10 @@ function bindAction(
           actions.reportAction({ guildId, reportId: detail.item.sourceId, action }, form);
       return null;
     case 'observed_alert':
+      if (action === 'acknowledge' && detail.item.queueItemId) {
+        const queueItemId = detail.item.queueItemId;
+        return (form) => actions.attentionAction({ guildId, queueItemId }, form);
+      }
       if (
         action === 'open_case' ||
         action === 'kick_user' ||
@@ -268,7 +279,8 @@ function isAllowed(detail: WorkspaceItemDetail, action: ModerationInboxAction): 
       (action !== 'open_case' || detail.policy.canOpenReportCases) &&
       detail.report.allowedActions.some((value) => value === action)
     );
-  if (detail.kind === 'observed_alert') return detail.policy.canQueueCaseActions;
+  if (detail.kind === 'observed_alert')
+    return action === 'acknowledge' || detail.policy.canQueueCaseActions;
   return true;
 }
 function ReportEvidence({

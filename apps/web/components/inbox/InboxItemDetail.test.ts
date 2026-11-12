@@ -344,3 +344,66 @@ it('renders a completed identity handoff as review resolved without claiming sta
   expect(html).toContain('<h2>Review resolved</h2>');
   expect(html).not.toContain('Resolved by staff');
 });
+
+it('offers existing acknowledgement for validated observed response attention', () => {
+  const original = fixtureModerationInboxItems().find((item) => item.kind === 'observed_alert')!;
+  const item = {
+    ...original,
+    queueItemId: 'response-queue',
+    allowedActions: ['acknowledge'],
+    title: 'Automatic response needs review',
+    summary: 'Member kicked. Notification delivery failed.',
+  };
+  const model = workspaceItemDetailSchema.parse({
+    kind: 'observed_alert',
+    item,
+    policy: {
+      allowedActions: ['acknowledge'],
+      canQueueCaseActions: false,
+      canOpenReportCases: false,
+      canManageCleanup: false,
+      kickReasonRequired: true,
+      banReasonRequired: true,
+    },
+    detection: {
+      id: item.sourceId,
+      detectionType: 'suspicious_content',
+      confidence: 0.8,
+      reasons: [],
+      detectedAt: item.createdAt,
+      sourceMessageUrl: null,
+      observedAction: null,
+      observedActionAt: null,
+      latestCaseId: null,
+      observedActionBy: null,
+      sourceChannelId: null,
+      sourceMessageId: null,
+      accounting: {
+        excluded: false,
+        scope: null,
+        reason: null,
+        excludedBy: null,
+        excludedAt: null,
+      },
+    },
+    requests: [],
+  });
+  const submit = vi.fn();
+  const html = renderToStaticMarkup(
+    createElement(InboxItemDetail, {
+      detail: model,
+      loadedAt: '2026-11-11T00:00:00Z',
+      returnHref: '/inbox',
+      trackedRequestId: null,
+      onTrackedRequest() {},
+      actions: {
+        caseAction: submit,
+        observedAction: submit,
+        reportAction: submit,
+        attentionAction: submit,
+      },
+    })
+  );
+  expect(html).toContain('Acknowledge response');
+  expect(html).not.toContain('Kick member');
+});

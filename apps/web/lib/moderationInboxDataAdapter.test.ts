@@ -370,3 +370,92 @@ it('retains identity review acknowledgement separately from cleanup retry', () =
     attentionCleanupPending: false,
   });
 });
+
+describe('automatic response presentation', () => {
+  const response = {
+    action: 'kick',
+    outcome: 'kicked',
+    attention: 'required',
+    caseId: null,
+    updatedAt: '2026-11-11T00:00:00.000Z',
+    failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+  };
+  it.each([
+    ['kicked', 'Member kicked. Notification delivery failed.'],
+    ['failed', 'Automatic kick failed. The member may still have access.'],
+    [
+      'unknown',
+      'Kick outcome could not be confirmed. Check membership before taking further action.',
+    ],
+    ['pending', 'Kick outcome is pending. Check membership before taking further action.'],
+  ])('renders response attention without Discord links (%s)', (outcome, summary) => {
+    const item = parseModerationQueueRow({
+      ...baseQueueRow,
+      queue_channel_id: null,
+      queue_message_id: null,
+      detection_metadata: {},
+      server_settings: { observed_action_kick_enabled: true },
+      metadata: { automatic_moderation_response: { ...response, outcome } },
+    })!;
+    expect(item.title).toBe('Automatic response needs review');
+    expect(item.summary).toContain(summary);
+    expect(item.links).toEqual([]);
+    expect(item.allowedActions).not.toContain('kick_user');
+    expect(item.allowedActions).toEqual(['acknowledge', 'view_history']);
+  });
+  it('keeps acknowledged outcome truthful', () => {
+    const item = parseModerationQueueRow({
+      ...baseQueueRow,
+      metadata: { automatic_moderation_response: { ...response, attention: 'acknowledged' } },
+    })!;
+    expect(item.summary).toContain('Member kicked. Notification delivery failed.');
+    expect(item.statusLabel).toBe('Acknowledged, response incomplete');
+    expect(item.allowedActions).not.toContain('acknowledge');
+  });
+  it('does not offer acknowledgement for invalid response metadata', () => {
+    const item = parseModerationQueueRow({
+      ...baseQueueRow,
+      metadata: { automatic_moderation_response: { ...response, outcome: 'invented' } },
+    })!;
+    expect(item.allowedActions).not.toContain('acknowledge');
+  });
+});
+
+it('shows case role failure separately from an applied role with thread failure', () => {
+  const item = parseModerationQueueRow({
+    ...baseQueueRow,
+    item_type: 'case_mirror',
+    verification_event_id: 'case-1',
+    case_role_active: true,
+    case_metadata: {
+      action_failures: [
+        { action: 'thread', message: 'private internal detail', at: '2026-11-11T00:00:00.000Z' },
+      ],
+    },
+  })!;
+  expect(item.summary).toContain('Case role applied. Case thread could not be created.');
+  expect(item.summary).not.toContain('private internal detail');
+});
+
+it.each(['resolved', 'acknowledged'])(
+  'does not invite kick replay from a retained %s response row',
+  (attention) => {
+    const item = parseModerationQueueRow({
+      ...baseQueueRow,
+      server_settings: { observed_action_kick_enabled: true },
+      metadata: {
+        automatic_moderation_response: {
+          action: 'kick',
+          outcome: 'kicked',
+          attention,
+          caseId: null,
+          updatedAt: '2026-11-11T00:00:00.000Z',
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      },
+    })!;
+    expect(item.allowedActions).not.toContain('kick_user');
+    expect(item.allowedActions).not.toContain('acknowledge');
+    expect(item.summary).toContain('Member kicked.');
+  }
+);

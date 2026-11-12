@@ -1,3 +1,7 @@
+import {
+  readAutomaticModerationResponse,
+  formatAutomaticModerationResponse,
+} from '@drasil/application';
 import { filterCaseKindActions } from './caseActionEligibility';
 import { caseConversationSources, reportConversationSources } from './conversationTypes';
 import { readAttentionReply } from './conversationDataAdapter';
@@ -433,6 +437,34 @@ export function createModerationWorkspaceDataAdapter(
       detection,
       observedState.success ? observedState.data : {}
     );
+    const response = readAutomaticModerationResponse(row.metadata);
+    if (response) {
+      const queue = await getPostgresPool().query<{ id: string; metadata: unknown }>(
+        `select id, metadata from moderation_queue_items where server_id = $1 and detection_event_id = $2 and item_type = 'observed_alert_mirror' limit 1`,
+        [guildId, id]
+      );
+      const projected = readAutomaticModerationResponse(queue.rows[0]?.metadata) ?? response;
+      if (detection.latestCaseId)
+        item.links.push({
+          label: 'Linked case',
+          url: `/admin/guild/${guildId}/cases/${detection.latestCaseId}`,
+        });
+      item.title = 'Automatic response needs review';
+      item.summary = formatAutomaticModerationResponse(projected);
+      item.statusLabel =
+        projected.attention === 'acknowledged'
+          ? 'Acknowledged, response incomplete'
+          : projected.attention === 'resolved'
+            ? 'Response resolved'
+            : 'Response needs review';
+      item.queueItemId = queue.rows[0]?.id ?? null;
+      item.allowedActions = [
+        'view_history',
+        ...(projected.attention === 'required' && projected.caseId === null && item.queueItemId
+          ? ['acknowledge' as const]
+          : []),
+      ];
+    }
     const effectivePolicy = await policy(item);
     return workspaceItemDetailSchema.parse({
       kind: 'observed_alert',

@@ -59,6 +59,7 @@ import {
 } from '../repositories/ServerMemberRepository';
 import {
   AdminActionType,
+  CaseAttentionState,
   CaptchaChallengeRequestSource,
   DetectionEvent,
   DetectionType,
@@ -2524,9 +2525,14 @@ export class SecurityActionService implements ISecurityActionService {
     const previous = readAutomaticModerationResponse(
       (await this.detectionEventsRepository.findById(detectionEventId))?.metadata
     );
+    const caseId =
+      owner.status === VerificationStatus.PENDING &&
+      owner.attention_state !== CaseAttentionState.PARKED
+        ? owner.id
+        : null;
     const unchanged =
       previous?.action === 'restrict' &&
-      previous.caseId === owner.id &&
+      previous.caseId === caseId &&
       JSON.stringify(previous.failures) === JSON.stringify(failures);
     const response: AutomaticModerationResponse = {
       action: 'restrict',
@@ -2534,10 +2540,10 @@ export class SecurityActionService implements ISecurityActionService {
       updatedAt: new Date().toISOString(),
       failures,
       attention: unchanged && previous.attention === 'acknowledged' ? 'acknowledged' : 'required',
-      caseId: owner.id,
+      caseId,
     };
     try {
-      // The case owns its attention even when every Discord destination is unavailable.
+      // Reviewable cases own their attention even when every Discord destination is unavailable.
       const persisted = await this.verificationEventRepository.patchMetadata(owner.id, {
         action_failures: getVerificationActionFailures(owner.metadata),
         automatic_moderation_response: response,
@@ -2600,7 +2606,10 @@ export class SecurityActionService implements ISecurityActionService {
         });
         return;
       }
-      response = { ...response, caseId: owner?.id ?? null };
+      const liveOwner =
+        owner?.status === VerificationStatus.PENDING &&
+        owner.attention_state !== CaseAttentionState.PARKED;
+      response = { ...response, caseId: liveOwner ? owner.id : null };
       if (owner && response.action === 'restrict')
         response = { ...response, outcome: 'case_opened' };
       if (
@@ -2634,8 +2643,10 @@ export class SecurityActionService implements ISecurityActionService {
         });
         if (!updated) throw new Error('Could not persist case-owned automatic response failure.');
         await this.moderationQueueService?.upsertCaseMirror(updated);
-        await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
-        return;
+        if (liveOwner) {
+          await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
+          return;
+        }
       }
       await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
     } catch (error) {

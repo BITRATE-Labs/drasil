@@ -1,4 +1,8 @@
 import {
+  readAutomaticModerationResponse,
+  formatAutomaticModerationResponse,
+} from '@drasil/application';
+import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -337,6 +341,13 @@ export class NotificationPresentationBuilder {
       )
       .setTimestamp();
 
+    const response = readAutomaticModerationResponse(
+      detectionEvents.find((event) => event.id === detectionResult.detectionEventId)?.metadata
+    );
+    if (response) {
+      embed.setTitle('Automatic Response Needs Review');
+      embed.setDescription(formatAutomaticModerationResponse(response));
+    }
     this.addOptionalAnalysisFields(embed, detectionResult, detectionEvents);
 
     if (detectionHistory && (!isUserReport || detectionEvents.length > 1)) {
@@ -1511,13 +1522,15 @@ export class NotificationPresentationBuilder {
       .map((failure) => {
         const timestamp = Math.floor(new Date(failure.at).getTime() / 1000);
         const action =
-          failure.action === 'case_role' || failure.action === 'restrict'
-            ? 'Case role assignment failed'
-            : failure.action === 'private_evidence_thread'
-              ? 'Admin evidence thread setup failed'
-              : failure.action === 'role_quarantine'
-                ? 'Role quarantine attempt failed'
-                : 'Case thread setup failed';
+          failure.action === 'notification'
+            ? 'Notification delivery failed'
+            : failure.action === 'case_role' || failure.action === 'restrict'
+              ? 'Case role assignment failed'
+              : failure.action === 'private_evidence_thread'
+                ? 'Admin evidence thread setup failed'
+                : failure.action === 'role_quarantine'
+                  ? 'Role quarantine attempt failed'
+                  : 'Case thread setup failed';
         const message = failure.message.toLowerCase();
         const canRepairCase =
           failure.action === 'thread' ||

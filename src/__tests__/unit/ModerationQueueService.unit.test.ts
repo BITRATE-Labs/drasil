@@ -1608,6 +1608,33 @@ describe('automatic response attention', () => {
     attention: 'required',
     caseId: null,
   };
+  it('shows actual action separately from failed follow-up', async () => {
+    const { service, channel } = buildService();
+    await service.upsertObservedAlertMirror({
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    });
+    const embed = channel.sentMessages[0].embeds[0];
+    expect(embed.description).toContain('Member kicked. Notification delivery failed.');
+    expect(JSON.stringify(channel.sentMessages[0].payload.components)).not.toContain('kick_user');
+    await service.upsertObservedAlertMirror({
+      ...buildDetectionEvent(),
+      metadata: {
+        automatic_moderation_response: {
+          ...response,
+          failures: [{ step: 'persistence', code: 'persistence_failed' }],
+          updatedAt: '2026-11-12T00:00:00.000Z',
+        },
+      },
+    });
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    expect(channel.sentMessages[0].embeds[0].description).toContain(
+      'Member kicked. Follow-up records could not be saved.'
+    );
+    expect(channel.sentMessages[0].embeds[0].description).not.toContain(
+      'Notification delivery failed.'
+    );
+  });
   it('persists response attention without Discord delivery', async () => {
     const event = {
       ...buildDetectionEvent(),

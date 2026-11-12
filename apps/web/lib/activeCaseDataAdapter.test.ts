@@ -913,3 +913,77 @@ it('preserves an unknown case detection date while keeping known dates intact', 
     '2026-10-21T14:40:00.000Z',
   ]);
 });
+
+it('renders persisted case failures as sanitized evidence with no Discord links', async () => {
+  persistence.query.mockImplementation(async (sql: string) => ({
+    rows: sql.includes('from verification_events ve')
+      ? [
+          {
+            ...baseRow,
+            thread_id: null,
+            notification_channel_id: null,
+            notification_message_id: null,
+            metadata: {
+              action_failures: [
+                {
+                  action: 'notification',
+                  message: 'private detail',
+                  at: '2026-11-11T00:00:00.000Z',
+                },
+              ],
+            },
+          },
+        ]
+      : [],
+  }));
+  const result = await new PostgresActiveCaseDataAdapter().getCaseDetail('guild-1', 'ver-1');
+  expect(result?.evidenceItems[0].content).toContain('Notification delivery failed.');
+  expect(JSON.stringify(result?.evidenceItems)).not.toContain('private detail');
+});
+
+it('shows a confirmed role separately from failed thread creation in case evidence', async () => {
+  persistence.query.mockImplementation(async (sql: string) => ({
+    rows: sql.includes('from verification_events ve')
+      ? [
+          {
+            ...baseRow,
+            case_role_active: true,
+            metadata: {
+              action_failures: [
+                { action: 'thread', message: 'private detail', at: '2026-11-11T00:00:00.000Z' },
+              ],
+            },
+          },
+        ]
+      : [],
+  }));
+  const result = await new PostgresActiveCaseDataAdapter().getCaseDetail('guild-1', 'ver-1');
+  expect(result?.evidenceItems[0].content).toContain(
+    'Case role applied. Case thread could not be created.'
+  );
+});
+
+it.each(['kicked', 'unknown', 'pending'])(
+  'does not offer repeat kick for confirmed or uncertain case outcomes (%s)',
+  async (outcome) => {
+    const row = {
+      ...baseRow,
+      metadata: {
+        automatic_moderation_response: {
+          action: 'kick',
+          outcome,
+          attention: 'required',
+          caseId: null,
+          updatedAt: '2026-11-11T00:00:00.000Z',
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      },
+    };
+    expect(parseCaseSummaryRow(row).allowedActions).not.toContain('kick_user');
+    persistence.query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('from verification_events ve') ? [row] : [],
+    }));
+    const detail = await new PostgresActiveCaseDataAdapter().getCaseDetail('guild-1', 'ver-1');
+    expect(detail?.allowedActions).not.toContain('kick_user');
+  }
+);

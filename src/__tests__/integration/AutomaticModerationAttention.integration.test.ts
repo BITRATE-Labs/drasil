@@ -143,6 +143,113 @@ suite('automatic moderation attention', () => {
     expect(await f.queue.findByObservedAlert(f.event.id)).toBeNull();
   });
 
+  it.each([VerificationStatus.KICKED, VerificationStatus.PENDING])(
+    'retains detection attention for a non-reviewable case (%s)',
+    async (status) => {
+      const f = await fixture();
+      await f.service.upsertObservedAlertMirrorById(f.event.id);
+      expect(await f.queue.findByObservedAlert(f.event.id)).not.toBeNull();
+      const cases = new VerificationEventRepository(f.prisma);
+      const owner = await cases.createFromDetection(
+        f.event.id,
+        f.server.guild_id,
+        'attention-user',
+        status,
+        {
+          action_failures: [
+            {
+              action: 'case_role',
+              message: 'role_assignment_failed',
+              at: new Date().toISOString(),
+            },
+          ],
+        }
+      );
+      if (status === VerificationStatus.PENDING)
+        await f.prisma.verification_events.update({
+          where: { id: owner.id },
+          data: { attention_state: 'parked' },
+        });
+      await f.detections.linkToVerificationEvent(f.event.id, owner.id);
+      await f.detections.patchMetadata(f.event.id, {
+        automatic_moderation_response: {
+          action: 'kick',
+          outcome: 'kicked',
+          updatedAt: new Date().toISOString(),
+          attention: 'required',
+          caseId: owner.id,
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      });
+      const security = new SecurityActionService(
+        {} as INotificationManager,
+        f.detections,
+        new ServerMemberRepository(f.prisma),
+        cases,
+        new UserRepository(f.prisma),
+        new ServerRepository(f.prisma),
+        {} as IAdminActionService,
+        {} as IThreadManager,
+        {} as IUserModerationService & ICombinedBanLifecycleService,
+        {} as Client,
+        undefined,
+        undefined,
+        f.service
+      );
+      const member = {
+        id: 'attention-user',
+        guild: { id: f.server.guild_id },
+        user: { id: 'attention-user', username: 'synthetic' },
+      } as GuildMember;
+      const detection = {
+        label: 'SUSPICIOUS' as const,
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+        detectionEventId: f.event.id,
+      };
+      await security.recordAutomaticResponseFailure(member, detection, {
+        action: 'kick',
+        outcome: 'kicked',
+        updatedAt: new Date().toISOString(),
+        attention: 'required',
+        caseId: owner.id,
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      });
+      await security.recordAutomaticResponseFailure(member, detection, {
+        action: 'kick',
+        outcome: 'kicked',
+        updatedAt: new Date().toISOString(),
+        attention: 'required',
+        caseId: owner.id,
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      });
+      expect(await f.queue.listByCase(owner.id)).toHaveLength(0);
+      const item = await f.queue.findByObservedAlert(f.event.id);
+      expect(item).not.toBeNull();
+      expect(readAutomaticModerationResponse(item?.metadata)).toMatchObject({
+        outcome: 'kicked',
+        caseId: null,
+      });
+      await f.service.syncServerQueue(f.server.guild_id);
+      expect((await f.queue.findByObservedAlert(f.event.id))?.id).toBe(item!.id);
+      await f.queue.acknowledgeAutomaticResponse({
+        itemId: item!.id,
+        guildId: f.server.guild_id,
+        actorId: 'moderator',
+        acknowledgedAt: new Date(),
+      });
+      await f.service.syncServerQueue(f.server.guild_id);
+      expect(
+        readAutomaticModerationResponse((await f.queue.findByObservedAlert(f.event.id))?.metadata)
+      ).toMatchObject({ outcome: 'kicked', attention: 'acknowledged' });
+      expect((await f.detections.findById(f.event.id))?.latest_verification_event_id).toBe(
+        owner.id
+      );
+    }
+  );
+
   it('persists response attention without Discord delivery and retains unresolved attention through reconciliation', async () => {
     const f = await fixture();
     await f.service.upsertObservedAlertMirrorById(f.event.id);

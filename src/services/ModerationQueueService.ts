@@ -42,6 +42,8 @@ import { NotificationPresentationBuilder } from './NotificationPresentationBuild
 import {
   projectReportIntakeState,
   readAutomaticModerationResponse,
+  formatAutomaticModerationResponse,
+  formatCaseActionFailures,
   hasAutomaticResponseAttention,
   type ReportAnalysisOutcome,
   type QueueAttentionItemRecord,
@@ -1004,6 +1006,9 @@ export class ModerationQueueService implements IModerationQueueService {
       });
     }
 
+    const failureSummary = formatCaseActionFailures(verificationEvent.metadata);
+    if (failureSummary) embed.addFields({ name: 'Response incomplete', value: failureSummary });
+
     return {
       allowedMentions: { parse: [] },
       embeds: [embed],
@@ -1040,12 +1045,12 @@ export class ModerationQueueService implements IModerationQueueService {
             .setColor(0xffc107)
             .setTitle('Automatic Response Needs Review')
             .setDescription(
-              `<@${detectionEvent.user_id}>: ${response.action}, ${response.outcome}.`
+              `<@${detectionEvent.user_id}>: ${formatAutomaticModerationResponse(response)}`
             )
             .addFields({
               name: 'Failures',
               value:
-                response.failures.map((failure) => failure.code).join('\n') ||
+                response.failures.map((failure) => failure.step).join(', ') ||
                 'Response pending confirmation.',
             }),
         ],

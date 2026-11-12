@@ -1,3 +1,4 @@
+import { readAutomaticModerationResponse } from '@drasil/application';
 import { injectable, inject, unmanaged } from 'inversify';
 import {
   Client,
@@ -381,18 +382,22 @@ export class NotificationManager implements INotificationManager {
         sourceMessage
       );
       const actionDetectionEventId = detectionResult.detectionEventId ?? detectionEvents[0]?.id;
-      const components = actionDetectionEventId
-        ? this.presentationBuilder.createObservedActionRows(
-            member.id,
-            actionDetectionEventId,
-            member.guild.id,
-            {
-              includeBanAction: responseSettings.moderatorBanActionEnabled,
-              kind:
-                detectionResult.triggerSource === DetectionType.USER_REPORT ? 'report' : 'alert',
-            }
-          )
-        : [];
+      const response = readAutomaticModerationResponse(
+        detectionEvents.find((event) => event.id === actionDetectionEventId)?.metadata
+      );
+      const components =
+        actionDetectionEventId && !response
+          ? this.presentationBuilder.createObservedActionRows(
+              member.id,
+              actionDetectionEventId,
+              member.guild.id,
+              {
+                includeBanAction: responseSettings.moderatorBanActionEnabled,
+                kind:
+                  detectionResult.triggerSource === DetectionType.USER_REPORT ? 'report' : 'alert',
+              }
+            )
+          : [];
 
       let notificationMessage: Message | null = null;
       if (existingNotification?.observed_notification_message_id) {

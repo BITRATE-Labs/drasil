@@ -542,6 +542,40 @@ describe('NotificationManager (unit)', () => {
     ]);
   });
 
+  it('shows actual action separately from failed follow-up in an observed notification', async () => {
+    const event = await detectionRepository.create({
+      server_id: 'guild-1',
+      user_id: 'user-1',
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.8,
+      metadata: {
+        automatic_moderation_response: {
+          action: 'kick',
+          outcome: 'kicked',
+          attention: 'required',
+          caseId: null,
+          updatedAt: '2026-11-11T00:00:00.000Z',
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      },
+    });
+    adminChannel.send.mockResolvedValue({ id: 'notification-1', channelId: 'admin-channel' });
+    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    await manager.upsertObservedDetectionNotification(buildMember('guild-1', 'user-1'), {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+      detectionEventId: event.id,
+    });
+    const payload = adminChannel.send.mock.calls[0][0];
+    expect(payload.embeds[0].toJSON().description).toContain(
+      'Member kicked. Notification delivery failed.'
+    );
+    expect(payload.components).toEqual([]);
+  });
+
   it('preserves outcome metadata written while observed notification delivery is in flight', async () => {
     const event = await detectionRepository.create({
       server_id: 'guild-1',

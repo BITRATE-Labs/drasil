@@ -374,6 +374,7 @@ describe('InteractionHandler (unit)', () => {
       recordMemberLeftGuild: jest.fn().mockResolvedValue(0),
     };
     securityActionService = {
+      recordAutomaticResponseFailure: jest.fn().mockResolvedValue(undefined),
       prepareReportBanReview: jest.fn(),
       reviewUncertainReportBan: jest.fn(),
       reconcileReportBan: jest.fn().mockResolvedValue({ status: 'banned' }),

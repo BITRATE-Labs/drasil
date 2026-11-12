@@ -1152,3 +1152,50 @@ test('unidentified review shows acknowledgement and delivery separately with cur
   await expect(page.getByText('Target not confirmed', { exact: true })).toBeVisible();
   await expect(page.locator('body')).not.toContainText('PRIVATE_PROVIDER');
 });
+
+test('response attention shows actual outcome without Discord links or repeat enforcement', async ({
+  page,
+}) => {
+  const metadata = {
+    automatic_moderation_response: {
+      action: 'kick',
+      outcome: 'kicked',
+      attention: 'required',
+      caseId: null,
+      updatedAt: '2026-11-11T00:00:00.000Z',
+      failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+    },
+  };
+  await fixtures.pool.query('update detection_events set metadata=$2 where id=$1', [
+    id.observed,
+    metadata,
+  ]);
+  await fixtures.pool.query(
+    'update moderation_queue_items set metadata=$2,queue_channel_id=null,queue_message_id=null where id=$1',
+    [id.observedQueue, metadata]
+  );
+  await page.goto(`/admin/guild/${id.guild}/inbox?selected=detection:${id.observed}`);
+  const selected = page.getByRole('region', { name: 'Selected inbox item' });
+  await expect(
+    selected.getByText('Member kicked. Notification delivery failed.', { exact: true })
+  ).toBeVisible();
+  await expect(selected.getByRole('button', { name: 'Kick member', exact: true })).toHaveCount(0);
+  await selected.getByRole('button', { name: 'Acknowledge response', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText(
+    'This does not change the recorded action outcome.'
+  );
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+  await fixtures.pool.query('update verification_events set metadata=$2 where id=$1', [
+    id.case,
+    {
+      automatic_moderation_response: {
+        ...metadata.automatic_moderation_response,
+        outcome: 'unknown',
+        caseId: id.case,
+      },
+    },
+  ]);
+  await page.goto(`/admin/guild/${id.guild}/cases/${id.case}`);
+  await expect(page.getByRole('button', { name: 'Kick member', exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Kick outcome could not be confirmed/).first()).toBeVisible();
+});

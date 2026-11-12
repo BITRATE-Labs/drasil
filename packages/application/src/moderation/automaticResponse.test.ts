@@ -1,4 +1,4 @@
-import { readAutomaticModerationResponse } from './automaticResponse';
+import { formatCaseActionFailures, readAutomaticModerationResponse } from './automaticResponse';
 import { acknowledgeAutomaticResponseMetadata } from '../operations/attention';
 const response = {
   action: 'kick',
@@ -57,4 +57,22 @@ it('acknowledges only required unowned attention without changing evidence', () 
       },
     })
   ).toBeNull();
+});
+
+test('keeps confirmed kick separate from case follow-up failure', () => {
+  expect(
+    formatCaseActionFailures({
+      automatic_moderation_response: {
+        action: 'kick',
+        outcome: 'kicked',
+        attention: 'required',
+        caseId: '11111111-1111-4111-8111-111111111111',
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      },
+      action_failures: [
+        { action: 'notification', message: 'private detail', at: '2026-11-11T00:00:00.000Z' },
+      ],
+    })
+  ).toBe('Member kicked. Notification delivery failed.');
 });
