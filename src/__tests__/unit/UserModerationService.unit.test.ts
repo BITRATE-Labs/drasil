@@ -1,7 +1,10 @@
 import { Guild, GuildMember, User } from 'discord.js';
 import { UserModerationService } from '../../services/UserModerationService';
 import { AdminActionService } from '../../services/AdminActionService';
-import { ModerationOutcomeService } from '../../services/ModerationOutcomeService';
+import {
+  IModerationOutcomeService,
+  ModerationOutcomeService,
+} from '../../services/ModerationOutcomeService';
 import {
   AdminActionType,
   CaptchaChallengeStatus,
@@ -97,6 +100,71 @@ describe('UserModerationService (unit)', () => {
   let notificationManager: jest.Mocked<INotificationManager>;
   let threadManager: jest.Mocked<IThreadManager>;
 
+  interface ServiceOverrides {
+    roleManager?: IRoleManager;
+    moderationOutcomeService?: IModerationOutcomeService;
+    moderationQueueService?: IModerationQueueService;
+    roleQuarantineService?: IRoleQuarantineService;
+    captchaChallengeRepository?: ICaptchaChallengeRepository;
+  }
+
+  function buildService(overrides: ServiceOverrides = {}): UserModerationService {
+    const dependencies = { roleManager, moderationOutcomeService, ...overrides };
+    return new UserModerationService(
+      serverMemberRepository,
+      notificationManager,
+      dependencies.roleManager,
+      verificationEventRepository,
+      adminActionService,
+      threadManager,
+      undefined,
+      dependencies.moderationOutcomeService,
+      dependencies.moderationQueueService,
+      dependencies.roleQuarantineService,
+      dependencies.captchaChallengeRepository
+    );
+  }
+
+  function createPendingCase(
+    guildId: string,
+    userId: string,
+    detectionEventId: string | null = null
+  ): Promise<VerificationEvent> {
+    return verificationEventRepository.createFromDetection(
+      detectionEventId,
+      guildId,
+      userId,
+      VerificationStatus.PENDING
+    );
+  }
+
+  function createDetection(guildId: string, userId: string) {
+    return detectionEventsRepository.create({
+      server_id: guildId,
+      user_id: userId,
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.8,
+      reasons: ['Initial detection'],
+      detected_at: new Date(),
+    });
+  }
+
+  function buildRoleQuarantine(
+    overrides: Pick<
+      jest.Mocked<IRoleQuarantineService>,
+      'restoreMemberRoles' | 'abandonActiveSnapshot'
+    > &
+      Partial<jest.Mocked<IRoleQuarantineService>>
+  ): jest.Mocked<IRoleQuarantineService> {
+    return {
+      previewCompromisedAccount: jest.fn(),
+      quarantineCompromisedAccount: jest.fn(),
+      quarantineMember: jest.fn(),
+      enforceActiveCaseRoleUpdate: jest.fn(),
+      ...overrides,
+    };
+  }
+
   beforeEach(() => {
     serverMemberRepository = new InMemoryServerMemberRepository();
     verificationEventRepository = new InMemoryVerificationEventRepository();
@@ -166,37 +234,18 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember('guild-safety', 'user-safety');
     await serverRepository.getOrCreateServer(member.guild.id);
     await userRepository.getOrCreateUser(member.id, 'test-user');
-    const detection = await detectionEventsRepository.create({
-      server_id: member.guild.id,
-      user_id: member.id,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    await verificationEventRepository.createFromDetection(
-      detection.id,
-      member.guild.id,
-      member.id,
-      VerificationStatus.PENDING
-    );
+    const detection = await createDetection(member.guild.id, member.id);
+    await createPendingCase(member.guild.id, member.id, detection.id);
     const quarantine = { quarantineMember: jest.fn() };
     const unsafeRoles = {
       ...roleManager,
       assertSafeCaseRole: jest.fn().mockRejectedValue(new Error('Unsafe case role')),
     };
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      unsafeRoles,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      undefined,
-      undefined,
-      quarantine as unknown as IRoleQuarantineService
-    );
+    const service = buildService({
+      roleManager: unsafeRoles,
+      moderationOutcomeService: undefined,
+      roleQuarantineService: quarantine as unknown as IRoleQuarantineService,
+    });
     await expect(service.applyCaseRole(member)).rejects.toThrow('Unsafe case role');
     expect(quarantine.quarantineMember).not.toHaveBeenCalled();
     expect(roleManager.assignCaseRole).not.toHaveBeenCalled();
@@ -212,31 +261,10 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createDetection(guildId, userId);
 
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
+    const service = buildService();
 
     await service.verifyUser(member, moderator);
 
@@ -282,12 +310,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     const cancelledChallenge = {
       id: 'challenge-cancelled',
       verification_event_id: verificationEvent.id,
@@ -297,19 +320,7 @@ describe('UserModerationService (unit)', () => {
       cancelPendingForCase: jest.fn().mockResolvedValue(true),
       findByCaseId: jest.fn().mockResolvedValue(cancelledChallenge),
     } as unknown as jest.Mocked<ICaptchaChallengeRepository>;
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      undefined,
-      undefined,
-      captchaChallenges
-    );
+    const service = buildService({ captchaChallengeRepository: captchaChallenges });
 
     await service.verifyUser(member, moderator);
 
@@ -324,11 +335,7 @@ describe('UserModerationService (unit)', () => {
     const guildId = 'guild-captcha-resolve';
     const userId = 'user-captcha-resolve';
     const member = buildMember(guildId, userId);
-    const roleQuarantineService: jest.Mocked<IRoleQuarantineService> = {
-      previewCompromisedAccount: jest.fn(),
-      quarantineCompromisedAccount: jest.fn(),
-      quarantineMember: jest.fn(),
-      enforceActiveCaseRoleUpdate: jest.fn(),
+    const roleQuarantineService = buildRoleQuarantine({
       restoreMemberRoles: jest.fn().mockResolvedValue({
         status: 'restored',
         snapshotId: 'captcha-role-quarantine-1',
@@ -341,27 +348,11 @@ describe('UserModerationService (unit)', () => {
         status: 'no_active_snapshot',
         snapshotId: null,
       }),
-    };
+    });
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      undefined,
-      roleQuarantineService
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
+    const service = buildService({ roleQuarantineService });
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -415,28 +406,14 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     const input = {
       verificationEventId: verificationEvent.id,
       challengeId: 'challenge-idempotent',
       generation: 1,
       expectedCaseRevision: verificationEvent.case_revision,
     };
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.resolveCaptchaCase(member, input)).resolves.toEqual({
       status: 'resolved',
@@ -472,28 +449,14 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     const input = {
       verificationEventId: verificationEvent.id,
       challengeId: 'challenge-resume',
       generation: 1,
       expectedCaseRevision: verificationEvent.case_revision,
     };
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
     threadManager.resolveVerificationThread.mockRejectedValueOnce(new Error('Discord unavailable'));
 
     await expect(service.resolveCaptchaCase(member, input)).rejects.toThrow('Discord unavailable');
@@ -527,12 +490,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     const input = {
       verificationEventId: verificationEvent.id,
       challengeId: 'challenge-release-resume',
@@ -546,16 +504,7 @@ describe('UserModerationService (unit)', () => {
       .spyOn(verificationEventRepository, 'releaseCaptchaFinalization')
       .mockResolvedValueOnce(false)
       .mockImplementation(releaseCaptchaFinalization);
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.resolveCaptchaCase(member, input)).rejects.toThrow(
       `Failed to release CAPTCHA finalization for case ${verificationEvent.id}.`
@@ -590,12 +539,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     const originalFindById = verificationEventRepository.findById.bind(verificationEventRepository);
     let readCount = 0;
     jest.spyOn(verificationEventRepository, 'findById').mockImplementation(async (id) => {
@@ -606,16 +550,7 @@ describe('UserModerationService (unit)', () => {
       }
       return current;
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -648,12 +583,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     let reopenDuringFinalization: VerificationEvent | null | undefined;
     jest
       .spyOn(adminActionService, 'getActionsForVerificationEvent')
@@ -661,16 +591,7 @@ describe('UserModerationService (unit)', () => {
         reopenDuringFinalization = await verificationEventRepository.reopen(verificationEvent.id);
         return [];
       });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -697,26 +618,9 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
+    await createPendingCase(guildId, userId);
+    const service = buildService({ moderationOutcomeService: undefined });
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -739,16 +643,9 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     let fenceAllowed = true;
-    const roleQuarantineService: jest.Mocked<IRoleQuarantineService> = {
-      previewCompromisedAccount: jest.fn(),
-      quarantineCompromisedAccount: jest.fn(),
+    const roleQuarantineService = buildRoleQuarantine({
       quarantineMember: jest.fn().mockResolvedValue({
         status: 'already_active',
         mode: 'on',
@@ -760,7 +657,6 @@ describe('UserModerationService (unit)', () => {
         skippedRoles: [],
         failedRemovals: [],
       }),
-      enforceActiveCaseRoleUpdate: jest.fn(),
       restoreMemberRoles: jest.fn().mockImplementation(async (_member, _moderator, fence) => {
         await verificationEventRepository.createFromDetection(
           null,
@@ -779,19 +675,8 @@ describe('UserModerationService (unit)', () => {
         };
       }),
       abandonActiveSnapshot: jest.fn(),
-    };
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      undefined,
-      roleQuarantineService
-    );
+    });
+    const service = buildService({ roleQuarantineService });
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -829,12 +714,7 @@ describe('UserModerationService (unit)', () => {
       case_role_active: true,
       verification_status: VerificationStatus.PENDING,
     });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     jest
       .spyOn(serverMemberRepository, 'markVerifiedIfNoPendingCase')
       .mockImplementationOnce(async () => {
@@ -846,9 +726,7 @@ describe('UserModerationService (unit)', () => {
         );
         return null;
       });
-    const roleQuarantineService: jest.Mocked<IRoleQuarantineService> = {
-      previewCompromisedAccount: jest.fn(),
-      quarantineCompromisedAccount: jest.fn(),
+    const roleQuarantineService = buildRoleQuarantine({
       quarantineMember: jest.fn().mockResolvedValue({
         status: 'quarantined',
         mode: 'on',
@@ -860,7 +738,6 @@ describe('UserModerationService (unit)', () => {
         skippedRoles: [],
         failedRemovals: [],
       }),
-      enforceActiveCaseRoleUpdate: jest.fn(),
       restoreMemberRoles: jest.fn().mockResolvedValue({
         status: 'restored',
         snapshotId: 'captcha-final-write-quarantine',
@@ -870,19 +747,8 @@ describe('UserModerationService (unit)', () => {
         failedRestores: [],
       }),
       abandonActiveSnapshot: jest.fn(),
-    };
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      undefined,
-      roleQuarantineService
-    );
+    });
+    const service = buildService({ roleQuarantineService });
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -921,21 +787,9 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     jest.spyOn(verificationEventRepository, 'completeCaptchaVerification').mockResolvedValue(null);
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager
-    );
+    const service = buildService({ moderationOutcomeService: undefined });
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -956,23 +810,11 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     jest
       .spyOn(verificationEventRepository, 'completeCaptchaVerification')
       .mockRejectedValue(new Error('Database unavailable'));
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager
-    );
+    const service = buildService({ moderationOutcomeService: undefined });
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -993,12 +835,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     jest
       .spyOn(verificationEventRepository, 'completeCaptchaVerification')
       .mockImplementation(async () => {
@@ -1009,14 +846,7 @@ describe('UserModerationService (unit)', () => {
         });
         return null;
       });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager
-    );
+    const service = buildService({ moderationOutcomeService: undefined });
 
     await expect(
       service.resolveCaptchaCase(member, {
@@ -1037,25 +867,11 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       containment_status: CaseContainmentStatus.IN_PROGRESS,
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     const moderator = { id: 'moderator-1' } as User;
     await expect(service.verifyUser(member, moderator)).rejects.toThrow(
@@ -1096,12 +912,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1110,16 +921,7 @@ describe('UserModerationService (unit)', () => {
       parked_by: 'moderator-parked',
     });
     roleManager.removeCaseRole.mockResolvedValue(false);
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.verifyUser(member, { id: 'moderator-verify' } as User)).rejects.toThrow(
       'Failed to remove case role'
@@ -1143,12 +945,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1163,16 +960,7 @@ describe('UserModerationService (unit)', () => {
       );
       return true;
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.verifyUser(member, { id: 'moderator-verify' } as User)).resolves.toBe(
       true
@@ -1192,12 +980,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.REVIEW_REQUIRED,
@@ -1210,16 +993,7 @@ describe('UserModerationService (unit)', () => {
       );
       return true;
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.verifyUser(member, { id: 'moderator-verify' } as User)).resolves.toBe(
       true
@@ -1240,12 +1014,7 @@ describe('UserModerationService (unit)', () => {
     member.roles.cache.set('original-case-role', { id: 'original-case-role' } as any);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1254,16 +1023,7 @@ describe('UserModerationService (unit)', () => {
       parked_at: new Date('2026-08-18T09:00:00.000Z'),
       parked_by: 'moderator-parked',
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.verifyUser(member, { id: 'moderator-verify' } as User)).resolves.toBe(
       true
@@ -1279,18 +1039,8 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const duplicateEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
+    const duplicateEvent = await createPendingCase(guildId, userId);
     const parkedAt = new Date('2026-08-18T09:00:00.000Z');
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
@@ -1300,16 +1050,7 @@ describe('UserModerationService (unit)', () => {
       parked_by: 'moderator-parked',
     });
     jest.spyOn(verificationEventRepository, 'completeVerificationRelease').mockResolvedValue(null);
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.verifyUser(member, { id: 'moderator-verify' } as User)).rejects.toThrow(
       'Failed to atomically update verification events'
@@ -1337,12 +1078,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1357,16 +1093,7 @@ describe('UserModerationService (unit)', () => {
       `${CASE_ROLE_RELEASE_ATTEMPT_PREFIX}other-moderator`,
       new Date(Date.now() - CASE_ROLE_RELEASE_LEASE_MS)
     );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.verifyUser(member, { id: 'moderator-verify' } as User)).rejects.toThrow(
       'Account quarantine is currently in progress'
@@ -1387,12 +1114,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1400,16 +1122,7 @@ describe('UserModerationService (unit)', () => {
       parked_at: new Date('2026-08-18T09:00:00.000Z'),
       parked_by: 'moderator-parked',
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
     roleManager.removeCaseRole.mockImplementation(async () => {
       await expect(
         service.kickUser(member, 'concurrent kick', { id: 'moderator-kick' } as User)
@@ -1430,12 +1143,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1443,16 +1151,7 @@ describe('UserModerationService (unit)', () => {
       parked_at: new Date('2026-08-18T09:00:00.000Z'),
       parked_by: 'moderator-parked',
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
     (member.kick as jest.Mock).mockImplementation(async () => {
       const claimed = await verificationEventRepository.findById(verificationEvent.id);
       expect(claimed?.quarantine_attempt_id).toEqual(
@@ -1481,27 +1180,13 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.REVIEW_REQUIRED,
       containment_status: CaseContainmentStatus.INCOMPLETE,
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
     (member.kick as jest.Mock).mockImplementation(async () => {
       const claimed = await verificationEventRepository.findById(verificationEvent.id);
       expect(claimed?.quarantine_attempt_id).toEqual(
@@ -1536,12 +1221,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1549,16 +1229,7 @@ describe('UserModerationService (unit)', () => {
       parked_at: new Date('2026-08-18T09:00:00.000Z'),
       parked_by: 'moderator-parked',
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
     (member.ban as jest.Mock).mockImplementation(async () => {
       const claimed = await verificationEventRepository.findById(verificationEvent.id);
       expect(claimed?.quarantine_attempt_id).toEqual(
@@ -1587,12 +1258,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1612,16 +1278,7 @@ describe('UserModerationService (unit)', () => {
       );
       return true;
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.verifyUser(member, { id: 'moderator-verify' } as User)).rejects.toThrow(
       'Failed to atomically update verification events'
@@ -1642,12 +1299,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1666,16 +1318,7 @@ describe('UserModerationService (unit)', () => {
     await verificationEventRepository.update(verificationEvent.id, {
       quarantine_lease_renewed_at: staleLease,
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.verifyUser(member, { id: 'moderator-retry' } as User)).resolves.toBe(true);
 
@@ -1693,11 +1336,7 @@ describe('UserModerationService (unit)', () => {
     const userId = 'user-verify-restore-roles';
     const moderator = { id: 'mod-verify-restore' } as User;
     const member = buildMember(guildId, userId);
-    const roleQuarantineService: jest.Mocked<IRoleQuarantineService> = {
-      previewCompromisedAccount: jest.fn(),
-      quarantineCompromisedAccount: jest.fn(),
-      quarantineMember: jest.fn(),
-      enforceActiveCaseRoleUpdate: jest.fn(),
+    const roleQuarantineService = buildRoleQuarantine({
       restoreMemberRoles: jest.fn().mockResolvedValue({
         status: 'restored',
         snapshotId: 'role-quarantine-1',
@@ -1710,7 +1349,7 @@ describe('UserModerationService (unit)', () => {
         status: 'no_active_snapshot',
         snapshotId: null,
       }),
-    };
+    });
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
@@ -1718,33 +1357,10 @@ describe('UserModerationService (unit)', () => {
       case_role_active: true,
       verification_status: VerificationStatus.PENDING,
     });
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      undefined,
-      roleQuarantineService
-    );
+    const service = buildService({ roleQuarantineService });
 
     await service.verifyUser(member, moderator);
 
@@ -1776,36 +1392,14 @@ describe('UserModerationService (unit)', () => {
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
     const moderationQueueService = {
       deleteCaseMirror: jest.fn().mockRejectedValue(new Error('queue unavailable')),
       deleteCaseAttention: jest.fn().mockRejectedValue(new Error('attention unavailable')),
     } as unknown as IModerationQueueService;
     const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      moderationQueueService
-    );
+    const service = buildService({ moderationQueueService });
 
     try {
       await expect(service.verifyUser(member, moderator)).resolves.toBe(true);
@@ -1844,36 +1438,15 @@ describe('UserModerationService (unit)', () => {
       verification_status: VerificationStatus.PENDING,
     });
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
     await verificationEventRepository.update(verificationEvent.id, {
       notification_message_id: 'admin-message-1',
     });
     const updateVerificationEvent = jest.spyOn(verificationEventRepository, 'update');
     const upsertServerMember = jest.spyOn(serverMemberRepository, 'upsertMember');
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     const closedCount = await service.closeCaseNoAction(
       guild,
@@ -1941,12 +1514,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -1954,16 +1522,7 @@ describe('UserModerationService (unit)', () => {
       parked_at: new Date('2026-08-18T09:00:00.000Z'),
       parked_by: 'moderator-parked',
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.closeCaseNoAction(buildGuildWithMember(guildId, member), userId, {
@@ -1981,28 +1540,14 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.REVIEW_REQUIRED,
       containment_status: CaseContainmentStatus.INCOMPLETE,
       quarantine_case_role_id: 'persisted-quarantine-role',
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.closeCaseNoAction(buildGuildWithMember(guildId, member), userId, {
@@ -2028,14 +1573,7 @@ describe('UserModerationService (unit)', () => {
       verification_status: VerificationStatus.PENDING,
     });
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createDetection(guildId, userId);
     const verificationEvent = await verificationEventRepository.createFromDetection(
       detectionEvent.id,
       guildId,
@@ -2043,16 +1581,7 @@ describe('UserModerationService (unit)', () => {
       VerificationStatus.CLOSED_NO_ACTION
     );
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     const closedCount = await service.closeCaseNoAction(guild, userId, moderator);
 
@@ -2077,17 +1606,13 @@ describe('UserModerationService (unit)', () => {
     const userId = 'user-close-absent';
     const moderator = { id: 'mod-close-absent' } as User;
     const guild = buildGuildWithoutMember(guildId);
-    const roleQuarantineService: jest.Mocked<IRoleQuarantineService> = {
-      previewCompromisedAccount: jest.fn(),
-      quarantineCompromisedAccount: jest.fn(),
-      quarantineMember: jest.fn(),
-      enforceActiveCaseRoleUpdate: jest.fn(),
+    const roleQuarantineService = buildRoleQuarantine({
       restoreMemberRoles: jest.fn(),
       abandonActiveSnapshot: jest.fn().mockResolvedValue({
         status: 'abandoned',
         snapshotId: 'role-quarantine-1',
       }),
-    };
+    });
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
@@ -2095,33 +1620,10 @@ describe('UserModerationService (unit)', () => {
       case_role_active: true,
       verification_status: VerificationStatus.PENDING,
     });
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      undefined,
-      roleQuarantineService
-    );
+    const service = buildService({ roleQuarantineService });
 
     const closedCount = await service.closeCaseNoAction(guild, userId, moderator);
 
@@ -2144,17 +1646,13 @@ describe('UserModerationService (unit)', () => {
     const userId = 'user-close-absent-retry';
     const moderator = { id: 'mod-close-absent-retry' } as User;
     const guild = buildGuildWithoutMember(guildId);
-    const roleQuarantineService: jest.Mocked<IRoleQuarantineService> = {
-      previewCompromisedAccount: jest.fn(),
-      quarantineCompromisedAccount: jest.fn(),
-      quarantineMember: jest.fn(),
-      enforceActiveCaseRoleUpdate: jest.fn(),
+    const roleQuarantineService = buildRoleQuarantine({
       restoreMemberRoles: jest.fn(),
       abandonActiveSnapshot: jest.fn().mockResolvedValue({
         status: 'abandoned',
         snapshotId: 'role-quarantine-1',
       }),
-    };
+    });
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
@@ -2162,14 +1660,7 @@ describe('UserModerationService (unit)', () => {
       case_role_active: true,
       verification_status: VerificationStatus.CLOSED_NO_ACTION,
     });
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createDetection(guildId, userId);
     await verificationEventRepository.createFromDetection(
       detectionEvent.id,
       guildId,
@@ -2177,18 +1668,7 @@ describe('UserModerationService (unit)', () => {
       VerificationStatus.CLOSED_NO_ACTION
     );
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      undefined,
-      roleQuarantineService
-    );
+    const service = buildService({ roleQuarantineService });
 
     const closedCount = await service.closeCaseNoAction(guild, userId, moderator);
 
@@ -2208,49 +1688,22 @@ describe('UserModerationService (unit)', () => {
     const userId = 'user-ban';
     const moderator = { id: 'mod-ban' } as User;
     const member = buildMember(guildId, userId);
-    const roleQuarantineService: jest.Mocked<IRoleQuarantineService> = {
-      previewCompromisedAccount: jest.fn(),
-      quarantineCompromisedAccount: jest.fn(),
-      quarantineMember: jest.fn(),
-      enforceActiveCaseRoleUpdate: jest.fn(),
+    const roleQuarantineService = buildRoleQuarantine({
       restoreMemberRoles: jest.fn(),
       abandonActiveSnapshot: jest.fn().mockResolvedValue({
         status: 'abandoned',
         snapshotId: 'role-quarantine-1',
       }),
-    };
+    });
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createDetection(guildId, userId);
 
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService,
-      undefined,
-      roleQuarantineService
-    );
+    const service = buildService({ roleQuarantineService });
 
     (member.ban as jest.Mock).mockImplementation(async () => {
       await expect(verificationEventRepository.findById(verificationEvent.id)).resolves.toEqual(
@@ -2312,30 +1765,9 @@ describe('UserModerationService (unit)', () => {
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
+    const service = buildService();
 
     await service.markCombinedBanCleanupPending(verificationEvent.id, 'cleanup-job-1');
     await service.performDiscordBanById(guild, userId, 'combined moderation action');
@@ -2432,16 +1864,7 @@ describe('UserModerationService (unit)', () => {
     const userId = 'user-combined-long-reason';
     const reason = 'r'.repeat(700);
     const guild = buildGuildWithBan(guildId, userId, reason);
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await service.performDiscordBanById(guild, userId, reason);
 
@@ -2456,30 +1879,9 @@ describe('UserModerationService (unit)', () => {
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
+    const service = buildService();
     await service.markCombinedBanCleanupPending(verificationEvent.id, 'cleanup-job-resume');
     const marked = await verificationEventRepository.findById(verificationEvent.id);
     await verificationEventRepository.update(verificationEvent.id, {
@@ -2534,30 +1936,9 @@ describe('UserModerationService (unit)', () => {
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
+    const service = buildService();
 
     await service.markCombinedBanCleanupPending(verificationEvent.id, 'cleanup-job-2');
 
@@ -2584,30 +1965,9 @@ describe('UserModerationService (unit)', () => {
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
+    const service = buildService();
 
     await service.markCombinedBanCleanupPending(verificationEvent.id, 'cleanup-job-3');
     await expect(
@@ -2632,14 +1992,7 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const firstDetection = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
+    const firstDetection = await createDetection(guildId, userId);
     const secondDetection = await detectionEventsRepository.create({
       server_id: guildId,
       user_id: userId,
@@ -2648,29 +2001,10 @@ describe('UserModerationService (unit)', () => {
       reasons: ['Manual follow-up'],
       detected_at: new Date(),
     });
-    const firstCase = await verificationEventRepository.createFromDetection(
-      firstDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const secondCase = await verificationEventRepository.createFromDetection(
-      secondDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const firstCase = await createPendingCase(guildId, userId, firstDetection.id);
+    const secondCase = await createPendingCase(guildId, userId, secondDetection.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await service.banUser(member, 'banned duplicate cases', moderator);
 
@@ -2701,31 +2035,10 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.kickUser(member, 'unresolved legitimacy', moderator)).resolves.toBe(true);
 
@@ -2783,34 +2096,13 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    await createPendingCase(guildId, userId, detectionEvent.id);
     jest
       .spyOn(verificationEventRepository, 'completeTerminalActions')
       .mockRejectedValueOnce(new Error('DB down'));
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.kickUser(member, 'unresolved legitimacy', moderator)
@@ -2828,32 +2120,11 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    await createPendingCase(guildId, userId, detectionEvent.id);
     const rollback = jest.spyOn(verificationEventRepository, 'updateQuarantineAttempt');
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.kickUser(member, 'unresolved legitimacy', moderator, undefined, {
@@ -2877,14 +2148,7 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const firstDetection = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
+    const firstDetection = await createDetection(guildId, userId);
     const secondDetection = await detectionEventsRepository.create({
       server_id: guildId,
       user_id: userId,
@@ -2893,29 +2157,10 @@ describe('UserModerationService (unit)', () => {
       reasons: ['Manual follow-up'],
       detected_at: new Date(),
     });
-    const firstCase = await verificationEventRepository.createFromDetection(
-      firstDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const secondCase = await verificationEventRepository.createFromDetection(
-      secondDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const firstCase = await createPendingCase(guildId, userId, firstDetection.id);
+    const secondCase = await createPendingCase(guildId, userId, secondDetection.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.syncAlreadyBannedUser(guild, userId, moderator)).resolves.toBe(2);
 
@@ -2958,31 +2203,10 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.recordObservedDiscordBan(guild, user, {
@@ -3030,31 +2254,10 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.recordObservedDiscordBan(guild, user, {
@@ -3082,31 +2285,10 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.recordObservedDiscordKick(member, {
@@ -3149,20 +2331,8 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember('guild-ban-departure', 'user-ban-departure');
     await serverRepository.getOrCreateServer(member.guild.id);
     await userRepository.getOrCreateUser(member.id, 'target');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      member.guild.id,
-      member.id,
-      VerificationStatus.PENDING
-    );
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager
-    );
+    const event = await createPendingCase(member.guild.id, member.id);
+    const service = buildService({ moderationOutcomeService: undefined });
     const complete = verificationEventRepository.completeTerminalActions.bind(
       verificationEventRepository
     );
@@ -3198,31 +2368,10 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.recordMemberLeftGuild(member)).resolves.toBe(1);
 
@@ -3253,12 +2402,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -3267,14 +2411,7 @@ describe('UserModerationService (unit)', () => {
       parked_at: new Date(),
       parked_by: 'moderator-1',
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager
-    );
+    const service = buildService({ moderationOutcomeService: undefined });
 
     await expect(service.recordMemberLeftGuild(member)).resolves.toBe(1);
 
@@ -3297,12 +2434,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     const terminalAttemptId = 'case-terminal-action:attempt-1';
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
@@ -3313,14 +2445,7 @@ describe('UserModerationService (unit)', () => {
       parked_at: new Date(),
       parked_by: 'moderator-1',
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager
-    );
+    const service = buildService({ moderationOutcomeService: undefined });
 
     await expect(service.recordMemberLeftGuild(member)).resolves.toBe(1);
 
@@ -3339,12 +2464,7 @@ describe('UserModerationService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     const terminalAttemptId = 'case-terminal-action:attempt-completes-first';
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
@@ -3374,14 +2494,7 @@ describe('UserModerationService (unit)', () => {
         );
         return updatePendingAfterMemberLeft(id, expectedAttemptId, data);
       });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager
-    );
+    const service = buildService({ moderationOutcomeService: undefined });
 
     await expect(service.recordMemberLeftGuild(member)).resolves.toBe(0);
 
@@ -3405,33 +2518,12 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'test-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createDetection(guildId, userId);
 
-    await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    await createPendingCase(guildId, userId, detectionEvent.id);
     notificationManager.logActionToMessage.mockResolvedValueOnce(false);
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(service.banUser(member, 'banned in test', moderator)).resolves.toBe(true);
 
@@ -3456,16 +2548,7 @@ describe('UserModerationService (unit)', () => {
         create: jest.fn().mockResolvedValue({}),
       },
     };
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
     return {
       userId,
       moderator,
@@ -3567,20 +2650,8 @@ describe('UserModerationService (unit)', () => {
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'left-user');
 
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const detectionEvent = await createDetection(guildId, userId);
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
     notificationManager.logActionToMessage.mockResolvedValue(false);
     (guild.bans.create as jest.Mock).mockImplementation(async () => {
       const updatedBeforeBan = await verificationEventRepository.findById(verificationEvent.id);
@@ -3588,16 +2659,7 @@ describe('UserModerationService (unit)', () => {
       return {};
     });
 
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.banUserById(guild, userId, 'banned after leave', moderator, detectionEvent.id)
@@ -3640,12 +2702,7 @@ describe('UserModerationService (unit)', () => {
 
     await serverRepository.getOrCreateServer(guildId);
     await userRepository.getOrCreateUser(userId, 'left-user');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     await verificationEventRepository.update(verificationEvent.id, {
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.PARKED,
@@ -3653,16 +2710,7 @@ describe('UserModerationService (unit)', () => {
       parked_at: parkedAt,
       parked_by: moderator.id,
     });
-    const service = new UserModerationService(
-      serverMemberRepository,
-      notificationManager,
-      roleManager,
-      verificationEventRepository,
-      adminActionService,
-      threadManager,
-      undefined,
-      moderationOutcomeService
-    );
+    const service = buildService();
 
     await expect(
       service.banUserById(guild, userId, 'banned after leave', moderator)

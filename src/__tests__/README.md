@@ -24,3 +24,8 @@ failure-order tests separate when their guarantees differ, even if their setup l
 Named dependency overrides should follow the constructor's types and preserve omitted or
 undefined dependencies. A fixture must not silently add working behavior to an intentionally
 missing collaborator. Keep application adapters and session binding in the existing harness.
+
+The notification and thread suites share `fakes/verificationEvents.ts` because their event
+builders have identical defaults. It accepts only the fields it populates. Keep time overrides
+explicit when a scenario depends on timestamps, and share another fixture only when its
+existing values and missing fields mean the same thing to every caller.
