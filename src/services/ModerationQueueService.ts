@@ -812,6 +812,10 @@ export class ModerationQueueService implements IModerationQueueService {
       ) {
         // Revalidate under the detection lock; source enumeration predates concurrent responses.
         await this.upsertObservedAlertMirrorById(item.detection_event_id);
+      } else if (staleCase && item.verification_event_id) {
+        await this.moderationQueueRepository.deleteStaleCaseMirror(item, (current) =>
+          this.deleteQueueMessage(current)
+        );
       } else if (staleCase || staleObserved) {
         await this.deleteQueueItems([item]);
       }

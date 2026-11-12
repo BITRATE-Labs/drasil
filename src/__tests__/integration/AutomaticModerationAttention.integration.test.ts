@@ -27,6 +27,7 @@ import {
 } from '../../repositories/VerificationEventRepository';
 import {
   DetectionType,
+  CaseAttentionState,
   VerificationStatus,
   ModerationQueueItemType,
 } from '../../repositories/types';
@@ -356,7 +357,7 @@ suite('automatic moderation attention', () => {
       if (status === VerificationStatus.PENDING)
         await f.prisma.verification_events.update({
           where: { id: owner.id },
-          data: { attention_state: 'parked' },
+          data: { attention_state: CaseAttentionState.PARKED },
         });
       await f.detections.linkToVerificationEvent(f.event.id, owner.id);
       await f.detections.patchMetadata(f.event.id, {
@@ -625,6 +626,146 @@ suite('automatic moderation attention', () => {
       );
     }
   );
+  it('scheduled stale cleanup preserves case-owned failure attention created after case enumeration', async () => {
+    const f = await fixture();
+    await f.detections.updateMetadata(f.event.id, {});
+    const cases = new VerificationEventRepository(f.prisma);
+    const service = new ModerationQueueService(
+      {} as Client,
+      { getServerConfig: async () => f.server } as unknown as IConfigService,
+      new ServerRepository(f.prisma),
+      cases,
+      f.detections,
+      f.queue
+    );
+    const enumerate = cases.findReviewablePendingByServer.bind(cases);
+    let enumerated!: () => void;
+    let resume!: () => void;
+    const captured = new Promise<void>((resolve) => {
+      enumerated = resolve;
+    });
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    jest.spyOn(cases, 'findReviewablePendingByServer').mockImplementationOnce(async (serverId) => {
+      const pending = await enumerate(serverId);
+      enumerated();
+      await paused;
+      return pending;
+    });
+    const reconciliation = service.syncServerQueue(f.server.guild_id);
+    await captured;
+    let ownerId: string | undefined;
+    try {
+      const owner = await cases.createFromDetection(
+        f.event.id,
+        f.server.guild_id,
+        'attention-user',
+        VerificationStatus.PENDING,
+        {
+          action_failures: [
+            {
+              action: 'case_role',
+              message: 'role_assignment_failed',
+              at: new Date().toISOString(),
+            },
+          ],
+        }
+      );
+      ownerId = owner.id;
+      const failure = {
+        action: 'restrict',
+        outcome: 'case_opened',
+        attention: 'required',
+        caseId: owner.id,
+        updatedAt: new Date().toISOString(),
+        failures: [{ step: 'role', code: 'role_assignment_failed' }],
+      };
+      await f.detections.linkToVerificationEvent(f.event.id, owner.id);
+      await f.detections.patchMetadata(f.event.id, { automatic_moderation_response: failure });
+      const updated = await cases.patchMetadata(owner.id, {
+        automatic_moderation_response: failure,
+      });
+      await service.upsertCaseMirror(updated!);
+    } finally {
+      resume();
+    }
+    await reconciliation;
+    const rows = await f.queue.listByServer(f.server.guild_id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      item_type: ModerationQueueItemType.CASE_MIRROR,
+      verification_event_id: ownerId,
+    });
+    expect(
+      readAutomaticModerationResponse((await cases.findById(ownerId!))?.metadata)
+    ).toMatchObject({ attention: 'required', caseId: ownerId });
+  });
+  it('scheduled case cleanup serializes parked-case renewal without deleting renewed attention', async () => {
+    const f = await fixture();
+    await f.detections.updateMetadata(f.event.id, {});
+    const cases = new VerificationEventRepository(f.prisma);
+    const owner = await cases.createFromDetection(
+      f.event.id,
+      f.server.guild_id,
+      'attention-user',
+      VerificationStatus.PENDING,
+      {
+        action_failures: [
+          { action: 'case_role', message: 'role_assignment_failed', at: new Date().toISOString() },
+        ],
+      }
+    );
+    await f.service.upsertCaseMirror(owner);
+    const obsolete = (await f.queue.findByCase(owner.id))!;
+    await cases.update(owner.id, { attention_state: CaseAttentionState.PARKED });
+    let renewal: Promise<void> | undefined;
+    const cleanup = jest.spyOn(f.service, 'deleteQueueMessage').mockImplementationOnce(async () => {
+      renewal = cases
+        .update(owner.id, { attention_state: CaseAttentionState.REVIEW_REQUIRED })
+        .then(async (renewed) => f.service.upsertCaseMirror(renewed!));
+      return true;
+    });
+    await f.service.syncServerQueue(f.server.guild_id);
+    await renewal;
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(await f.queue.findById(obsolete.id)).toBeNull();
+    const current = await f.queue.findByCase(owner.id);
+    expect(current).not.toBeNull();
+    expect(current?.id).not.toBe(obsolete.id);
+    expect((await cases.findById(owner.id))?.attention_state).toBe('review_required');
+  });
+
+  it.each(['false', 'throw'])(
+    'scheduled terminal-case cleanup retains its mirror when Discord cleanup returns %s',
+    async (failure) => {
+      const f = await fixture();
+      await f.detections.updateMetadata(f.event.id, {});
+      const cases = new VerificationEventRepository(f.prisma);
+      const owner = await cases.createFromDetection(
+        f.event.id,
+        f.server.guild_id,
+        'attention-user',
+        VerificationStatus.PENDING,
+        {}
+      );
+      await f.service.upsertCaseMirror(owner);
+      const item = (await f.queue.findByCase(owner.id))!;
+      await cases.update(owner.id, { status: VerificationStatus.KICKED });
+      const cleanup = jest.spyOn(f.service, 'deleteQueueMessage');
+      if (failure === 'false') {
+        cleanup.mockResolvedValue(false);
+        await f.service.syncServerQueue(f.server.guild_id);
+      } else {
+        cleanup.mockRejectedValue(new Error('cleanup unavailable'));
+        await expect(f.service.syncServerQueue(f.server.guild_id)).rejects.toThrow(
+          'cleanup unavailable'
+        );
+      }
+      expect((await f.queue.findByCase(owner.id))?.id).toBe(item.id);
+    }
+  );
+
   it('scheduled stale cleanup preserves attention created after source enumeration', async () => {
     const f = await fixture();
     await f.detections.updateMetadata(f.event.id, {});

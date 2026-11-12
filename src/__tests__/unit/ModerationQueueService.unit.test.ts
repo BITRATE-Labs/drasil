@@ -128,6 +128,7 @@ class FakeDiscordChannel {
 class FakeModerationQueueRepository implements IModerationQueueRepository {
   public items: ModerationQueueItem[] = [];
   public intakeRepository?: InMemoryReportIntakeRepository;
+  public verificationRepository?: IVerificationEventRepository;
   private nextId = 0;
 
   async reserveOrdinaryAcknowledgement(
@@ -387,6 +388,21 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
     return { ...item };
   }
 
+  async deleteStaleCaseMirror(
+    item: ModerationQueueItem,
+    deleteMessage: Parameters<IModerationQueueRepository['deleteStaleCaseMirror']>[1]
+  ): Promise<void> {
+    const owner = item.verification_event_id
+      ? await this.verificationRepository?.findById(item.verification_event_id)
+      : null;
+    if (
+      owner?.status === VerificationStatus.PENDING &&
+      owner.attention_state === CaseAttentionState.REVIEW_REQUIRED
+    )
+      return;
+    if (await deleteMessage(item)) await this.deleteById(item.id);
+  }
+
   async deleteById(id: string): Promise<ModerationQueueItem | null> {
     const index = this.items.findIndex((item) => item.id === id);
     if (index === -1) {
@@ -525,9 +541,13 @@ const buildService = (
     findAllActive: jest.fn(async () => [server]),
   } as unknown as IServerRepository;
   const verificationRepository = {
+    findById: jest.fn(
+      async (id: string) => input.pendingCases?.find((event) => event.id === id) ?? null
+    ),
     findPendingByServer: jest.fn(async () => input.pendingCases ?? []),
     findReviewablePendingByServer: jest.fn(async () => input.pendingCases ?? []),
   } as unknown as IVerificationEventRepository;
+  queueRepository.verificationRepository = verificationRepository;
   const detectionRepository = {
     findUnresolvedObservedNotificationsByServer: jest.fn(async () => input.observedAlerts ?? []),
     findById: jest.fn(

@@ -15,6 +15,8 @@ import { Prisma, PrismaClient, moderation_queue_item_type } from '../db/prisma';
 import { TYPES } from '../di/symbols';
 import { RepositoryError } from './BaseRepository';
 import {
+  VerificationStatus,
+  CaseAttentionState,
   ModerationQueueItem,
   ModerationQueueItemType,
   ModerationQueueItemUpsert,
@@ -73,6 +75,10 @@ export interface IModerationQueueRepository extends Pick<
     actorId: string;
     acknowledgedAt: Date;
   }): Promise<'acknowledged' | 'already_handled'>;
+  deleteStaleCaseMirror(
+    item: ModerationQueueItem,
+    deleteMessage: (item: ModerationQueueItem) => Promise<boolean>
+  ): Promise<void>;
   deleteById(id: string): Promise<ModerationQueueItem | null>;
 }
 
@@ -561,6 +567,41 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
         data: { metadata: metadata as Prisma.InputJsonValue, updated_at: input.acknowledgedAt },
       });
       return 'acknowledged';
+    });
+  }
+
+  async deleteStaleCaseMirror(
+    item: ModerationQueueItem,
+    deleteMessage: (item: ModerationQueueItem) => Promise<boolean>
+  ): Promise<void> {
+    if (item.item_type !== ModerationQueueItemType.CASE_MIRROR || !item.verification_event_id)
+      return;
+    await this.prisma.$transaction(async (transaction) => {
+      // Hold the case lock through cleanup so a renewed review cannot lose its mirror.
+      const owners = await transaction.$queryRaw<
+        Array<{
+          status: VerificationStatus;
+          attention_state: CaseAttentionState;
+        }>
+      >`SELECT status, attention_state FROM verification_events
+          WHERE id=${item.verification_event_id}::uuid AND server_id=${item.server_id} FOR UPDATE`;
+      const owner = owners.at(0);
+      if (
+        owner?.status === VerificationStatus.PENDING &&
+        owner.attention_state === CaseAttentionState.REVIEW_REQUIRED
+      )
+        return;
+      const current = await transaction.moderation_queue_items.findFirst({
+        where: {
+          id: item.id,
+          server_id: item.server_id,
+          verification_event_id: item.verification_event_id,
+          item_type: ModerationQueueItemType.CASE_MIRROR,
+        },
+      });
+      if (current && (await deleteMessage(current as ModerationQueueItem))) {
+        await transaction.moderation_queue_items.delete({ where: { id: current.id } });
+      }
     });
   }
 
