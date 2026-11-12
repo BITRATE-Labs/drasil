@@ -73,18 +73,19 @@ export function createReportActions(deps: ReportDependencies): ReportActions {
     if (existing) return { kind: 'start_report_intake', status: 'existing', intake: existing };
     const thread = await deps.threads.create(context, channelId);
     if (!thread) return { kind: 'start_report_intake', status: 'create_failed', intake: null };
-    let activated = false;
+    let activationAttempted = false;
     try {
       const intake = await deps.intakes.open(context, channelId, thread.id);
-      activated = await deps.threads.activate(context, thread.id, intake.id);
+      // Admission may succeed even if Discord's response is lost; never delete after this point.
+      activationAttempted = true;
+      const activated = await deps.threads.activate(context, thread.id, intake.id);
       if (!activated) {
-        await deps.intakes.markOpenFailed(intake.id);
         return { kind: 'start_report_intake', status: 'activation_failed', intake };
       }
       await deps.threads.notifyOpened(context, thread.id, intake.id);
       return { kind: 'start_report_intake', status: 'opened', intake, threadUrl: thread.url };
     } finally {
-      if (!activated) await deps.threads.deleteFailed(thread.id);
+      if (!activationAttempted) await deps.threads.deleteFailed(thread.id);
     }
   }
   async function confirm(

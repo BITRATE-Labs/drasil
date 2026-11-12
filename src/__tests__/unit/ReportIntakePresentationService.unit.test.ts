@@ -147,6 +147,9 @@ describe('durable reporter presentation', () => {
     await f.service.reconcile(f.intake.id);
     expect(f.messages.size).toBe(1);
     expect(f.channel.send).toHaveBeenCalledTimes(1);
+    expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
+      reporter_presentation: { attemptViewKey: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
   });
   it('does not treat permission failures as missing messages', async () => {
     const f = await fixture();
@@ -479,6 +482,9 @@ it.each([
     expect(JSON.stringify([...f.messages.values()].map((m) => m.embeds))).toContain(
       'Thread closed'
     );
+    expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
+      reporter_presentation: { closedCardView: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
     f.channel.setArchived.mockClear();
     await f.service.reconcile(f.intake.id);
     expect(f.channel.setArchived).not.toHaveBeenCalled();

@@ -1643,12 +1643,14 @@ export class ThreadManager implements IThreadManager {
 
       await this.addCaseResponderMembers(reporter.guild, thread, [reporter.id]);
 
-      if (
-        reportIntakeId &&
-        this.reporterPresentation &&
-        (await this.reporterPresentation.reconcile(reportIntakeId))
-      ) {
-        return true;
+      if (reportIntakeId && this.reporterPresentation) {
+        try {
+          if (await this.reporterPresentation.reconcile(reportIntakeId)) return true;
+        } catch (error) {
+          // The opening card is scheduled with the intake, before reporter admission.
+          console.warn('Report card delivery deferred:', error);
+          return true;
+        }
       }
       const components = reportIntakeId
         ? [

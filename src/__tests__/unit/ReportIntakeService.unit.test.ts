@@ -146,6 +146,25 @@ describe('ReportIntakeService', () => {
     return { ...setup, intake, prompt, send, message };
   }
 
+  it('persists the opening card schedule before reporter activation', async () => {
+    const f = buildService();
+    jest.mocked(f.configService.getServerConfig).mockResolvedValue({
+      settings: { report_intake_staged_enabled: true },
+    } as never);
+    const intake = await f.service.openIntakeFromThread({
+      serverId: 'guild-1',
+      reporter: buildReporter(),
+      threadId: 'thread-1',
+      channelId: 'channel-1',
+    });
+    expect(await f.reportIntakeRepository.findById(intake.id)).toMatchObject({
+      metadata: { workflow: 'staged', reporter_presentation: { nextDueAt: expect.any(String) } },
+    });
+    expect(
+      await f.reportIntakeRepository.claimPendingPresentation(new Date(), intake.id)
+    ).not.toBeNull();
+  });
+
   it('restores an unchanged draft after a verified archive failure', async () => {
     const f = await preparePrompt();
     await f.reportIntakeRepository.update(f.intake.id, {

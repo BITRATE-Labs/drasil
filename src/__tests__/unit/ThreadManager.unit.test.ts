@@ -1937,6 +1937,27 @@ describe('ThreadManager (unit)', () => {
     });
   });
 
+  it('keeps an admitted reporter thread when its scheduled opening card fails', async () => {
+    const presentation = {
+      reconcile: jest.fn().mockRejectedValue(new Error('Report presentation changed')),
+      presentClaim: jest.fn(),
+    };
+    const manager = new ThreadManager(
+      {} as Client,
+      configService,
+      verificationEventRepository,
+      userRepository,
+      serverRepository,
+      serverMemberRepository,
+      presentation
+    );
+    const reporter = buildMember('guild-1', 'reporter-1');
+    expect(await manager.activateReportIntakeThread(thread, reporter, 'intake-1')).toBe(true);
+    expect(thread.members.add).toHaveBeenCalledWith('reporter-1');
+    expect(presentation.reconcile).toHaveBeenCalledWith('intake-1');
+    expect(thread.send).not.toHaveBeenCalled();
+  });
+
   it('adds configured case responder role members to private report review threads', async () => {
     const staffMember = { id: 'staff-1' };
     const guild = {

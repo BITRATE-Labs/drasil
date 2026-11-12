@@ -313,7 +313,9 @@ export class ReportIntakeService implements IReportIntakeService {
       status: ReportIntakeStatus.COLLECTING_EVIDENCE,
       metadata: {
         source: 'report_button',
-        ...(getReportIntakeSettings(config.settings).stagedEnabled ? { workflow: 'staged' } : {}),
+        ...(getReportIntakeSettings(config.settings).stagedEnabled
+          ? { workflow: 'staged', reporter_presentation: { nextDueAt: new Date().toISOString() } }
+          : {}),
         intake_channel_id: input.channelId,
         opened_at: new Date().toISOString(),
       },

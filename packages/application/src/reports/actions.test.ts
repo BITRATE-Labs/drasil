@@ -47,7 +47,6 @@ function fixture(): {
       load: async () => intake,
       findOpen: async () => null,
       open: async () => intake,
-      markOpenFailed: async () => {},
       confirm: async () => {
         intake.confirmedTargetUserId = 'target';
         return {
@@ -198,21 +197,27 @@ it('changed reason policy blocks user report before submission', async () => {
     })
   ).toMatchObject({ code: 'reason_required' });
 });
-it('a failed activation deletes the created thread and records failure', async () => {
-  const f = fixture();
-  const events: string[] = [];
-  f.deps.threads.activate = async (): Promise<boolean> => false;
-  f.deps.intakes.markOpenFailed = async (): Promise<void> => {
-    events.push('failed');
-  };
-  f.deps.threads.deleteFailed = async (): Promise<void> => {
-    events.push('deleted');
-  };
-  expect(
-    await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
-  ).toMatchObject({ outcome: { status: 'activation_failed' } });
-  expect(events).toEqual(['failed', 'deleted']);
-});
+it.each(['false', 'throw'])(
+  'preserves the intake and thread after activation returns %s',
+  async (result) => {
+    const f = fixture();
+    const events: string[] = [];
+    f.deps.threads.activate = async (): Promise<boolean> => {
+      if (result === 'throw') throw new Error('Admission response lost');
+      return false;
+    };
+    f.deps.threads.deleteFailed = async (): Promise<void> => {
+      events.push('deleted');
+    };
+    const action = f.actions.execute(context, {
+      kind: 'start_report_intake',
+      channelId: 'channel',
+    });
+    if (result === 'throw') await expect(action).rejects.toThrow('Admission response lost');
+    else expect(await action).toMatchObject({ outcome: { status: 'activation_failed' } });
+    expect(events).toEqual([]);
+  }
+);
 it('a claim acquired during closure is reported as busy without thread effects', async () => {
   const f = fixture();
   let effects = 0;

@@ -30,6 +30,8 @@ flowchart TD
 
 Two bot messages is the normal-flow target, not a license to delete evidence or conceal a delivery failure. Discord edits do not move a message. Evidence sent after the confirmation remains below it. Do not delete and repost for each update.
 
+Keep a short private acknowledgement for Submit report and Not this person. The shared card may still be updating, so its existence is not proof that the reporter has seen the result. These acknowledgements add no messages to the report thread.
+
 ## Copy and controls
 
 | State                           | Title and body                                                                                                                                                           | Reporter controls                            |
@@ -67,11 +69,13 @@ Do not claim a screenshot match for text-only evidence. Omit the optional explan
 
 Persist the opening/follow-up message identities separately from authorization tokens. Reuse existing optimistic updates and presentation claims. Persist send intent before sending, save the returned message ID, and recover an accepted-but-unrecorded send before attempting another.
 
+Schedule the opening card when the intake is saved, before admitting the reporter. A card delivery error leaves the intake open for recovery. Once activation has been attempted, preserve the intake and thread even if Discord's response is lost; the reporter may already have posted evidence.
+
 Use message IDs first. Recovery verifies the bot author and exact guild/thread. Retain recognition of shipped receipt footer markers and shipped custom IDs, but do not render receipt GUIDs in new messages. A bounded history search may adopt a uniquely matching reserved message; ambiguous or incomplete history stops automatic resend and surfaces delivery attention.
 
 A definite missing-message response permits one replacement after a fresh claim. Permission errors and network failures do not prove deletion. Restore the current state after restart without replaying prior transitions or pings. Preserve unrelated metadata and staff notification recovery.
 
-Existing reports are adopted on their next update. Retire old actionable prompts; do not bulk delete old messages or resubmit reports. No database migration is expected: use validated optional metadata and test records where it is absent.
+Existing reports are adopted on their next update. Retire old actionable prompts; do not bulk delete old messages or resubmit reports. Presentation state uses validated optional metadata, with tests for records where it is absent. Implementation review added a due-time expression index after synthetic query-plan validation. The migration changes no columns or report data; index creation locks report-intake writes while it runs, and production duration is unmeasured.
 
 ## Deliberately deferred
 

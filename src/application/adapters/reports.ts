@@ -108,9 +108,6 @@ export function createBotReportActions(
           })
         );
       },
-      async markOpenFailed(intakeId) {
-        await intakes.markOpenFailed({ intakeId, reason: 'thread_activation_failed' });
-      },
       async confirm(context, command, staff) {
         const intake = await intakes.findIntakeById(command.intakeId);
         let currentMember: ReportDirectoryMember | undefined;

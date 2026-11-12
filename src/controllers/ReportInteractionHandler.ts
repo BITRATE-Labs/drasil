@@ -229,10 +229,6 @@ export class ReportInteractionHandler {
       selectionAccepted = true;
       submissionSucceeded = true;
       statusRecorded = outcome.statusRecorded === true;
-      if (readReporterPresentation(context.intake)) {
-        await interaction.deleteReply();
-        return;
-      }
       const acknowledgement = statusRecorded
         ? 'Report submitted.'
         : "Report submitted. Drasil couldn't record its final status. Please ask a moderator to review this thread.";
@@ -290,10 +286,6 @@ export class ReportInteractionHandler {
       });
       if (outcome.kind !== 'reject_intake_candidates') return;
       const result = outcome.result;
-      if (result.rejected && readReporterPresentation(context.intake)) {
-        await interaction.deleteReply();
-        return;
-      }
       await interaction.editReply({ content: result.message }).catch((error: unknown) => {
         console.warn('Failed to deliver report selection result:', error);
       });

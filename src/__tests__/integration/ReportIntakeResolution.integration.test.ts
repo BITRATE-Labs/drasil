@@ -136,7 +136,6 @@ describeIntegration('staged report staff resolution', () => {
         open: async () => {
           throw new Error('not used');
         },
-        markOpenFailed: async () => {},
         confirm: async (ctx, command, staff) =>
           service.confirmCandidate({
             intakeId: command.intakeId,

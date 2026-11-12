@@ -73,7 +73,6 @@ export interface ReportDependencies {
     load(intakeId: string): Promise<ReportIntakeState | null>;
     findOpen(context: ActionContext): Promise<ReportIntakeState | null>;
     open(context: ActionContext, channelId: string, threadId: string): Promise<ReportIntakeState>;
-    markOpenFailed(intakeId: string): Promise<void>;
     confirm(
       context: ActionContext,
       command: Extract<ReportCommand, { kind: 'confirm_intake_candidate' }>,

@@ -783,7 +783,7 @@ describe('ReportInteractionHandler (unit)', () => {
     });
   });
 
-  it('marks the intake failed and deletes the thread when activation fails', async () => {
+  it('preserves the intake and thread when activation fails after admission may have started', async () => {
     const reporter = buildMember('guild-1', 'reporter-1');
     const thread = {
       id: 'report-thread-1',
@@ -808,13 +808,8 @@ describe('ReportInteractionHandler (unit)', () => {
 
     await handler.handleReportUserInitiate(interaction);
 
-    expect(reportIntakeService.markOpenFailed).toHaveBeenCalledWith({
-      intakeId: 'intake-1',
-      reason: 'thread_activation_failed',
-    });
-    expect(thread.delete).toHaveBeenCalledWith(
-      'Report intake setup failed before reporter activation.'
-    );
+    expect(reportIntakeService.markOpenFailed).not.toHaveBeenCalled();
+    expect(thread.delete).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith({
       content:
         'Could not prepare the private report thread. Please ask a server admin to check Drasil thread permissions.',
@@ -1412,6 +1407,48 @@ describe('ReportInteractionHandler (unit)', () => {
       content: 'Use the latest confirmation message in this thread.',
     });
   });
+
+  it.each(['submitted', 'status failure', 'rejected'])(
+    'keeps a private %s acknowledgement for shared cards',
+    async (outcome) => {
+      const service = createReportIntakeService();
+      const intake = buildReportIntake({
+        status: ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION,
+        thread_id: 'thread-1',
+      });
+      intake.metadata = {
+        ...(intake.metadata as object),
+        reporter_presentation: { followupMessageId: 'prompt-1', nextDueAt: null },
+      };
+      service.findIntakeById.mockResolvedValue(intake);
+      service.confirmCandidate.mockResolvedValue({
+        confirmed: true,
+        message: 'confirmed',
+        reason: 'reported reason',
+      });
+      service.markSubmitted.mockResolvedValue(outcome !== 'status failure');
+      service.refreshPresentation = jest.fn().mockRejectedValue(new Error('Card edit unavailable'));
+      service.rejectCandidates.mockResolvedValue({ rejected: true, message: 'Answer saved.' });
+      const customId =
+        outcome === 'rejected'
+          ? 'report_intake_reject:intake-1:prompt-token'
+          : 'report_intake_confirm:intake-1:user-1:prompt-token';
+      const interaction = buildInteraction(customId, 'guild-1', { id: 'reporter-1' } as User);
+      const deleteReply = jest.fn().mockRejectedValue(new Error('Cannot delete reply'));
+      Object.assign(interaction, { deleteReply });
+      prepareReportClient(client, interaction);
+      await createHandler(service).handleReportIntakeConfirm(interaction, customId);
+      expect(deleteReply).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith({
+        content:
+          outcome === 'rejected'
+            ? 'Answer saved.'
+            : outcome === 'status failure'
+              ? "Report submitted. Drasil couldn't record its final status. Please ask a moderator to review this thread."
+              : 'Report submitted.',
+      });
+    }
+  );
 
   it('authorized stale legacy click reports submission before looking up a departed target and retires its controls', async () => {
     const service = createReportIntakeService();
