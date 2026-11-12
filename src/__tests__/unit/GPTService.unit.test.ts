@@ -378,7 +378,7 @@ describe('GPTService (unit)', () => {
       expect(options).toMatchObject({ signal, maxRetries: 0 });
       expect(payload).toMatchObject({
         model: 'gpt-5.4-mini',
-        max_output_tokens: 4096,
+        max_output_tokens: 16_384,
         store: false,
       });
       expect(
@@ -1036,7 +1036,7 @@ describe('GPTService (unit)', () => {
       });
       expect(identity.parse.mock.calls[0][0]).toMatchObject({
         model: 'gpt-6.1-terra',
-        max_output_tokens: 4096,
+        max_output_tokens: 16_384,
         reasoning: { effort: 'low' },
       });
       expect(identity.parse.mock.calls[0][0].temperature).toBeUndefined();
