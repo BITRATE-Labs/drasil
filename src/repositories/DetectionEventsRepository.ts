@@ -30,6 +30,42 @@ export interface AutomaticResponseCompletion {
   caseId?: string;
 }
 
+export function mergeAutomaticResponseFailure(
+  previous: AutomaticModerationResponse | null,
+  incoming: AutomaticModerationResponse
+): AutomaticModerationResponse {
+  let response = incoming;
+  if (
+    previous?.action === 'kick' &&
+    (incoming.action !== 'kick' || (previous.outcome === 'kicked' && incoming.outcome !== 'kicked'))
+  ) {
+    response = {
+      ...previous,
+      caseId: incoming.caseId,
+      updatedAt: incoming.updatedAt,
+      attention: incoming.attention,
+      failures: [
+        ...previous.failures,
+        ...incoming.failures.filter(
+          (failure) => previous.outcome !== 'kicked' || failure.step !== 'kick'
+        ),
+      ],
+    };
+  }
+  if (previous?.action !== response.action || previous.outcome !== response.outcome)
+    return { ...response, attention: 'required' };
+  const added = response.failures.filter(
+    (failure) =>
+      !previous.failures.some((saved) => saved.step === failure.step && saved.code === failure.code)
+  );
+  return {
+    ...response,
+    failures: [...previous.failures, ...added],
+    attention:
+      !added.length && previous.caseId === response.caseId ? previous.attention : 'required',
+  };
+}
+
 export interface IDetectionEventsRepository {
   create(data: Partial<DetectionEvent>): Promise<DetectionEvent>;
   findByServerAndUser(serverId: string, userId: string): Promise<DetectionEvent[]>;
@@ -78,6 +114,10 @@ export interface IDetectionEventsRepository {
   completeAutomaticResponseAttention(
     input: AutomaticResponseCompletion
   ): Promise<DetectionEvent | null>;
+  recordAutomaticResponseFailure(
+    detectionEventId: string,
+    response: AutomaticModerationResponse
+  ): Promise<AutomaticModerationResponse | null>;
   cleanupOldEvents(retentionDays: number): Promise<number>;
   findById(id: string): Promise<DetectionEvent | null>; // Add findById for consistency
 }
@@ -432,6 +472,28 @@ export class DetectionEventsRepository implements IDetectionEventsRepository {
     } catch (error) {
       this.handleError(error, 'clearAccountingExclusion');
     }
+  }
+
+  async recordAutomaticResponseFailure(
+    detectionEventId: string,
+    incoming: AutomaticModerationResponse
+  ): Promise<AutomaticModerationResponse | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      const rows = await transaction.$queryRaw<
+        DetectionEvent[]
+      >`SELECT * FROM detection_events WHERE id=${detectionEventId}::uuid FOR UPDATE`;
+      const event = rows.at(0);
+      if (!event) return null;
+      const response = mergeAutomaticResponseFailure(
+        readAutomaticModerationResponse(event.metadata),
+        incoming
+      );
+      if (response.attention === 'resolved') return response;
+      const saved = await transaction.$queryRaw<DetectionEvent[]>`
+        UPDATE detection_events SET metadata=COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({ automatic_moderation_response: response })}::jsonb
+        WHERE id=${detectionEventId}::uuid RETURNING *`;
+      return saved.at(0) ? response : null;
+    });
   }
 
   async completeAutomaticResponseAttention(

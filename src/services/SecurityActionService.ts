@@ -1477,53 +1477,73 @@ export class SecurityActionService implements ISecurityActionService {
     verificationEvent: VerificationEvent,
     actions: readonly VerificationActionFailureKind[]
   ): Promise<VerificationEvent> {
-    const hasFailuresToClear = getVerificationActionFailures(verificationEvent.metadata).some(
-      (failure) => actions.includes(failure.action)
-    );
-    if (!hasFailuresToClear) {
-      return verificationEvent;
-    }
-
-    const updatedMetadata = clearVerificationActionFailures(verificationEvent.metadata, actions);
-    const response = readAutomaticModerationResponse(verificationEvent.metadata);
-    const stepForAction = (
-      action: VerificationActionFailureKind
-    ): AutomaticModerationResponse['failures'][number]['step'] =>
-      action === 'case_role' || action === 'restrict' || action === 'role_quarantine'
-        ? 'role'
-        : action === 'thread' || action === 'private_evidence_thread'
-          ? 'thread'
-          : action;
-    const remainingSteps = getVerificationActionFailures(updatedMetadata).map((failure) =>
-      stepForAction(failure.action)
-    );
-    const confirmedSteps = actions
-      .map(stepForAction)
-      .filter((step) => !remainingSteps.includes(step));
-    if (response) {
-      const failures = response.failures.filter(
-        (failure) => !confirmedSteps.includes(failure.step)
-      );
-      Object.assign(updatedMetadata, {
-        automatic_moderation_response: {
-          ...response,
-          failures,
-          attention:
-            failures.length ||
-            (response.action === 'kick' &&
-              (response.outcome === 'pending' || response.outcome === 'unknown'))
-              ? response.attention
-              : 'resolved',
-          updatedAt: new Date().toISOString(),
-        },
-      });
-    }
-    const fallbackEvent = {
-      ...verificationEvent,
-      metadata: updatedMetadata as VerificationEvent['metadata'],
-    };
-
+    let fallbackEvent = verificationEvent;
     try {
+      const updatedMetadata = clearVerificationActionFailures(verificationEvent.metadata, actions);
+      const response = readAutomaticModerationResponse(verificationEvent.metadata);
+      const stepForAction = (
+        action: VerificationActionFailureKind
+      ): AutomaticModerationResponse['failures'][number]['step'] =>
+        action === 'case_role' || action === 'restrict' || action === 'role_quarantine'
+          ? 'role'
+          : action === 'thread' || action === 'private_evidence_thread'
+            ? 'thread'
+            : action;
+      const sources = await this.detectionEventsRepository.findByVerificationEventId(
+        verificationEvent.id
+      );
+      if (
+        verificationEvent.detection_event_id &&
+        !sources.some((source) => source.id === verificationEvent.detection_event_id)
+      ) {
+        const source = await this.detectionEventsRepository.findById(
+          verificationEvent.detection_event_id
+        );
+        if (source) sources.push(source);
+      }
+      const repairedSteps = actions.map(stepForAction);
+      const hasFailuresToClear =
+        getVerificationActionFailures(verificationEvent.metadata).some((failure) =>
+          actions.includes(failure.action)
+        ) ||
+        response?.failures.some((failure) => repairedSteps.includes(failure.step)) ||
+        sources.some((source) => {
+          const saved = readAutomaticModerationResponse(source.metadata);
+          return (
+            saved?.caseId === verificationEvent.id &&
+            saved.failures.some((failure) => repairedSteps.includes(failure.step))
+          );
+        });
+      if (!hasFailuresToClear) return verificationEvent;
+      const remainingSteps = getVerificationActionFailures(updatedMetadata).map((failure) =>
+        stepForAction(failure.action)
+      );
+      const confirmedSteps = actions
+        .map(stepForAction)
+        .filter((step) => !remainingSteps.includes(step));
+      if (response) {
+        const failures = response.failures.filter(
+          (failure) => !confirmedSteps.includes(failure.step)
+        );
+        Object.assign(updatedMetadata, {
+          automatic_moderation_response: {
+            ...response,
+            failures,
+            attention:
+              failures.length ||
+              (response.action === 'kick' &&
+                (response.outcome === 'pending' || response.outcome === 'unknown'))
+                ? response.attention
+                : 'resolved',
+            updatedAt: new Date().toISOString(),
+          },
+        });
+      }
+      fallbackEvent = {
+        ...verificationEvent,
+        metadata: updatedMetadata as VerificationEvent['metadata'],
+      };
+
       const updatedEvent = await this.verificationEventRepository.patchMetadata(
         verificationEvent.id,
         {
@@ -1531,52 +1551,40 @@ export class SecurityActionService implements ISecurityActionService {
           ...(response
             ? { automatic_moderation_response: updatedMetadata.automatic_moderation_response }
             : {}),
-        }
+        },
+        { expectedRepairState: verificationEvent.metadata }
       );
-
-      if (updatedEvent && response) {
-        const sources = await this.detectionEventsRepository.findByVerificationEventId(
-          verificationEvent.id
+      if (!updatedEvent)
+        return (
+          (await this.verificationEventRepository.findById(verificationEvent.id)) ??
+          verificationEvent
         );
-        if (
-          verificationEvent.detection_event_id &&
-          !sources.some((source) => source.id === verificationEvent.detection_event_id)
-        ) {
-          const source = await this.detectionEventsRepository.findById(
-            verificationEvent.detection_event_id
-          );
-          if (source) sources.push(source);
-        }
-        for (const source of sources) {
-          const sourceResponse = readAutomaticModerationResponse(source.metadata);
-          if (
-            sourceResponse?.caseId !== verificationEvent.id ||
-            sourceResponse.action !== response.action
-          )
-            continue;
-          const failures = sourceResponse.failures.filter(
-            (failure) => !confirmedSteps.includes(failure.step)
-          );
-          await this.detectionEventsRepository.patchMetadata(
-            source.id,
-            {
-              automatic_moderation_response: {
-                ...sourceResponse,
-                failures,
-                attention:
-                  failures.length ||
-                  (sourceResponse.action === 'kick' &&
-                    (sourceResponse.outcome === 'pending' || sourceResponse.outcome === 'unknown'))
-                    ? sourceResponse.attention
-                    : 'resolved',
-                updatedAt: new Date().toISOString(),
-              },
+
+      for (const source of sources) {
+        const sourceResponse = readAutomaticModerationResponse(source.metadata);
+        if (sourceResponse?.caseId !== verificationEvent.id) continue;
+        const failures = sourceResponse.failures.filter(
+          (failure) => !confirmedSteps.includes(failure.step)
+        );
+        await this.detectionEventsRepository.patchMetadata(
+          source.id,
+          {
+            automatic_moderation_response: {
+              ...sourceResponse,
+              failures,
+              attention:
+                failures.length ||
+                (sourceResponse.action === 'kick' &&
+                  (sourceResponse.outcome === 'pending' || sourceResponse.outcome === 'unknown'))
+                  ? sourceResponse.attention
+                  : 'resolved',
+              updatedAt: new Date().toISOString(),
             },
-            sourceResponse
-          );
-        }
+          },
+          sourceResponse
+        );
       }
-      return updatedEvent ?? fallbackEvent;
+      return updatedEvent;
     } catch (error) {
       console.error(
         `Failed to clear resolved action failures for verification event ${verificationEvent.id}; continuing repair flow:`,
@@ -2764,48 +2772,24 @@ export class SecurityActionService implements ISecurityActionService {
             member.id,
             member.guild.id
           );
-      const previous = readAutomaticModerationResponse(detection.metadata);
-      // Reprocessing cannot rewrite a completed kick or reopen its resolved attention.
-      if (
-        previous?.action === 'kick' &&
-        (response.action !== 'kick' ||
-          (previous.outcome === 'kicked' && response.outcome !== 'kicked'))
-      )
-        response = previous;
       const liveOwner =
         owner?.status === VerificationStatus.PENDING &&
         owner.attention_state !== CaseAttentionState.PARKED;
       response = { ...response, caseId: liveOwner ? owner.id : null };
       if (owner && response.action === 'restrict')
         response = { ...response, outcome: 'case_opened' };
-      if (previous?.action === response.action && previous.outcome === response.outcome) {
-        const addedFailures = response.failures.filter(
-          (failure) =>
-            !previous.failures.some(
-              (saved) => saved.step === failure.step && saved.code === failure.code
-            )
-        );
-        response = {
-          ...response,
-          failures: [...previous.failures, ...addedFailures],
-          attention:
-            !addedFailures.length && previous.caseId === response.caseId
-              ? previous.attention
-              : response.attention,
-        };
-      }
+      const persistedResponse = await this.detectionEventsRepository.recordAutomaticResponseFailure(
+        detectionEventId,
+        response
+      );
+      if (!persistedResponse) throw new Error('Could not persist automatic response failure.');
+      response = persistedResponse;
       if (response.attention === 'resolved') {
         recordWorkflowOutcome({
           output: { verdict: detectionResult.label, actual_outcome: response.outcome },
         });
         return;
       }
-      if (
-        !(await this.detectionEventsRepository.patchMetadata(detectionEventId, {
-          automatic_moderation_response: response,
-        }))
-      )
-        throw new Error('Could not persist automatic response failure.');
       recordWorkflowOutcome({
         level: response.failures.some(
           (failure) => failure.step === 'persistence' || failure.step === 'notification'

@@ -72,6 +72,222 @@ suite('automatic moderation attention', () => {
     );
     return { prisma, server, detections, queue, event, service };
   }
+  it.each(['identical', 'new_failure', 'new_followup'] as const)(
+    'failure recording racing Close preserves completion unless facts change (%s)',
+    async (change) => {
+      const f = await fixture();
+      const cases = new VerificationEventRepository(f.prisma);
+      const security = new SecurityActionService(
+        {
+          upsertObservedDetectionNotification: jest.fn().mockResolvedValue(null),
+        } as unknown as INotificationManager,
+        f.detections,
+        new ServerMemberRepository(f.prisma),
+        cases,
+        new UserRepository(f.prisma),
+        new ServerRepository(f.prisma),
+        {} as IAdminActionService,
+        {} as IThreadManager,
+        {} as IUserModerationService & ICombinedBanLifecycleService,
+        {} as Client,
+        undefined,
+        undefined,
+        f.service
+      );
+      let loaded!: () => void;
+      let resume!: () => void;
+      const captured = new Promise<void>((resolve) => {
+        loaded = resolve;
+      });
+      const paused = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      jest.spyOn(cases, 'findActiveByUserAndServer').mockImplementationOnce(async () => {
+        loaded();
+        await paused;
+        return null;
+      });
+      const incoming = readAutomaticModerationResponse(f.event.metadata)!;
+      const recording = security.recordAutomaticResponseFailure(
+        {
+          id: 'attention-user',
+          guild: { id: f.server.guild_id },
+          user: { id: 'attention-user', username: 'synthetic', createdTimestamp: 0 },
+        } as GuildMember,
+        {
+          label: 'SUSPICIOUS',
+          confidence: 0.8,
+          reasons: [],
+          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+          triggerContent: '',
+          detectionEventId: f.event.id,
+        },
+        change === 'identical'
+          ? incoming
+          : change === 'new_followup'
+            ? {
+                action: 'notify',
+                outcome: 'failed',
+                attention: 'required',
+                caseId: null,
+                updatedAt: new Date().toISOString(),
+                failures: [{ step: 'persistence', code: 'persistence_failed' }],
+              }
+            : {
+                ...incoming,
+                failures: [
+                  ...incoming.failures,
+                  { step: 'persistence', code: 'persistence_failed' },
+                ],
+              }
+      );
+      await captured;
+      try {
+        expect(
+          await security.dismissObservedDetection(
+            f.server.guild_id,
+            'attention-user',
+            f.event.id,
+            { id: 'moderator' } as import('discord.js').User,
+            AdminActionType.DISMISS
+          )
+        ).toBe(true);
+      } finally {
+        resume();
+      }
+      await recording;
+      expect(
+        readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)
+          ?.attention
+      ).toBe(change === 'identical' ? 'resolved' : 'required');
+    }
+  );
+  it.each(['outcome', 'failure', 'unrelated'] as const)(
+    'case repair preserves concurrent %s state',
+    async (change) => {
+      const f = await fixture();
+      await f.detections.updateMetadata(f.event.id, {});
+      const cases = new VerificationEventRepository(f.prisma);
+      const owner = await cases.createFromDetection(
+        f.event.id,
+        f.server.guild_id,
+        'attention-user',
+        VerificationStatus.PENDING,
+        {}
+      );
+      const oldResponse = {
+        action: 'kick',
+        outcome: 'unknown',
+        attention: 'required',
+        caseId: owner.id,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [
+          { step: 'thread', code: 'thread_creation_failed' },
+          { step: 'kick', code: 'kick_outcome_unknown' },
+        ],
+      };
+      await cases.patchMetadata(owner.id, {
+        automatic_moderation_response: oldResponse,
+        action_failures: [
+          { action: 'thread', message: 'thread_creation_failed', at: oldResponse.updatedAt },
+        ],
+      });
+      const security = new SecurityActionService(
+        { updateNotificationButtons: jest.fn() } as unknown as INotificationManager,
+        f.detections,
+        new ServerMemberRepository(f.prisma),
+        cases,
+        new UserRepository(f.prisma),
+        new ServerRepository(f.prisma),
+        {} as IAdminActionService,
+        {
+          repairVerificationThread: jest.fn().mockResolvedValue({
+            threadId: 'thread',
+            threadCreated: false,
+            userAdded: true,
+            promptSent: true,
+            promptAlreadyPresent: false,
+          }),
+        } as unknown as IThreadManager,
+        { applyCaseRole: jest.fn().mockResolvedValue(true) } as unknown as IUserModerationService &
+          ICombinedBanLifecycleService,
+        {} as Client
+      );
+      const patch = cases.patchMetadata.bind(cases);
+      let loaded!: () => void;
+      let resume!: () => void;
+      const captured = new Promise<void>((resolve) => {
+        loaded = resolve;
+      });
+      const paused = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      jest.spyOn(cases, 'patchMetadata').mockImplementationOnce(async (...args) => {
+        loaded();
+        await paused;
+        return patch(...args);
+      });
+      const repairing = security.repairActiveCase({
+        id: 'attention-user',
+        guild: { id: f.server.guild_id },
+        user: { id: 'attention-user', username: 'synthetic', tag: 'synthetic' },
+      } as GuildMember);
+      await captured;
+      const newer = {
+        ...oldResponse,
+        outcome: change === 'outcome' ? 'kicked' : oldResponse.outcome,
+        failures:
+          change === 'outcome'
+            ? [{ step: 'persistence', code: 'persistence_failed' }]
+            : oldResponse.failures,
+        updatedAt: change === 'outcome' ? new Date().toISOString() : oldResponse.updatedAt,
+      };
+      try {
+        await patch(owner.id, {
+          automatic_moderation_response: newer,
+          action_failures:
+            change === 'failure'
+              ? [{ action: 'persistence', message: 'persistence_failed', at: newer.updatedAt }]
+              : [
+                  {
+                    action: 'thread',
+                    message: 'thread_creation_failed',
+                    at: oldResponse.updatedAt,
+                  },
+                ],
+          captcha_operation: 'new-token',
+        });
+      } finally {
+        resume();
+      }
+      await repairing;
+      const current = (await cases.findById(owner.id))?.metadata;
+      if (change === 'unrelated')
+        expect(current).toMatchObject({
+          automatic_moderation_response: {
+            outcome: 'unknown',
+            failures: [{ step: 'kick', code: 'kick_outcome_unknown' }],
+          },
+          action_failures: [],
+          captcha_operation: 'new-token',
+        });
+      else
+        expect(current).toMatchObject({
+          automatic_moderation_response: newer,
+          action_failures:
+            change === 'failure'
+              ? [{ action: 'persistence', message: 'persistence_failed', at: newer.updatedAt }]
+              : [
+                  {
+                    action: 'thread',
+                    message: 'thread_creation_failed',
+                    at: oldResponse.updatedAt,
+                  },
+                ],
+          captcha_operation: 'new-token',
+        });
+    }
+  );
   it.each(['pending', 'failed', 'unknown', 'kicked'] as const)(
     'closes %s response through the real service without member access and never resurrects it',
     async (outcome) => {

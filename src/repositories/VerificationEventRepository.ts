@@ -201,7 +201,11 @@ export interface IVerificationEventRepository {
   patchMetadata(
     id: string,
     patch: Record<string, unknown>,
-    options?: { touchUpdatedAt?: boolean; expectedPendingThreadId?: string }
+    options?: {
+      touchUpdatedAt?: boolean;
+      expectedPendingThreadId?: string;
+      expectedRepairState?: VerificationEvent['metadata'];
+    }
   ): Promise<VerificationEvent | null>;
   update(
     id: string,
@@ -1637,7 +1641,11 @@ export class VerificationEventRepository implements IVerificationEventRepository
   async patchMetadata(
     id: string,
     patch: Record<string, unknown>,
-    options: { touchUpdatedAt?: boolean; expectedPendingThreadId?: string } = {}
+    options: {
+      touchUpdatedAt?: boolean;
+      expectedPendingThreadId?: string;
+      expectedRepairState?: VerificationEvent['metadata'];
+    } = {}
   ): Promise<VerificationEvent | null> {
     try {
       const rows = await this.prisma.$queryRaw<VerificationEvent[]>`
@@ -1648,6 +1656,9 @@ export class VerificationEventRepository implements IVerificationEventRepository
         END || ${JSON.stringify(patch)}::jsonb,
         updated_at = CASE WHEN ${options.touchUpdatedAt !== false} THEN now() ELSE updated_at END
         WHERE id = ${id}::uuid AND (${options.expectedPendingThreadId === undefined} OR (status = 'pending' AND thread_id = ${options.expectedPendingThreadId ?? null}))
+          AND (${options.expectedRepairState === undefined} OR (
+            COALESCE(metadata->'automatic_moderation_response', 'null'::jsonb) = COALESCE(${JSON.stringify(options.expectedRepairState ?? null)}::jsonb->'automatic_moderation_response', 'null'::jsonb)
+            AND COALESCE(metadata->'action_failures', 'null'::jsonb) = COALESCE(${JSON.stringify(options.expectedRepairState ?? null)}::jsonb->'action_failures', 'null'::jsonb)))
         RETURNING *
       `;
       return rows[0] ?? null;

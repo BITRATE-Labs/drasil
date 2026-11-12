@@ -415,6 +415,20 @@ describe('SecurityActionService (unit)', () => {
       expect((await detectionEventsRepository.findById(event.id))?.metadata).toMatchObject({
         automatic_moderation_response: { caseId: owner?.id, attention: 'required' },
       });
+      if (!failed) {
+        await buildService().openCaseForSuspiciousMessage(member, {
+          label: 'SUSPICIOUS',
+          confidence: 0.9,
+          reasons: [],
+          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+          triggerContent: '',
+          detectionEventId: event.id,
+        });
+        expect((await verificationEventRepository.findById(owner!.id))?.metadata).toMatchObject({
+          automatic_moderation_response: { failures: [], attention: 'resolved' },
+          action_failures: [],
+        });
+      }
       if (failed)
         expect(owner?.metadata).toMatchObject({
           automatic_moderation_response: {
@@ -2170,9 +2184,14 @@ describe('SecurityActionService (unit)', () => {
     expect(notificationManager.upsertSuspiciousUserNotification).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['restrict', 'kick'] as const)(
-    'refreshes repaired %s response steps without inventing enforcement success',
-    async (action) => {
+  it.each([
+    ['restrict', false],
+    ['kick', false],
+    ['restrict', true],
+    ['kick', true],
+  ] as const)(
+    'refreshes repaired %s response steps without inventing enforcement success (snapshot only %s)',
+    async (action, snapshotOnly) => {
       const member = buildMember('guild-repair-response', 'user-repair-response');
       const detection = await detectionEventsRepository.create({
         server_id: member.guild.id,
@@ -2203,16 +2222,23 @@ describe('SecurityActionService (unit)', () => {
         ],
       };
       await verificationEventRepository.patchMetadata(owner.id, {
-        automatic_moderation_response: response,
-        action_failures: [
-          { action: 'case_role', message: 'role_assignment_failed', at: response.updatedAt },
-          { action: 'thread', message: 'thread_creation_failed', at: response.updatedAt },
-          {
-            action: 'notification',
-            message: 'notification_delivery_failed',
-            at: response.updatedAt,
-          },
-        ],
+        automatic_moderation_response: snapshotOnly
+          ? {
+              ...response,
+              failures: response.failures.filter((failure) => failure.step !== 'thread'),
+            }
+          : response,
+        action_failures: snapshotOnly
+          ? []
+          : [
+              { action: 'case_role', message: 'role_assignment_failed', at: response.updatedAt },
+              { action: 'thread', message: 'thread_creation_failed', at: response.updatedAt },
+              {
+                action: 'notification',
+                message: 'notification_delivery_failed',
+                at: response.updatedAt,
+              },
+            ],
       });
       await detectionEventsRepository.patchMetadata(detection.id, {
         automatic_moderation_response: {

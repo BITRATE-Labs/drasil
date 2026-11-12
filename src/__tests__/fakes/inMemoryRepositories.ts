@@ -22,7 +22,10 @@ import {
 } from '@drasil/application';
 import { isDeepStrictEqual } from 'util';
 import type { IAdminActionRepository } from '../../repositories/AdminActionRepository';
-import type { IDetectionEventsRepository } from '../../repositories/DetectionEventsRepository';
+import {
+  mergeAutomaticResponseFailure,
+  type IDetectionEventsRepository,
+} from '../../repositories/DetectionEventsRepository';
 import type {
   IServerMemberRepository,
   CaseRoleApplicationCompletion,
@@ -416,6 +419,21 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
     };
     this.events[eventIndex] = updated;
     return { ...updated };
+  }
+
+  async recordAutomaticResponseFailure(
+    detectionEventId: string,
+    incoming: import('@drasil/application').AutomaticModerationResponse
+  ): Promise<import('@drasil/application').AutomaticModerationResponse | null> {
+    const event = await this.findById(detectionEventId);
+    if (!event) return null;
+    const response = mergeAutomaticResponseFailure(
+      readAutomaticModerationResponse(event.metadata),
+      incoming
+    );
+    if (response.attention === 'resolved') return response;
+    const saved = await this.patchMetadata(event.id, { automatic_moderation_response: response });
+    return saved ? response : null;
   }
 
   async completeAutomaticResponseAttention(
@@ -1503,7 +1521,11 @@ export class InMemoryVerificationEventRepository implements IVerificationEventRe
   async patchMetadata(
     id: string,
     patch: Record<string, unknown>,
-    options: { touchUpdatedAt?: boolean; expectedPendingThreadId?: string } = {}
+    options: {
+      touchUpdatedAt?: boolean;
+      expectedPendingThreadId?: string;
+      expectedRepairState?: VerificationEvent['metadata'];
+    } = {}
   ): Promise<VerificationEvent | null> {
     const eventIndex = this.events.findIndex((event) => event.id === id);
     if (eventIndex === -1) return null;
@@ -1518,6 +1540,22 @@ export class InMemoryVerificationEventRepository implements IVerificationEventRe
       event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
         ? event.metadata
         : {};
+    if (options.expectedRepairState !== undefined) {
+      const expected =
+        options.expectedRepairState &&
+        typeof options.expectedRepairState === 'object' &&
+        !Array.isArray(options.expectedRepairState)
+          ? options.expectedRepairState
+          : {};
+      if (
+        !isDeepStrictEqual(
+          metadata.automatic_moderation_response ?? null,
+          expected.automatic_moderation_response ?? null
+        ) ||
+        !isDeepStrictEqual(metadata.action_failures ?? null, expected.action_failures ?? null)
+      )
+        return null;
+    }
     const updated: VerificationEvent = {
       ...event,
       metadata: JSON.parse(JSON.stringify({ ...metadata, ...patch })),
