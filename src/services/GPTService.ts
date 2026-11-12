@@ -142,6 +142,7 @@ const ReportIntakeExtractionResponseSchema = z.object({
 export const REPORT_IDENTITY_MAX_SOURCES = 16;
 export const REPORT_IDENTITY_TEXT_MAX_LENGTH = 2000;
 const REPORT_IDENTITY_MAX_OUTPUT_TOKENS = 4096;
+const REPORT_IDENTITY_MODEL = 'gpt-6.1-terra';
 const boundedClue = z.string().min(1).max(100);
 const identitySourceRef = reportEvidenceRefSchema.strict();
 const identitySubject = reportSubjectCluesSchema
@@ -172,6 +173,17 @@ const ReportIdentityResponseSchema = z
   })
   .strict();
 
+// Keep Discord URL regex validation local; the provider cannot compile its bounded intersection.
+const ReportIdentityProviderSchema = ReportIdentityResponseSchema.extend({
+  subjects: z
+    .array(
+      identitySubject.extend({
+        messageLinks: z.array(z.string().max(200)).max(4),
+      })
+    )
+    .max(8),
+});
+
 function sameReportSource(left: ReportEvidenceRef, right: ReportEvidenceRef): boolean {
   return (
     left.evidenceId === right.evidenceId &&
@@ -186,8 +198,8 @@ const ProfileImageDescriptionResponseSchema = z.object({
   summary: z.string(),
 });
 
-export function getGptModerationModel(): string {
-  return process.env[OPENAI_MODERATION_MODEL_ENV]?.trim() || DEFAULT_GPT_MODERATION_MODEL;
+export function getGptModerationModel(defaultModel = DEFAULT_GPT_MODERATION_MODEL): string {
+  return process.env[OPENAI_MODERATION_MODEL_ENV]?.trim() || defaultModel;
 }
 
 export type GPTPrimarySignal =
@@ -754,7 +766,7 @@ export class GPTService implements IGPTService {
         excludedEvidenceIds: input.sources.map((source) => source.ref.evidenceId),
       };
     }
-    const model = getGptModerationModel();
+    const model = getGptModerationModel(REPORT_IDENTITY_MODEL);
     return withObservation(
       'gpt.report-identity-extraction',
       'generation',
@@ -775,7 +787,7 @@ export class GPTService implements IGPTService {
               ...this.getReasoningOptions(model),
               max_output_tokens: REPORT_IDENTITY_MAX_OUTPUT_TOKENS,
               text: {
-                format: zodTextFormat(ReportIdentityResponseSchema, 'report_identity_extraction'),
+                format: zodTextFormat(ReportIdentityProviderSchema, 'report_identity_extraction'),
               },
               store: false,
             },
@@ -1252,11 +1264,13 @@ export class GPTService implements IGPTService {
   }
 
   private getReasoningOptions(model: string): { reasoning?: { effort: 'low' } } {
-    return model.startsWith('gpt-5') ? { reasoning: { effort: 'low' } } : {};
+    return model.startsWith('gpt-5') || model === 'gpt-6.1-terra' || model === 'gpt-6-luna'
+      ? { reasoning: { effort: 'low' } }
+      : {};
   }
 
   private getTemperatureOptions(model: string, temperature: number): { temperature?: number } {
-    return model.startsWith('gpt-5') ? {} : { temperature };
+    return this.getReasoningOptions(model).reasoning ? {} : { temperature };
   }
 
   private parseProfileAnalysis(
