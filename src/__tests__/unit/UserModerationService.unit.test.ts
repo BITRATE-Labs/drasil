@@ -116,6 +116,7 @@ describe('UserModerationService (unit)', () => {
       userRepository
     );
     roleManager = {
+      assertSafeCaseRole: jest.fn().mockResolvedValue(undefined),
       getCaseRoleId: jest.fn().mockResolvedValue('case-role'),
       assignCaseRole: jest.fn().mockResolvedValue(true),
       removeCaseRole: jest.fn().mockResolvedValue(true),
@@ -159,6 +160,47 @@ describe('UserModerationService (unit)', () => {
         promptAlreadyPresent: false,
       }),
     };
+  });
+
+  it('rejects an unsafe grant before quarantine or successful membership state', async () => {
+    const member = buildMember('guild-safety', 'user-safety');
+    await serverRepository.getOrCreateServer(member.guild.id);
+    await userRepository.getOrCreateUser(member.id, 'test-user');
+    const detection = await detectionEventsRepository.create({
+      server_id: member.guild.id,
+      user_id: member.id,
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.8,
+      reasons: ['Initial detection'],
+      detected_at: new Date(),
+    });
+    await verificationEventRepository.createFromDetection(
+      detection.id,
+      member.guild.id,
+      member.id,
+      VerificationStatus.PENDING
+    );
+    const quarantine = { quarantineMember: jest.fn() };
+    const unsafeRoles = {
+      ...roleManager,
+      assertSafeCaseRole: jest.fn().mockRejectedValue(new Error('Unsafe case role')),
+    };
+    const service = new UserModerationService(
+      serverMemberRepository,
+      notificationManager,
+      unsafeRoles,
+      verificationEventRepository,
+      adminActionService,
+      threadManager,
+      undefined,
+      undefined,
+      undefined,
+      quarantine as unknown as IRoleQuarantineService
+    );
+    await expect(service.applyCaseRole(member)).rejects.toThrow('Unsafe case role');
+    expect(quarantine.quarantineMember).not.toHaveBeenCalled();
+    expect(roleManager.assignCaseRole).not.toHaveBeenCalled();
+    expect(await serverMemberRepository.findByServerAndUser(member.guild.id, member.id)).toBeNull();
   });
 
   it('verifies a user and records admin action', async () => {

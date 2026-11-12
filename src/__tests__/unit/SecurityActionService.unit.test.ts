@@ -638,7 +638,12 @@ describe('SecurityActionService (unit)', () => {
       const moderation = new UserModerationService(
         serverMemberRepository,
         notificationManager,
-        { getCaseRoleId: jest.fn(), assignCaseRole: jest.fn(), removeCaseRole: jest.fn() },
+        {
+          assertSafeCaseRole: jest.fn(),
+          getCaseRoleId: jest.fn(),
+          assignCaseRole: jest.fn(),
+          removeCaseRole: jest.fn(),
+        },
         verificationEventRepository,
         adminActionService,
         threadManager,

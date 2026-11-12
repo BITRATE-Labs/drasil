@@ -153,6 +153,7 @@ function buildHarness(
     ),
   } as unknown as jest.Mocked<ICaseRoleLockdownService>;
   const roleManager = {
+    assertSafeCaseRole: jest.fn().mockResolvedValue(undefined),
     assignCaseRole: jest.fn().mockResolvedValue(true),
   } as unknown as jest.Mocked<IRoleManager>;
   const adminActions = {
@@ -494,9 +495,12 @@ describe('AccountQuarantineService', () => {
     expect(harness.moderationQueue.upsertCaseMirror).toHaveBeenCalled();
   });
 
-  it('surfaces partial role removal when applying the case role fails', async () => {
+  it.each([
+    'Missing permissions',
+    'Case role grants channel management or moderation permissions.',
+  ])('records a failed grant without false containment success: %s', async (failure) => {
     const harness = buildHarness();
-    harness.roleManager.assignCaseRole.mockRejectedValueOnce(new Error('Missing permissions'));
+    harness.roleManager.assignCaseRole.mockRejectedValueOnce(new Error(failure));
 
     await expect(
       harness.service.quarantine(
@@ -505,7 +509,7 @@ describe('AccountQuarantineService', () => {
         { id: 'moderator-1' } as User,
         'Compromise report'
       )
-    ).rejects.toThrow('Missing permissions');
+    ).rejects.toThrow(failure);
 
     expect(harness.verificationEvents.updateQuarantineAttempt).toHaveBeenCalledWith(
       event.id,

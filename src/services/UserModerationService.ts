@@ -1067,6 +1067,9 @@ export class UserModerationService implements IUserModerationService, ICombinedB
    */
   public async applyCaseRole(member: GuildMember, moderator?: User): Promise<boolean> {
     try {
+      const roleId = await this.roleManager.getCaseRoleId(member.guild.id);
+      if (!roleId) throw new Error('No case role ID configured');
+      await this.roleManager.assertSafeCaseRole(member, roleId);
       const applicationStartedAt = new Date();
       const membership = await this.serverMemberRepository.findByServerAndUser(
         member.guild.id,
@@ -1111,11 +1114,9 @@ export class UserModerationService implements IUserModerationService, ICombinedB
         verificationEvent = rollbackResult.verificationEvent ?? verificationEvent;
       };
 
-      let roleId: string | null = null;
       let roleAssigned: boolean;
       try {
-        roleId = await this.roleManager.getCaseRoleId(member.guild.id);
-        roleAssigned = roleId ? await this.roleManager.assignCaseRole(member, roleId) : false;
+        roleAssigned = await this.roleManager.assignCaseRole(member, roleId);
       } catch (assignError) {
         await rollbackRoleQuarantine();
         throw assignError;
