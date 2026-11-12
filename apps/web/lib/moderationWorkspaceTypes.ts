@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { captchaIssuanceConfigurationSchema, queuedCommandSchemas } from '@drasil/application';
+import {
+  automaticModerationResponseSchema,
+  captchaIssuanceConfigurationSchema,
+  queuedCommandSchemas,
+} from '@drasil/application';
 import {
   caseDetailSchema,
   moderationInboxItemSchema,
@@ -165,6 +169,7 @@ export const workspaceItemDetailSchema = z.discriminatedUnion('kind', [
   z.object({
     ...common,
     kind: z.literal('observed_alert'),
+    automaticResponse: automaticModerationResponseSchema.optional(),
     item: moderationInboxItemSchema.extend({ kind: z.literal('observed_alert') }),
     detection: memberProfileDetectionSchema,
     requests: z.array(moderationActionRequestSummarySchema).readonly(),

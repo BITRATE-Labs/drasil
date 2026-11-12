@@ -26,6 +26,7 @@ import {
   type IVerificationEventRepository,
 } from '../../repositories/VerificationEventRepository';
 import {
+  AdminActionType,
   DetectionType,
   CaseAttentionState,
   VerificationStatus,
@@ -71,6 +72,310 @@ suite('automatic moderation attention', () => {
     );
     return { prisma, server, detections, queue, event, service };
   }
+  it.each(['pending', 'failed', 'unknown', 'kicked'] as const)(
+    'closes %s response through the real service without member access and never resurrects it',
+    async (outcome) => {
+      const f = await fixture();
+      await f.detections.patchMetadata(f.event.id, {
+        automatic_moderation_response: { ...response, outcome },
+      });
+      await f.service.upsertObservedAlertMirrorById(f.event.id);
+      const security = new SecurityActionService(
+        {} as INotificationManager,
+        f.detections,
+        new ServerMemberRepository(f.prisma),
+        new VerificationEventRepository(f.prisma),
+        new UserRepository(f.prisma),
+        new ServerRepository(f.prisma),
+        {} as IAdminActionService,
+        {} as IThreadManager,
+        {} as IUserModerationService & ICombinedBanLifecycleService,
+        {} as Client,
+        undefined,
+        undefined,
+        f.service
+      );
+      expect(
+        await security.dismissObservedDetection(
+          f.server.guild_id,
+          'attention-user',
+          f.event.id,
+          { id: 'moderator' } as import('discord.js').User,
+          AdminActionType.DISMISS
+        )
+      ).toBe(true);
+      await f.service.syncServerQueue(f.server.guild_id);
+      const saved = await f.detections.findById(f.event.id);
+      expect(saved?.metadata).toMatchObject({
+        observed_action: 'kick',
+        automatic_response_resolved_by: 'moderator',
+        automatic_moderation_response: {
+          outcome,
+          failures: response.failures,
+          attention: 'resolved',
+        },
+      });
+      expect(await f.queue.findByObservedAlert(f.event.id)).toBeNull();
+      await f.service.upsertObservedAlertMirror(f.event);
+      expect(await f.queue.findByObservedAlert(f.event.id)).toBeNull();
+    }
+  );
+  it('durable close survives Discord cleanup failure, and a later changed outcome renews attention', async () => {
+    const f = await fixture();
+    await f.detections.patchMetadata(f.event.id, {
+      automatic_moderation_response: { ...response, outcome: 'pending', failures: [] },
+    });
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    const cleanup = jest
+      .spyOn(f.service, 'deleteQueueMessage')
+      .mockRejectedValue(new Error('Discord unavailable'));
+    const security = new SecurityActionService(
+      {
+        upsertObservedDetectionNotification: jest.fn().mockResolvedValue(null),
+      } as unknown as INotificationManager,
+      f.detections,
+      new ServerMemberRepository(f.prisma),
+      new VerificationEventRepository(f.prisma),
+      new UserRepository(f.prisma),
+      new ServerRepository(f.prisma),
+      {} as IAdminActionService,
+      {} as IThreadManager,
+      {} as IUserModerationService & ICombinedBanLifecycleService,
+      {} as Client,
+      undefined,
+      undefined,
+      f.service
+    );
+    expect(
+      await security.dismissObservedDetection(
+        f.server.guild_id,
+        'attention-user',
+        f.event.id,
+        { id: 'moderator' } as import('discord.js').User,
+        AdminActionType.DISMISS
+      )
+    ).toBe(true);
+    expect(
+      readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)
+        ?.attention
+    ).toBe('resolved');
+    expect(await f.queue.findByObservedAlert(f.event.id)).not.toBeNull();
+    cleanup.mockRestore();
+    await security.recordAutomaticResponseFailure(
+      {
+        id: 'attention-user',
+        guild: { id: f.server.guild_id },
+        user: { id: 'attention-user', username: 'synthetic', createdTimestamp: 0 },
+      } as GuildMember,
+      {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+        detectionEventId: f.event.id,
+      },
+      {
+        action: 'kick',
+        outcome: 'unknown',
+        attention: 'required',
+        caseId: null,
+        updatedAt: new Date().toISOString(),
+        failures: [{ step: 'kick', code: 'kick_outcome_unknown' }],
+      }
+    );
+    expect(
+      readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)
+    ).toMatchObject({ outcome: 'unknown', attention: 'required' });
+    expect(await f.queue.findByObservedAlert(f.event.id)).not.toBeNull();
+  });
+  it.each(['notify', 'restrict'] as const)(
+    'closing %s attention is idempotent and cannot close a transferred case',
+    async (action) => {
+      const f = await fixture();
+      const original = { ...response, action, outcome: 'failed' };
+      await f.detections.updateMetadata(f.event.id, { automatic_moderation_response: original });
+      const security = new SecurityActionService(
+        {} as INotificationManager,
+        f.detections,
+        new ServerMemberRepository(f.prisma),
+        new VerificationEventRepository(f.prisma),
+        new UserRepository(f.prisma),
+        new ServerRepository(f.prisma),
+        {} as IAdminActionService,
+        {} as IThreadManager,
+        {} as IUserModerationService & ICombinedBanLifecycleService,
+        {} as Client
+      );
+      const moderator = { id: 'moderator' } as import('discord.js').User;
+      expect(
+        await security.dismissObservedDetection(
+          f.server.guild_id,
+          'attention-user',
+          f.event.id,
+          moderator,
+          AdminActionType.DISMISS
+        )
+      ).toBe(true);
+      const saved = await f.detections.findById(f.event.id);
+      expect(
+        await security.dismissObservedDetection(
+          f.server.guild_id,
+          'attention-user',
+          f.event.id,
+          moderator,
+          AdminActionType.DISMISS
+        )
+      ).toBe(false);
+      expect((await f.detections.findById(f.event.id))?.metadata).toEqual(saved?.metadata);
+      expect(
+        await f.detections.claimObservedAction(f.event.id, {
+          observed_action: 'kick',
+          observed_action_by: 'stale-moderator',
+        })
+      ).toBeNull();
+      await f.detections.patchMetadata(f.event.id, {
+        automatic_moderation_response: {
+          ...original,
+          caseId: '32fb6a35-e54e-48d7-879d-a67e5e96bd92',
+        },
+      });
+      expect(
+        await security.dismissObservedDetection(
+          f.server.guild_id,
+          'attention-user',
+          f.event.id,
+          moderator,
+          AdminActionType.DISMISS
+        )
+      ).toBe(false);
+    }
+  );
+
+  it('a stale close cleanup preserves failure attention renewed after completion committed', async () => {
+    const f = await fixture();
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    let committed!: () => void;
+    let resume!: () => void;
+    const saved = new Promise<void>((resolve) => {
+      committed = resolve;
+    });
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const complete = f.detections.completeAutomaticResponseAttention.bind(f.detections);
+    jest
+      .spyOn(f.detections, 'completeAutomaticResponseAttention')
+      .mockImplementationOnce(async (input) => {
+        const result = await complete(input);
+        committed();
+        await paused;
+        return result;
+      });
+    const security = new SecurityActionService(
+      {} as INotificationManager,
+      f.detections,
+      new ServerMemberRepository(f.prisma),
+      new VerificationEventRepository(f.prisma),
+      new UserRepository(f.prisma),
+      new ServerRepository(f.prisma),
+      {} as IAdminActionService,
+      {} as IThreadManager,
+      {} as IUserModerationService & ICombinedBanLifecycleService,
+      {} as Client,
+      undefined,
+      undefined,
+      f.service
+    );
+    const closing = security.dismissObservedDetection(
+      f.server.guild_id,
+      'attention-user',
+      f.event.id,
+      { id: 'moderator' } as import('discord.js').User,
+      AdminActionType.DISMISS
+    );
+    await saved;
+    try {
+      await f.detections.patchMetadata(f.event.id, {
+        automatic_moderation_response: {
+          ...response,
+          failures: [{ step: 'persistence', code: 'persistence_failed' }],
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      await f.service.upsertObservedAlertMirrorById(f.event.id);
+    } finally {
+      resume();
+    }
+    expect(await closing).toBe(true);
+    const current = await f.queue.findByObservedAlert(f.event.id);
+    expect(readAutomaticModerationResponse(current?.metadata)).toMatchObject({
+      attention: 'required',
+      failures: [{ step: 'persistence', code: 'persistence_failed' }],
+    });
+  });
+
+  it('completion CAS tolerates acknowledgement but rejects changed failure, guild, user, outcome and owner', async () => {
+    const f = await fixture();
+    const original = readAutomaticModerationResponse(f.event.metadata)!;
+    const input = {
+      detectionEventId: f.event.id,
+      serverId: f.server.guild_id,
+      userId: 'attention-user',
+      expectedResponse: original,
+      actorId: 'moderator',
+      completedAt: new Date(),
+    };
+    for (const change of [
+      { outcome: 'unknown' },
+      { caseId: '32fb6a35-e54e-48d7-879d-a67e5e96bd92' },
+      { failures: [{ step: 'persistence', code: 'persistence_failed' }] },
+    ]) {
+      await f.detections.patchMetadata(f.event.id, {
+        automatic_moderation_response: { ...response, ...change },
+      });
+      expect(await f.detections.completeAutomaticResponseAttention(input)).toBeNull();
+    }
+    await f.detections.patchMetadata(f.event.id, {
+      automatic_moderation_response: { ...response, attention: 'acknowledged' },
+    });
+    expect(
+      await f.detections.completeAutomaticResponseAttention({ ...input, serverId: 'other' })
+    ).toBeNull();
+    expect(
+      await f.detections.completeAutomaticResponseAttention({ ...input, userId: 'other' })
+    ).toBeNull();
+    expect(await f.detections.completeAutomaticResponseAttention(input)).not.toBeNull();
+    expect(await f.detections.completeAutomaticResponseAttention(input)).toBeNull();
+  });
+  it('acknowledgement racing completion cannot reopen the response', async () => {
+    const f = await fixture();
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    const queue = (await f.queue.findByObservedAlert(f.event.id))!;
+    await Promise.all([
+      f.queue.acknowledgeAutomaticResponse({
+        itemId: queue.id,
+        guildId: f.server.guild_id,
+        actorId: 'reader',
+        acknowledgedAt: new Date(),
+      }),
+      f.detections.completeAutomaticResponseAttention({
+        detectionEventId: f.event.id,
+        serverId: f.server.guild_id,
+        userId: 'attention-user',
+        expectedResponse: readAutomaticModerationResponse(f.event.metadata)!,
+        actorId: 'closer',
+        completedAt: new Date(),
+      }),
+    ]);
+    expect(
+      readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)
+        ?.attention
+    ).toBe('resolved');
+    await f.service.syncServerQueue(f.server.guild_id);
+    expect(await f.queue.findByObservedAlert(f.event.id)).toBeNull();
+  });
+
   it.each(['null', 'throw'])(
     'staff watchlist delivery %s leaves one durable notify attention without enforcement',
     async (failure) => {

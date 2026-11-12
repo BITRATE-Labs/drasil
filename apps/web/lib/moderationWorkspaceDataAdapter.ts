@@ -443,7 +443,7 @@ export function createModerationWorkspaceDataAdapter(
         `select id, metadata from moderation_queue_items where server_id = $1 and detection_event_id = $2 and item_type = 'observed_alert_mirror' limit 1`,
         [guildId, id]
       );
-      const projected = readAutomaticModerationResponse(queue.rows[0]?.metadata) ?? response;
+      const projected = response;
       if (detection.latestCaseId)
         item.links.push({
           label: 'Linked case',
@@ -460,6 +460,17 @@ export function createModerationWorkspaceDataAdapter(
       item.queueItemId = queue.rows[0]?.id ?? null;
       item.allowedActions = [
         'view_history',
+        ...(projected.attention !== 'resolved' && projected.caseId === null
+          ? projected.action === 'kick'
+            ? ['dismiss_no_action' as const]
+            : ([
+                'open_case',
+                'dismiss_no_action',
+                'mark_false_positive',
+                'kick_user',
+                'ban_user',
+              ] as const)
+          : []),
         ...(projected.attention === 'required' && projected.caseId === null && item.queueItemId
           ? ['acknowledge' as const]
           : []),
@@ -468,6 +479,7 @@ export function createModerationWorkspaceDataAdapter(
     const effectivePolicy = await policy(item);
     return workspaceItemDetailSchema.parse({
       kind: 'observed_alert',
+      ...(response ? { automaticResponse: response } : {}),
       item: { ...item, allowedActions: effectivePolicy.allowedActions },
       policy: effectivePolicy,
       detection,

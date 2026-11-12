@@ -1732,7 +1732,8 @@ describe('automatic response attention', () => {
     const upsert = jest.spyOn(queueRepository, 'upsert');
     await service.upsertObservedAlertMirror(event);
     expect(upsert).not.toHaveBeenCalled();
-    expect(channel.sentMessages[0].payload.components).toEqual([]);
+    expect(JSON.stringify(channel.sentMessages[0].payload.components)).toContain('Close alert');
+    expect(JSON.stringify(channel.sentMessages[0].payload.components)).not.toContain('Acknowledge');
   });
   it('does not deliver stale attention rejected by authoritative projection', async () => {
     const event = {

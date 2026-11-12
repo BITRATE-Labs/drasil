@@ -710,6 +710,9 @@ export class SecurityActionService implements ISecurityActionService {
       notification_channel_id: notificationMessage.channelId,
       notification_message_id: notificationMessage.id,
     };
+    updatedEvent = await this.clearResolvedVerificationActionFailures(updatedEvent, [
+      'notification',
+    ]);
     return { message: notificationMessage, event: updatedEvent };
   }
 
@@ -1482,6 +1485,39 @@ export class SecurityActionService implements ISecurityActionService {
     }
 
     const updatedMetadata = clearVerificationActionFailures(verificationEvent.metadata, actions);
+    const response = readAutomaticModerationResponse(verificationEvent.metadata);
+    const stepForAction = (
+      action: VerificationActionFailureKind
+    ): AutomaticModerationResponse['failures'][number]['step'] =>
+      action === 'case_role' || action === 'restrict' || action === 'role_quarantine'
+        ? 'role'
+        : action === 'thread' || action === 'private_evidence_thread'
+          ? 'thread'
+          : action;
+    const remainingSteps = getVerificationActionFailures(updatedMetadata).map((failure) =>
+      stepForAction(failure.action)
+    );
+    const confirmedSteps = actions
+      .map(stepForAction)
+      .filter((step) => !remainingSteps.includes(step));
+    if (response) {
+      const failures = response.failures.filter(
+        (failure) => !confirmedSteps.includes(failure.step)
+      );
+      Object.assign(updatedMetadata, {
+        automatic_moderation_response: {
+          ...response,
+          failures,
+          attention:
+            failures.length ||
+            (response.action === 'kick' &&
+              (response.outcome === 'pending' || response.outcome === 'unknown'))
+              ? response.attention
+              : 'resolved',
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    }
     const fallbackEvent = {
       ...verificationEvent,
       metadata: updatedMetadata as VerificationEvent['metadata'],
@@ -1490,9 +1526,56 @@ export class SecurityActionService implements ISecurityActionService {
     try {
       const updatedEvent = await this.verificationEventRepository.patchMetadata(
         verificationEvent.id,
-        { action_failures: updatedMetadata.action_failures ?? [] }
+        {
+          action_failures: updatedMetadata.action_failures ?? [],
+          ...(response
+            ? { automatic_moderation_response: updatedMetadata.automatic_moderation_response }
+            : {}),
+        }
       );
 
+      if (updatedEvent && response) {
+        const sources = await this.detectionEventsRepository.findByVerificationEventId(
+          verificationEvent.id
+        );
+        if (
+          verificationEvent.detection_event_id &&
+          !sources.some((source) => source.id === verificationEvent.detection_event_id)
+        ) {
+          const source = await this.detectionEventsRepository.findById(
+            verificationEvent.detection_event_id
+          );
+          if (source) sources.push(source);
+        }
+        for (const source of sources) {
+          const sourceResponse = readAutomaticModerationResponse(source.metadata);
+          if (
+            sourceResponse?.caseId !== verificationEvent.id ||
+            sourceResponse.action !== response.action
+          )
+            continue;
+          const failures = sourceResponse.failures.filter(
+            (failure) => !confirmedSteps.includes(failure.step)
+          );
+          await this.detectionEventsRepository.patchMetadata(
+            source.id,
+            {
+              automatic_moderation_response: {
+                ...sourceResponse,
+                failures,
+                attention:
+                  failures.length ||
+                  (sourceResponse.action === 'kick' &&
+                    (sourceResponse.outcome === 'pending' || sourceResponse.outcome === 'unknown'))
+                    ? sourceResponse.attention
+                    : 'resolved',
+                updatedAt: new Date().toISOString(),
+              },
+            },
+            sourceResponse
+          );
+        }
+      }
       return updatedEvent ?? fallbackEvent;
     } catch (error) {
       console.error(
@@ -1605,9 +1688,10 @@ export class SecurityActionService implements ISecurityActionService {
       if (!applied) {
         throw new Error(`Failed to apply case role to ${member.user.tag}`);
       }
-      return (
-        (await this.verificationEventRepository.findById(verificationEvent.id)) ?? verificationEvent
-      );
+      const refreshed =
+        (await this.verificationEventRepository.findById(verificationEvent.id)) ??
+        verificationEvent;
+      return this.clearResolvedVerificationActionFailures(refreshed, ['case_role', 'restrict']);
     } catch (error) {
       return this.recordVerificationActionFailure(verificationEvent, 'case_role', error);
     }
@@ -1634,7 +1718,7 @@ export class SecurityActionService implements ISecurityActionService {
         useReportReviewThread,
         sourceMessage
       );
-      return updatedEvent;
+      return this.clearResolvedVerificationActionFailures(updatedEvent, ['thread']);
     } catch (error) {
       return this.recordVerificationActionFailure(verificationEvent, 'thread', error);
     }
@@ -2106,7 +2190,12 @@ export class SecurityActionService implements ISecurityActionService {
   }
 
   private hasObservedAction(detectionEvent: DetectionEvent): boolean {
-    return this.getObservedAction(detectionEvent) !== null;
+    const response = readAutomaticModerationResponse(detectionEvent.metadata);
+    return (
+      this.getObservedAction(detectionEvent) !== null ||
+      response?.attention === 'resolved' ||
+      Boolean(response?.caseId)
+    );
   }
 
   private getObservedAction(detectionEvent: DetectionEvent): AdminActionType | null {
@@ -4118,10 +4207,26 @@ export class SecurityActionService implements ISecurityActionService {
           AdminActionType.OPEN_CASE
         );
       }
+      const responseTransferred = await this.completeObservedResponse(
+        detectionEvent,
+        moderator,
+        verificationEvent.id
+      );
+      if (responseTransferred) {
+        const source = await this.detectionEventsRepository.findById(detectionEvent.id);
+        const transferred = readAutomaticModerationResponse(source?.metadata);
+        if (transferred && !readAutomaticModerationResponse(verificationEvent.metadata)) {
+          await this.verificationEventRepository.patchMetadata(verificationEvent.id, {
+            automatic_moderation_response: transferred,
+          });
+        }
+      }
       await this.runModerationQueueTask(
         `delete observed alert ${detectionEvent.id} from the live moderation queue`,
         (moderationQueueService) =>
-          moderationQueueService.deleteObservedAlertMirror(detectionEvent.id)
+          readAutomaticModerationResponse(detectionEvent.metadata)
+            ? moderationQueueService.upsertObservedAlertMirrorById(detectionEvent.id)
+            : moderationQueueService.deleteObservedAlertMirror(detectionEvent.id)
       );
       await this.closeLinkedReportIntakeForObservedAction(
         claimedDetectionEvent,
@@ -4244,10 +4349,13 @@ export class SecurityActionService implements ISecurityActionService {
         moderator,
         AdminActionType.KICK
       );
+      await this.completeObservedResponse(detectionEvent, moderator);
       await this.runModerationQueueTask(
         `delete observed alert ${detectionEvent.id} from the live moderation queue`,
         (moderationQueueService) =>
-          moderationQueueService.deleteObservedAlertMirror(detectionEvent.id)
+          readAutomaticModerationResponse(detectionEvent.metadata)
+            ? moderationQueueService.upsertObservedAlertMirrorById(detectionEvent.id)
+            : moderationQueueService.deleteObservedAlertMirror(detectionEvent.id)
       );
       await this.closeLinkedReportIntakeForObservedAction(
         claimedDetectionEvent,
@@ -4709,7 +4817,8 @@ export class SecurityActionService implements ISecurityActionService {
       );
       if (!updated) throw new Error('Existing observed notification update is incomplete.');
     }
-    await this.moderationQueueService?.deleteObservedAlertMirror(request.detection_event_id);
+    if (!detection || !readAutomaticModerationResponse(detection.metadata))
+      await this.moderationQueueService?.deleteObservedAlertMirror(request.detection_event_id);
     if (request.report_intake_id) {
       const report = await this.reportIntakeRepository?.updateBan(
         request.report_intake_id,
@@ -4741,6 +4850,13 @@ export class SecurityActionService implements ISecurityActionService {
       getReportBanAttemptToken(request)
     );
     if (!completed) throw new Error('Could not persist completed ban receipt.');
+    if (detection) {
+      await this.completeObservedResponse(detection, moderator);
+      if (readAutomaticModerationResponse(detection.metadata))
+        await this.runModerationQueueTask(`refresh completed response ${detection.id}`, (queue) =>
+          queue.upsertObservedAlertMirrorById(detection.id)
+        );
+    }
     await this.saveBanPhase(request, { kind: 'finish' });
     // Claim before capture: best effort, at most one logical emission per operation.
     // A process crash between claim and capture can lose analytics, never moderation.
@@ -4793,6 +4909,27 @@ export class SecurityActionService implements ISecurityActionService {
     }
   }
 
+  private async completeObservedResponse(
+    detectionEvent: DetectionEvent,
+    moderator: User,
+    caseId?: string
+  ): Promise<boolean> {
+    const response = readAutomaticModerationResponse(detectionEvent.metadata);
+    if (!response || response.caseId || response.attention === 'resolved') return false;
+    if (!detectionEvent.server_id) return false;
+    return Boolean(
+      await this.detectionEventsRepository.completeAutomaticResponseAttention({
+        detectionEventId: detectionEvent.id,
+        serverId: detectionEvent.server_id,
+        userId: detectionEvent.user_id,
+        expectedResponse: response,
+        actorId: moderator.id,
+        completedAt: new Date(),
+        ...(caseId ? { caseId } : {}),
+      })
+    );
+  }
+
   public async dismissObservedDetection(
     guildId: string,
     userId: string,
@@ -4805,6 +4942,21 @@ export class SecurityActionService implements ISecurityActionService {
       userId,
       detectionEventId
     );
+    const response = readAutomaticModerationResponse(detectionEvent.metadata);
+    if (actionType === AdminActionType.DISMISS && response) {
+      const completed = await this.completeObservedResponse(detectionEvent, moderator);
+      if (completed) {
+        try {
+          await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEvent.id);
+        } catch (error) {
+          console.error('Automatic response queue cleanup incomplete', {
+            detection_event_id: detectionEvent.id,
+            error_kind: error instanceof Error ? 'error' : 'non_error',
+          });
+        }
+      }
+      return completed;
+    }
     if (this.hasObservedAction(detectionEvent)) {
       return false;
     }
@@ -4835,10 +4987,13 @@ export class SecurityActionService implements ISecurityActionService {
         moderator,
         actionType
       );
+      await this.completeObservedResponse(detectionEvent, moderator);
       await this.runModerationQueueTask(
         `delete observed alert ${detectionEvent.id} from the live moderation queue`,
         (moderationQueueService) =>
-          moderationQueueService.deleteObservedAlertMirror(detectionEvent.id)
+          readAutomaticModerationResponse(detectionEvent.metadata)
+            ? moderationQueueService.upsertObservedAlertMirrorById(detectionEvent.id)
+            : moderationQueueService.deleteObservedAlertMirror(detectionEvent.id)
       );
       await this.closeLinkedReportIntakeForObservedAction(
         claimedDetectionEvent,

@@ -604,7 +604,8 @@ describe('NotificationManager (unit)', () => {
     expect(payload.embeds[0].toJSON().description).toContain(
       'Member kicked. Notification delivery failed.'
     );
-    expect(payload.components).toEqual([]);
+    expect(JSON.stringify(payload.components)).toContain('Close alert');
+    expect(JSON.stringify(payload.components)).not.toContain('observed:open:');
   });
 
   it('preserves outcome metadata written while observed notification delivery is in flight', async () => {
@@ -803,67 +804,81 @@ describe('NotificationManager (unit)', () => {
     expect(editArgs.components).toHaveLength(1);
   });
 
-  it('sends a new observe-only notification after the previous alert was actioned', async () => {
-    const now = new Date();
-    (configService.getServerConfig as jest.Mock).mockResolvedValue({
-      admin_notification_role_id: 'role-1',
-      settings: {
-        detection_response_mode: 'notify_only',
-        observed_detection_notification_window_minutes: 60,
-      },
-    } as any);
+  it.each(['actioned', 'response_closed'])(
+    'sends a new observe-only notification after the previous alert was %s',
+    async (closed) => {
+      const now = new Date();
+      (configService.getServerConfig as jest.Mock).mockResolvedValue({
+        admin_notification_role_id: 'role-1',
+        settings: {
+          detection_response_mode: 'notify_only',
+          observed_detection_notification_window_minutes: 60,
+        },
+      } as any);
 
-    await detectionRepository.create({
-      server_id: 'guild-1',
-      user_id: 'user-1',
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.9,
-      reasons: ['Previous suspicious content'],
-      detected_at: now,
-      metadata: {
-        observed_notification_message_id: 'message-1',
-        observed_notification_last_notified_at: now.toISOString(),
-        observed_action: 'false_positive',
-      },
-    });
-    await detectionRepository.create({
-      server_id: 'guild-1',
-      user_id: 'user-1',
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.88,
-      reasons: ['Coalesced suspicious content'],
-      detected_at: now,
-      metadata: {
-        observed_notification_message_id: 'message-1',
-        observed_notification_last_notified_at: now.toISOString(),
-      },
-    });
-    const currentEvent = await detectionRepository.create({
-      server_id: 'guild-1',
-      user_id: 'user-1',
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.85,
-      reasons: ['Suspicious content'],
-      detected_at: now,
-    });
-    adminChannel.send.mockResolvedValue({ id: 'message-2', edit: jest.fn() });
+      await detectionRepository.create({
+        server_id: 'guild-1',
+        user_id: 'user-1',
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.9,
+        reasons: ['Previous suspicious content'],
+        detected_at: now,
+        metadata: {
+          observed_notification_message_id: 'message-1',
+          observed_notification_last_notified_at: now.toISOString(),
+          ...(closed === 'actioned'
+            ? { observed_action: 'false_positive' }
+            : {
+                automatic_moderation_response: {
+                  action: 'notify',
+                  outcome: 'failed',
+                  attention: 'resolved',
+                  caseId: null,
+                  updatedAt: now.toISOString(),
+                  failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+                },
+              }),
+        },
+      });
+      await detectionRepository.create({
+        server_id: 'guild-1',
+        user_id: 'user-1',
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.88,
+        reasons: ['Coalesced suspicious content'],
+        detected_at: now,
+        metadata: {
+          observed_notification_message_id: 'message-1',
+          observed_notification_last_notified_at: now.toISOString(),
+        },
+      });
+      const currentEvent = await detectionRepository.create({
+        server_id: 'guild-1',
+        user_id: 'user-1',
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.85,
+        reasons: ['Suspicious content'],
+        detected_at: now,
+      });
+      adminChannel.send.mockResolvedValue({ id: 'message-2', edit: jest.fn() });
 
-    const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.85,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-      detectionEventId: currentEvent.id,
-    };
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+      const member = buildMember('guild-1', 'user-1');
+      const detectionResult: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.85,
+        reasons: ['Suspicious content'],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: 'free discord nitro',
+        detectionEventId: currentEvent.id,
+      };
+      const manager = new NotificationManager({} as any, configService, detectionRepository);
 
-    await manager.upsertObservedDetectionNotification(member, detectionResult);
+      await manager.upsertObservedDetectionNotification(member, detectionResult);
 
-    expect(adminChannel.messages.fetch).not.toHaveBeenCalled();
-    expect(adminChannel.send).toHaveBeenCalledTimes(1);
-  });
+      expect(adminChannel.messages.fetch).not.toHaveBeenCalled();
+      expect(adminChannel.send).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('clears observed action buttons even if the notification embed is missing', async () => {
     const detectionEvent = await detectionRepository.create({

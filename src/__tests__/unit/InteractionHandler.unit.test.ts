@@ -3692,6 +3692,57 @@ describe('InteractionHandler (unit)', () => {
     expect(interaction.followUp).not.toHaveBeenCalled();
   });
 
+  it('closes automatic response through the Discord binding without fetching the absent target', async () => {
+    const response = {
+      action: 'kick',
+      outcome: 'kicked',
+      caseId: null,
+      attention: 'resolved',
+      failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      updatedAt: '2026-11-11T00:00:00.000Z',
+    };
+    const args: ConstructorParameters<typeof InteractionHandler> = [
+      client,
+      notificationManager,
+      userModerationService,
+      securityActionService,
+      configService,
+      verificationEventRepository,
+      threadManager,
+      adminActionRepository,
+    ];
+    args[14] = {
+      findById: jest.fn(async () => ({
+        server_id: 'guild-1',
+        user_id: 'user-1',
+        metadata: {
+          observed_action: 'kick',
+          automatic_moderation_response: response,
+        },
+      })),
+    } as unknown as NonNullable<(typeof args)[14]>;
+    const handler = buildHandler(...args);
+    const interaction = buildInteraction(
+      'admin_actions:confirm_observed_dismiss:observed:user-1:det-1',
+      'guild-1',
+      { id: 'admin-1' } as User
+    );
+    grantInteractionPermissions(interaction);
+    await handler.handleButtonInteraction(interaction);
+    expect(securityActionService.dismissObservedDetection).toHaveBeenCalledWith(
+      'guild-1',
+      'user-1',
+      'det-1',
+      interaction.user,
+      AdminActionType.DISMISS
+    );
+    expect(client.guilds.fetch).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: 'Closed the review alert for <@user-1>. Its recorded outcome stays in history.',
+      components: [],
+    });
+  });
+
   it('handles observed close report confirmation as an observed dismissal', async () => {
     const handler = buildHandler(
       client,

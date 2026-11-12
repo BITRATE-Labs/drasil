@@ -497,12 +497,26 @@ export class NotificationPresentationBuilder {
     return rows;
   }
 
+  public createAutomaticResponseCloseRow(
+    userId: string,
+    detectionEventId: string
+  ): ActionRowBuilder<ButtonBuilder> {
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+      this.createCustomButton(
+        `observed:dismiss:${userId}:${detectionEventId}`,
+        'Close alert',
+        ButtonStyle.Secondary
+      )
+    );
+  }
+
   public createObservedActionRows(
     userId: string,
     detectionEventId: string,
     guildId?: string,
     options: Pick<AdminActionRowOptions, 'includeBanAction'> & {
       actioned?: boolean;
+      closeResponse?: boolean;
       kind?: ObservedActionKind;
     } = {}
   ): ActionRowBuilder<ButtonBuilder>[] {
@@ -548,7 +562,11 @@ export class NotificationPresentationBuilder {
     buttons.push(
       this.createCustomButton(
         `observed:${options.kind === 'report' ? 'close_report' : 'dismiss'}:${userId}:${detectionEventId}`,
-        options.kind === 'report' ? 'Close Report' : 'Dismiss',
+        options.closeResponse
+          ? 'Close alert'
+          : options.kind === 'report'
+            ? 'Close Report'
+            : 'Dismiss',
         ButtonStyle.Secondary
       ),
       this.createCustomButton(

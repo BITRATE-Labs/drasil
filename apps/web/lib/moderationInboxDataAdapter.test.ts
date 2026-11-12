@@ -401,7 +401,7 @@ describe('automatic response presentation', () => {
     expect(item.summary).toContain(summary);
     expect(item.links).toEqual([]);
     expect(item.allowedActions).not.toContain('kick_user');
-    expect(item.allowedActions).toEqual(['acknowledge', 'view_history']);
+    expect(item.allowedActions).toEqual(['acknowledge', 'dismiss_no_action', 'view_history']);
   });
   it('keeps acknowledged outcome truthful', () => {
     const item = parseModerationQueueRow({
@@ -459,3 +459,54 @@ it.each(['resolved', 'acknowledged'])(
     expect(item.summary).toContain('Member kicked.');
   }
 );
+
+it.each(['notify', 'restrict'])(
+  'keeps existing observed moderation controls for orphan %s failures',
+  (action) => {
+    const item = parseModerationQueueRow({
+      ...baseQueueRow,
+      server_settings: { observed_action_kick_enabled: false },
+      metadata: {
+        automatic_moderation_response: {
+          action,
+          outcome: 'failed',
+          attention: 'required',
+          caseId: null,
+          updatedAt: '2026-11-11T00:00:00.000Z',
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      },
+    })!;
+    expect(item.allowedActions).toEqual(
+      expect.arrayContaining([
+        'acknowledge',
+        'open_case',
+        'dismiss_no_action',
+        'mark_false_positive',
+        'ban_user',
+      ])
+    );
+    expect(item.allowedActions).not.toContain('kick_user');
+  }
+);
+
+it('omits obsolete queue response after durable source completion even if Discord cleanup failed', () => {
+  const response = {
+    action: 'kick',
+    outcome: 'unknown',
+    attention: 'required',
+    caseId: null,
+    updatedAt: '2026-11-11T00:00:00.000Z',
+    failures: [{ step: 'kick', code: 'kick_outcome_unknown' }],
+  };
+  expect(
+    parseModerationQueueRow({
+      ...baseQueueRow,
+      metadata: { automatic_moderation_response: response },
+      detection_metadata: {
+        observed_action: 'kick',
+        automatic_moderation_response: { ...response, attention: 'resolved' },
+      },
+    })
+  ).toBeNull();
+});

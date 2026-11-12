@@ -928,7 +928,7 @@ for (const kind of ['report', 'detection'] as const) {
   });
 }
 
-it.each(['kicked', 'unknown', 'pending'])(
+it.each(['kicked', 'failed', 'unknown', 'pending'])(
   'does not offer repeat kick in selected response detail (%s)',
   async (outcome) => {
     const response = {
@@ -950,7 +950,7 @@ it.each(['kicked', 'unknown', 'pending'])(
               confidence: 0.8,
               detected_at: '2026-11-11T00:00:00.000Z',
               reasons: [],
-              metadata: { automatic_moderation_response: response },
+              metadata: { observed_action: 'kick', automatic_moderation_response: response },
               latest_verification_event_id: null,
               admin_action: null,
               admin_action_at: null,
@@ -971,6 +971,12 @@ it.each(['kicked', 'unknown', 'pending'])(
     });
     expect(result?.item.allowedActions).not.toContain('kick_user');
     expect(result?.item.allowedActions).toContain('acknowledge');
+    expect(result?.item.allowedActions).toContain('dismiss_no_action');
+    expect(result?.item.statusLabel).not.toBe('kick');
+    if (outcome === 'failed' || outcome === 'unknown') {
+      expect(result?.item.summary).not.toContain('Member kicked.');
+      if (result?.kind === 'observed_alert') expect(result.detection.observedAction).toBeNull();
+    }
     expect(result?.item.queueItemId).toBe('response-queue');
   }
 );

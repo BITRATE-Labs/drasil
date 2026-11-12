@@ -260,6 +260,13 @@ function queueAllowedActions(
       ...(isAutomaticResponseItem(row) && response.attention === 'required'
         ? ['acknowledge' as const]
         : []),
+      ...(isAutomaticResponseItem(row)
+        ? response.action === 'kick'
+          ? ['dismiss_no_action' as const]
+          : observedAlertActions(row).filter(
+              (action) => action !== 'view_history' && action !== 'open_discord'
+            )
+        : []),
       'view_history',
       ...(row.queue_message_id ? ['open_discord' as const] : []),
     ];
@@ -351,6 +358,20 @@ export function parseModerationQueueRow(
   row: ModerationQueueRow,
   now = new Date()
 ): ModerationInboxItem | null {
+  const sourceResponse =
+    row.item_type === 'observed_alert_mirror'
+      ? readAutomaticModerationResponse(row.detection_metadata)
+      : null;
+  if (sourceResponse) {
+    if (sourceResponse.attention === 'resolved' || sourceResponse.caseId !== null) return null;
+    row = {
+      ...row,
+      metadata: {
+        ...metadataToRecord(row.metadata),
+        automatic_moderation_response: sourceResponse,
+      },
+    };
+  }
   const cleanupSource = getAttentionCleanupSource(row);
   if (cleanupSource) row = { ...row, ...cleanupSource };
   const kind = queueKindByType[row.item_type];

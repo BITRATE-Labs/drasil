@@ -1,7 +1,3 @@
-import {
-  hasAutomaticResponseAttention,
-  readAutomaticModerationResponse,
-} from '@drasil/application';
 import { getReportIntakeSettings } from '../../utils/reportIntakeSettings';
 import {
   analysisClaimChange,
@@ -15,6 +11,8 @@ import {
   reserveAnalysisChange,
 } from '../../repositories/reportIntakeProcessing';
 import {
+  hasAutomaticResponseAttention,
+  readAutomaticModerationResponse,
   type ReportAnalysisOutcome,
   materializeSetupStoredChange,
   setupStateMatches,
@@ -203,8 +201,17 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
     return `det-${this.idCounter}`;
   }
 
-  async patchMetadata(id: string, patch: Record<string, unknown>): Promise<DetectionEvent | null> {
+  async patchMetadata(
+    id: string,
+    patch: Record<string, unknown>,
+    expectedResponse?: import('@drasil/application').AutomaticModerationResponse
+  ): Promise<DetectionEvent | null> {
     const event = await this.findById(id);
+    if (
+      expectedResponse &&
+      !isDeepStrictEqual(readAutomaticModerationResponse(event?.metadata), expectedResponse)
+    )
+      return null;
     return event ? this.updateMetadata(id, { ...event.metadata, ...patch }) : null;
   }
 
@@ -411,6 +418,38 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
     return { ...updated };
   }
 
+  async completeAutomaticResponseAttention(
+    input: import('../../repositories/DetectionEventsRepository').AutomaticResponseCompletion
+  ): Promise<DetectionEvent | null> {
+    const event = await this.findById(input.detectionEventId);
+    const response = readAutomaticModerationResponse(event?.metadata);
+    if (
+      !event ||
+      event.server_id !== input.serverId ||
+      event.user_id !== input.userId ||
+      !response ||
+      response.caseId ||
+      response.attention === 'resolved' ||
+      JSON.stringify({ ...response, attention: null }) !==
+        JSON.stringify({ ...input.expectedResponse, attention: null })
+    )
+      return null;
+    return this.patchMetadata(event.id, {
+      automatic_moderation_response: {
+        ...response,
+        attention: input.caseId ? response.attention : 'resolved',
+        caseId: input.caseId ?? null,
+        updatedAt: input.completedAt.toISOString(),
+      },
+      ...(!input.caseId
+        ? {
+            automatic_response_resolved_by: input.actorId,
+            automatic_response_resolved_at: input.completedAt.toISOString(),
+          }
+        : {}),
+    });
+  }
+
   async claimObservedAction(
     detectionEventId: string,
     metadata: Record<string, unknown>
@@ -421,7 +460,12 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
     }
 
     const existingMetadata = this.events[eventIndex].metadata ?? {};
-    if (existingMetadata.observed_action) {
+    const response = readAutomaticModerationResponse(existingMetadata);
+    if (
+      existingMetadata.observed_action ||
+      response?.attention === 'resolved' ||
+      response?.caseId
+    ) {
       return null;
     }
 

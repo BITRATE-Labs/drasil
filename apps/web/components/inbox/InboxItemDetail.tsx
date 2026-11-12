@@ -52,20 +52,20 @@ export function inboxDetailRequests(
       return [];
   }
 }
-function requestTarget(detail: WorkspaceItemDetail): WorkspaceRequestTarget {
+function requestTarget(detail: WorkspaceItemDetail, action?: string): WorkspaceRequestTarget {
   return {
     guildId: detail.item.guildId,
     kind:
       detail.kind === 'report_attention' ||
       detail.kind === 'support_attention' ||
       detail.kind === 'pending_screening' ||
-      (detail.kind === 'observed_alert' && detail.item.allowedActions.includes('acknowledge'))
+      (detail.kind === 'observed_alert' && action === 'acknowledge')
         ? 'attention'
         : detail.kind,
     recordId:
       detail.kind === 'report_attention' ||
       detail.kind === 'support_attention' ||
-      (detail.kind === 'observed_alert' && detail.item.allowedActions.includes('acknowledge'))
+      (detail.kind === 'observed_alert' && action === 'acknowledge')
         ? (detail.item.queueItemId ?? detail.item.sourceId)
         : detail.item.sourceId,
     targetUserId: detail.item.subject.userId,
@@ -74,7 +74,6 @@ function requestTarget(detail: WorkspaceItemDetail): WorkspaceRequestTarget {
 export function matchingInboxRequests(
   detail: WorkspaceItemDetail
 ): readonly ModerationActionRequestSummary[] {
-  const target = requestTarget(detail);
   return inboxDetailRequests(detail).filter((request) =>
     [
       ...moderationInboxActionSchema.options,
@@ -83,7 +82,9 @@ export function matchingInboxRequests(
         'execute_case_message_deletion',
         'ban_case_user_with_message_cleanup',
       ] as const),
-    ].some((action) => matchesWorkspaceActionRequest(request, target, action))
+    ].some((action) =>
+      matchesWorkspaceActionRequest(request, requestTarget(detail, action), action)
+    )
   );
 }
 const routineCaseActions: readonly ModerationInboxAction[] = [
@@ -121,8 +122,14 @@ function detailActions(detail: WorkspaceItemDetail): readonly ModerationInboxAct
     case 'submitted_report':
       return ['open_case', 'ban_user', 'mark_actioned', 'dismiss_no_action', 'mark_false_positive'];
     case 'observed_alert':
-      if (detail.item.allowedActions.includes('acknowledge')) return ['acknowledge'];
-      return ['open_case', 'kick_user', 'ban_user', 'dismiss_no_action', 'mark_false_positive'];
+      return [
+        'acknowledge',
+        'open_case',
+        'kick_user',
+        'ban_user',
+        'dismiss_no_action',
+        'mark_false_positive',
+      ];
     case 'report_attention':
     case 'support_attention':
       return detail.item.queueItemId ? ['acknowledge'] : [];
@@ -147,7 +154,11 @@ function actionLabel(action: ModerationInboxAction, detail: WorkspaceItemDetail)
     case 'close_no_action':
       return 'Close case';
     case 'dismiss_no_action':
-      return detail.kind === 'submitted_report' ? 'Dismiss report' : 'Dismiss alert';
+      return detail.kind === 'submitted_report'
+        ? 'Dismiss report'
+        : detail.kind === 'observed_alert' && detail.automaticResponse
+          ? 'Close alert'
+          : 'Dismiss alert';
     case 'mark_false_positive':
       return 'Mark false positive';
     case 'mark_actioned':
@@ -179,7 +190,9 @@ function actionEffect(action: ModerationInboxAction, detail: WorkspaceItemDetail
     case 'close_no_action':
       return closeCaseEffect;
     case 'dismiss_no_action':
-      return 'Close this record without taking moderation action.';
+      return detail.kind === 'observed_alert' && detail.automaticResponse
+        ? 'Finish reviewing this alert. Its recorded outcome and failed steps stay in history.'
+        : 'Close this record without taking moderation action.';
     case 'mark_false_positive':
       return 'Record this detection or report as a false positive.';
     case 'mark_actioned':
@@ -438,13 +451,13 @@ function SelectedDetail({
                 request.status === 'completed' &&
                 // Both labels dispatch repair_active_case; unknown historical intent uses Repair only.
                 (action !== 'create_thread' || request.requestedAction === 'create_thread') &&
-                matchesWorkspaceActionRequest(request, requestTarget(detail), action)
+                matchesWorkspaceActionRequest(request, requestTarget(detail, action), action)
             )
           )
         : detail.kind === 'submitted_report'
           ? detailActions(detail).filter((action) =>
               detail.requests.some((request) =>
-                matchesWorkspaceActionRequest(request, requestTarget(detail), action)
+                matchesWorkspaceActionRequest(request, requestTarget(detail, action), action)
               )
             )
           : [];
@@ -527,9 +540,10 @@ function SelectedDetail({
     const offeredDetail = offered.find((entry) => entry.action === action)?.detail ?? detail;
     const submit = bindAction(offeredDetail, action, actions);
     if (!submit) return null;
-    const actionTarget = { ...target, ...requestTarget(offeredDetail) };
+    const currentTarget = { ...target, ...requestTarget(detail, action) };
+    const actionTarget = { ...target, ...requestTarget(offeredDetail, action) };
     const matching = scopedRequests.filter((request) =>
-      matchesWorkspaceActionRequest(request, target, action)
+      matchesWorkspaceActionRequest(request, currentTarget, action)
     );
     const durable =
       matching.find((request) => request.id === trackedRequestId) ?? matching[0] ?? null;
@@ -548,9 +562,9 @@ function SelectedDetail({
           disabled:
             !available ||
             !isAllowed(detail, action) ||
-            actionTarget.recordId !== target.recordId ||
-            actionTarget.kind !== target.kind ||
-            actionTarget.targetUserId !== target.targetUserId,
+            actionTarget.recordId !== currentTarget.recordId ||
+            actionTarget.kind !== currentTarget.kind ||
+            actionTarget.targetUserId !== currentTarget.targetUserId,
           reasonRequired:
             action === 'kick_user'
               ? detail.policy.kickReasonRequired

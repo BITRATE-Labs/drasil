@@ -396,18 +396,30 @@ export class NotificationManager implements INotificationManager {
         detectionEvents.find((event) => event.id === actionDetectionEventId)?.metadata
       );
       const components =
-        actionDetectionEventId && !response
+        actionDetectionEventId &&
+        (!response ||
+          (response.action !== 'kick' &&
+            response.caseId === null &&
+            response.attention !== 'resolved'))
           ? this.presentationBuilder.createObservedActionRows(
               member.id,
               actionDetectionEventId,
               member.guild.id,
               {
                 includeBanAction: responseSettings.moderatorBanActionEnabled,
+                closeResponse: Boolean(response),
                 kind:
                   detectionResult.triggerSource === DetectionType.USER_REPORT ? 'report' : 'alert',
               }
             )
-          : [];
+          : actionDetectionEventId && response?.caseId === null && response.attention !== 'resolved'
+            ? [
+                this.presentationBuilder.createAutomaticResponseCloseRow(
+                  member.id,
+                  actionDetectionEventId
+                ),
+              ]
+            : [];
 
       let notificationMessage: Message | null = null;
       if (existingNotification?.observed_notification_message_id) {
@@ -872,7 +884,10 @@ export class NotificationManager implements INotificationManager {
     const actionedMessageIds = new Set(
       detectionEvents
         .map((event) => this.metadataToRecord(event.metadata) as ObservedDetectionMetadata)
-        .filter((metadata) => metadata.observed_action)
+        .filter((metadata) => {
+          const response = readAutomaticModerationResponse(metadata);
+          return metadata.observed_action || response?.attention === 'resolved' || response?.caseId;
+        })
         .map((metadata) => metadata.observed_notification_message_id)
         .filter((messageId): messageId is string => typeof messageId === 'string')
     );

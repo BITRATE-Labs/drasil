@@ -246,6 +246,187 @@ describe('SecurityActionService (unit)', () => {
       gptService as any
     );
 
+  it.each(['pending', 'failed', 'unknown', 'kicked'] as const)(
+    'closes orphan %s kick attention without a target member or changing the kick fence',
+    async (outcome) => {
+      const response = {
+        action: 'kick',
+        outcome,
+        attention: 'required',
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      };
+      const event = await detectionEventsRepository.create({
+        server_id: 'guild-close',
+        user_id: 'absent-user',
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.9,
+        metadata: {
+          observed_action: 'kick',
+          observed_action_by: 'bot',
+          automatic_moderation_response: response,
+        },
+      });
+      const service = buildService();
+      expect(
+        await service.dismissObservedDetection(
+          'guild-close',
+          'absent-user',
+          event.id,
+          { id: 'moderator' } as User,
+          AdminActionType.DISMISS
+        )
+      ).toBe(true);
+      const saved = await detectionEventsRepository.findById(event.id);
+      expect(saved?.metadata).toMatchObject({
+        observed_action: 'kick',
+        observed_action_by: 'bot',
+        automatic_response_resolved_by: 'moderator',
+        automatic_response_resolved_at: expect.any(String),
+        automatic_moderation_response: {
+          ...response,
+          attention: 'resolved',
+          updatedAt: expect.any(String),
+        },
+      });
+      expect(userModerationService.kickUser).not.toHaveBeenCalled();
+      expect(
+        await service.dismissObservedDetection(
+          'guild-close',
+          'absent-user',
+          event.id,
+          { id: 'moderator' } as User,
+          AdminActionType.DISMISS
+        )
+      ).toBe(false);
+    }
+  );
+
+  it('terminal dismissal resolves a failed notify response', async () => {
+    const event = await detectionEventsRepository.create({
+      server_id: 'guild-close',
+      user_id: 'absent-user',
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.9,
+      metadata: {
+        automatic_moderation_response: {
+          action: 'notify',
+          outcome: 'failed',
+          attention: 'required',
+          caseId: null,
+          updatedAt: '2026-11-11T00:00:00.000Z',
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      },
+    });
+    expect(
+      await buildService().dismissObservedDetection(
+        'guild-close',
+        'absent-user',
+        event.id,
+        { id: 'moderator' } as User,
+        AdminActionType.DISMISS
+      )
+    ).toBe(true);
+    expect((await detectionEventsRepository.findById(event.id))?.metadata).toMatchObject({
+      automatic_moderation_response: { attention: 'resolved', outcome: 'failed' },
+    });
+  });
+
+  it('rejects stale observed enforcement and case controls after response completion', async () => {
+    const member = buildMember('guild-closed-controls', 'user-closed-controls');
+    const moderator = { id: 'moderator' } as User;
+    await serverRepository.getOrCreateServer(member.guild.id);
+    await serverRepository.updateSettings(member.guild.id, { observed_action_kick_enabled: true });
+    const detection = await detectionEventsRepository.create({
+      server_id: member.guild.id,
+      user_id: member.id,
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.9,
+      metadata: {
+        automatic_moderation_response: {
+          action: 'notify',
+          outcome: 'failed',
+          attention: 'resolved',
+          caseId: null,
+          updatedAt: '2026-11-11T00:00:00.000Z',
+          failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+        },
+      },
+    });
+    const service = buildService();
+    expect(await service.kickObservedDetection(member, detection.id, moderator, 'Review')).toBe(
+      false
+    );
+    expect(await service.openObservedDetectionCase(member, detection.id, moderator)).toBe(false);
+    expect(
+      await service.dismissObservedDetection(
+        member.guild.id,
+        member.id,
+        detection.id,
+        moderator,
+        AdminActionType.FALSE_POSITIVE
+      )
+    ).toBe(false);
+    expect(userModerationService.kickUser).not.toHaveBeenCalled();
+    expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
+    expect((await detectionEventsRepository.findById(detection.id))?.metadata).not.toHaveProperty(
+      'observed_action'
+    );
+  });
+
+  it.each([false, true])(
+    'opening a response alert transfers to its live case and preserves incomplete steps (failed=%s)',
+    async (failed) => {
+      const member = buildMember('guild-response-open', 'user-response-open');
+      const moderator = { id: 'moderator' } as User;
+      Object.defineProperty(verificationEventRepository, 'nextId', {
+        value: () => 'c339ae64-cf09-4874-8174-0b0fb2490f4b',
+      });
+      const event = await detectionEventsRepository.create({
+        server_id: member.guild.id,
+        user_id: member.id,
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.9,
+        metadata: {
+          automatic_moderation_response: {
+            action: 'notify',
+            outcome: 'failed',
+            attention: 'required',
+            caseId: null,
+            updatedAt: '2026-11-11T00:00:00.000Z',
+            failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+          },
+        },
+      });
+      if (failed) {
+        userModerationService.applyCaseRole.mockResolvedValue(false);
+        threadManager.createVerificationThread.mockResolvedValue(null);
+      }
+      expect(await buildService().openObservedDetectionCase(member, event.id, moderator)).toBe(
+        true
+      );
+      const owner = await verificationEventRepository.findActiveByUserAndServer(
+        member.id,
+        member.guild.id
+      );
+      expect(owner?.id).toBe('c339ae64-cf09-4874-8174-0b0fb2490f4b');
+      expect((await detectionEventsRepository.findById(event.id))?.metadata).toMatchObject({
+        automatic_moderation_response: { caseId: owner?.id, attention: 'required' },
+      });
+      if (failed)
+        expect(owner?.metadata).toMatchObject({
+          automatic_moderation_response: {
+            failures: expect.arrayContaining([
+              { step: 'role', code: 'role_assignment_failed' },
+              { step: 'thread', code: 'thread_creation_failed' },
+            ]),
+          },
+        });
+    }
+  );
+
   it('records deterministic rejoin-after-kick detections with prior kick metadata', async () => {
     const guildId = 'guild-rejoin-kick';
     const userId = 'user-rejoin-kick';
@@ -1989,6 +2170,74 @@ describe('SecurityActionService (unit)', () => {
     expect(notificationManager.upsertSuspiciousUserNotification).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['restrict', 'kick'] as const)(
+    'refreshes repaired %s response steps without inventing enforcement success',
+    async (action) => {
+      const member = buildMember('guild-repair-response', 'user-repair-response');
+      const detection = await detectionEventsRepository.create({
+        server_id: member.guild.id,
+        user_id: member.id,
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.9,
+      });
+      Object.defineProperty(verificationEventRepository, 'nextId', {
+        value: () => 'c339ae64-cf09-4874-8174-0b0fb2490f4b',
+      });
+      const owner = await verificationEventRepository.createFromDetection(
+        detection.id,
+        member.guild.id,
+        member.id,
+        VerificationStatus.PENDING
+      );
+      const response = {
+        action,
+        outcome: action === 'kick' ? 'unknown' : 'case_opened',
+        caseId: owner.id,
+        attention: 'required',
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [
+          { step: 'role', code: 'role_assignment_failed' },
+          { step: 'thread', code: 'thread_creation_failed' },
+          { step: 'notification', code: 'notification_delivery_failed' },
+          ...(action === 'kick' ? [{ step: 'kick', code: 'kick_outcome_unknown' }] : []),
+        ],
+      };
+      await verificationEventRepository.patchMetadata(owner.id, {
+        automatic_moderation_response: response,
+        action_failures: [
+          { action: 'case_role', message: 'role_assignment_failed', at: response.updatedAt },
+          { action: 'thread', message: 'thread_creation_failed', at: response.updatedAt },
+          {
+            action: 'notification',
+            message: 'notification_delivery_failed',
+            at: response.updatedAt,
+          },
+        ],
+      });
+      await detectionEventsRepository.patchMetadata(detection.id, {
+        automatic_moderation_response: {
+          ...response,
+          failures: [...response.failures, { step: 'persistence', code: 'persistence_failed' }],
+        },
+      });
+      await buildService().repairActiveCase(member);
+      const saved = await verificationEventRepository.findById(owner.id);
+      const remaining = [
+        { step: 'notification', code: 'notification_delivery_failed' },
+        ...(action === 'kick' ? [{ step: 'kick', code: 'kick_outcome_unknown' }] : []),
+      ];
+      expect(saved?.metadata).toMatchObject({
+        automatic_moderation_response: { outcome: response.outcome, failures: remaining },
+      });
+      expect((await detectionEventsRepository.findById(detection.id))?.metadata).toMatchObject({
+        automatic_moderation_response: {
+          outcome: response.outcome,
+          failures: [...remaining, { step: 'persistence', code: 'persistence_failed' }],
+        },
+      });
+    }
+  );
+
   it('repairs an active restricted case thread and reapplies the case role', async () => {
     const guildId = 'guild-case-repair';
     const userId = 'user-case-repair';
@@ -2071,16 +2320,12 @@ describe('SecurityActionService (unit)', () => {
     const updatedCase = await verificationEventRepository.findById(verificationEvent.id);
 
     expect(result.repaired).toBe(true);
-    expect(getVerificationActionFailures(updatedCase?.metadata)).toEqual([
-      expect.objectContaining({ action: 'case_role', message: 'Role hierarchy issue' }),
-    ]);
+    expect(getVerificationActionFailures(updatedCase?.metadata)).toEqual([]);
     expect(notificationManager.updateNotificationButtons).toHaveBeenCalledWith(
       expect.objectContaining({
         id: verificationEvent.id,
         metadata: expect.objectContaining({
-          [VERIFICATION_ACTION_FAILURES_METADATA_KEY]: [
-            expect.objectContaining({ action: 'case_role' }),
-          ],
+          [VERIFICATION_ACTION_FAILURES_METADATA_KEY]: [],
         }),
       }),
       VerificationStatus.PENDING
@@ -4777,7 +5022,7 @@ describe('SecurityActionService (unit)', () => {
       userId,
       VerificationStatus.PENDING
     );
-    threadManager.createVerificationThread.mockResolvedValueOnce(null);
+    threadManager.createVerificationThread.mockResolvedValue(null);
 
     try {
       await expect(

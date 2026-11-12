@@ -1065,8 +1065,8 @@ export class ModerationQueueService implements IModerationQueueService {
                 'Response pending confirmation.',
             }),
         ],
-        components:
-          response.attention === 'required'
+        components: [
+          ...(response.attention === 'required'
             ? [
                 new ActionRowBuilder<ButtonBuilder>().addComponents(
                   new ButtonBuilder()
@@ -1075,7 +1075,21 @@ export class ModerationQueueService implements IModerationQueueService {
                     .setStyle(ButtonStyle.Secondary)
                 ),
               ]
-            : [],
+            : []),
+          ...(response.action === 'kick'
+            ? [
+                this.presentationBuilder.createAutomaticResponseCloseRow(
+                  detectionEvent.user_id,
+                  detectionEvent.id
+                ),
+              ]
+            : this.presentationBuilder.createObservedActionRows(
+                detectionEvent.user_id,
+                detectionEvent.id,
+                detectionEvent.server_id ?? undefined,
+                { includeBanAction, closeResponse: true }
+              )),
+        ],
       };
     }
     const detectedAt = new Date(detectionEvent.detected_at);

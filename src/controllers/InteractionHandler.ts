@@ -5,6 +5,7 @@ import { requireCaptchaOutcome } from '../application/adapters/captcha';
 import { requireQuarantineOutcome } from '../application/adapters/quarantine';
 import { requireDetectionOutcome } from '../application/adapters/detections';
 import {
+  readAutomaticModerationResponse,
   encodeQueuedAction,
   type CaptchaCommand,
   type CaptchaOutcome,
@@ -1670,7 +1671,27 @@ export class InteractionHandler implements IInteractionHandler {
       return;
     }
 
-    await this.showAdminActionConfirmation(interaction, parsed, confirmation, { update: false });
+    const response =
+      parsed.action === 'observed_dismiss' && parsed.detectionEventId && interaction.guildId
+        ? await this.readObservedAutomaticResponse(
+            interaction.guildId,
+            parsed.userId,
+            parsed.detectionEventId
+          )
+        : null;
+    await this.showAdminActionConfirmation(
+      interaction,
+      parsed,
+      response
+        ? {
+            ...confirmation,
+            label: 'Confirm Close Alert',
+            message:
+              'Finish reviewing this alert. Its recorded outcome and failed steps stay in history.',
+          }
+        : confirmation,
+      { update: false }
+    );
   }
 
   private async handleAdminActionBan(
@@ -3964,6 +3985,17 @@ export class InteractionHandler implements IInteractionHandler {
     }
   }
 
+  private async readObservedAutomaticResponse(
+    guildId: string,
+    userId: string,
+    detectionId: string
+  ): Promise<ReturnType<typeof readAutomaticModerationResponse>> {
+    const event = await this.detectionEventsRepository?.findById(detectionId).catch(() => null);
+    return event?.server_id === guildId && event.user_id === userId
+      ? readAutomaticModerationResponse(event.metadata)
+      : null;
+  }
+
   private async dismissObservedDetection(
     interaction: ButtonInteraction,
     guildId: string,
@@ -3986,14 +4018,20 @@ export class InteractionHandler implements IInteractionHandler {
     )
       throw new Error('Detection outcome mismatch.');
     const dismissed = outcome.succeeded;
+    const response =
+      actionType === AdminActionType.DISMISS
+        ? await this.readObservedAutomaticResponse(guildId, userId, detectionEventId)
+        : null;
     await interaction.editReply({
       content: !dismissed
         ? `This observed alert for <@${userId}> was already actioned.`
-        : actionType === AdminActionType.FALSE_POSITIVE
-          ? `Marked the detection for <@${userId}> as a false positive.`
-          : kind === 'report'
-            ? `Closed the report for <@${userId}>.`
-            : `Dismissed the observed alert for <@${userId}>.`,
+        : response
+          ? `Closed the review alert for <@${userId}>. Its recorded outcome stays in history.`
+          : actionType === AdminActionType.FALSE_POSITIVE
+            ? `Marked the detection for <@${userId}> as a false positive.`
+            : kind === 'report'
+              ? `Closed the report for <@${userId}>.`
+              : `Dismissed the observed alert for <@${userId}>.`,
       components: [],
     });
   }
