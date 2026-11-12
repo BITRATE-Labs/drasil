@@ -242,21 +242,21 @@ it.each([true, false])(
   'retries admission for an existing intake, admitted=%s',
   async (admitted) => {
     const f = fixture();
-    f.deps.intakes.findOpen = async () => f.intake;
+    f.deps.intakes.findOpen = async (): Promise<ReportIntakeState> => f.intake;
     const calls: string[] = [];
-    f.deps.threads.activate = async (_context, threadId, intakeId, mode) => {
+    f.deps.threads.activate = async (_context, threadId, intakeId, mode): Promise<boolean> => {
       expect([threadId, intakeId, mode]).toEqual(['thread', 'intake', 'resume']);
       calls.push('admit');
       return admitted;
     };
-    f.deps.threads.create = async () => {
+    f.deps.threads.create = async (): Promise<null> => {
       calls.push('create');
       return null;
     };
-    f.deps.threads.deleteFailed = async () => {
+    f.deps.threads.deleteFailed = async (): Promise<void> => {
       calls.push('delete');
     };
-    f.deps.threads.notifyOpened = async () => {
+    f.deps.threads.notifyOpened = async (): Promise<void> => {
       calls.push('notify');
     };
     expect(
