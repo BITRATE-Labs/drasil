@@ -471,6 +471,7 @@ it.each([
   ReportIntakeStatus.DISMISSED,
   ReportIntakeStatus.FALSE_POSITIVE,
   ReportIntakeStatus.ACTIONED,
+  ReportIntakeStatus.SUBMITTED,
 ])(
   'updates a %s card and restores archival without reopening it on later reconciliation',
   async (status) => {
@@ -479,11 +480,13 @@ it.each([
     await f.repository.update(f.intake.id, {
       status,
       closedAt: new Date(),
-      ...(status === ReportIntakeStatus.ACTIONED
+      ...(status === ReportIntakeStatus.ACTIONED || status === ReportIntakeStatus.SUBMITTED
         ? {
             metadata: {
               ...((await f.repository.findById(f.intake.id))!.metadata as object),
-              observed_action_closed_at: new Date().toISOString(),
+              [status === ReportIntakeStatus.SUBMITTED
+                ? 'thread_closed_at'
+                : 'observed_action_closed_at']: new Date().toISOString(),
             },
           }
         : {}),

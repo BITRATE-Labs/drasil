@@ -1190,6 +1190,8 @@ export class ReportIntakeService implements IReportIntakeService {
           analysisLeaseUntil: null,
           metadata: {
             ...resolveReportHandoff(intake, input.closedById, now),
+            thread_closed_at: now.toISOString(),
+            thread_closed_by: input.closedById,
             ...(accepted
               ? {
                   submitted_by: input.closedById,

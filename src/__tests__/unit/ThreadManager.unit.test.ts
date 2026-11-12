@@ -5,6 +5,7 @@ import {
   Collection,
   Guild,
   GuildMember,
+  Message,
   ThreadChannel,
   User,
 } from 'discord.js';
@@ -1601,6 +1602,8 @@ describe('ThreadManager (unit)', () => {
     expect(thread.members.add).toHaveBeenCalledWith('reporter-1');
     expect(thread.send).toHaveBeenCalledWith({
       content: expect.stringContaining('Describe what happened and who you want to report.'),
+      nonce: thread.id,
+      enforceNonce: true,
       components: expect.any(Array),
       allowedMentions: {
         parse: [],
@@ -1645,27 +1648,74 @@ describe('ThreadManager (unit)', () => {
     expect(presentation.reconcile).toHaveBeenCalledWith('intake-1');
     expect(thread.send).not.toHaveBeenCalled();
   });
-  it('restores existing report membership without another legacy welcome or unarchiving', async () => {
-    const manager = new ThreadManager(
-      {} as Client,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
-    expect(
-      await manager.activateReportIntakeThread(
-        thread,
-        buildMember('guild-1', 'reporter-1'),
-        'intake-1',
-        'resume'
-      )
-    ).toBe(true);
-    expect(thread.members.add).toHaveBeenCalledWith('reporter-1');
-    expect(thread.send).not.toHaveBeenCalled();
-    expect(thread.setArchived).not.toHaveBeenCalled();
-  });
+  it.each(['failed', 'accepted response lost', 'delivered'])(
+    'recovers a legacy welcome after initial delivery was %s without duplicating it',
+    async (initial) => {
+      const manager = createManager({ user: { id: 'bot' } } as Client);
+      const reporter = buildMember('guild-1', 'reporter-1');
+      Object.assign(thread, { archived: false, fetch: jest.fn().mockResolvedValue(thread) });
+      if (initial !== 'delivered') thread.send.mockRejectedValueOnce(new Error('Send failed'));
+      expect(await manager.activateReportIntakeThread(thread, reporter, 'intake-1')).toBe(
+        initial === 'delivered'
+      );
+      const content = (thread.send as jest.Mock).mock.calls[0][0].content as string;
+      const welcome = {
+        id: 'welcome',
+        channelId: thread.id,
+        author: { id: 'bot' },
+        content,
+        createdTimestamp: Date.now(),
+      } as Message;
+      const history = new Collection<string, Message>();
+      if (initial !== 'failed') history.set(welcome.id, welcome);
+      (thread.messages.fetch as jest.Mock).mockResolvedValue(history);
+
+      expect(await manager.activateReportIntakeThread(thread, reporter, 'intake-1', 'resume')).toBe(
+        true
+      );
+      expect(thread.send).toHaveBeenCalledTimes(initial === 'failed' ? 2 : 1);
+      history.set(welcome.id, welcome);
+      expect(await manager.activateReportIntakeThread(thread, reporter, 'intake-1', 'resume')).toBe(
+        true
+      );
+      expect(thread.send).toHaveBeenCalledTimes(initial === 'failed' ? 2 : 1);
+      expect(thread.setArchived).not.toHaveBeenCalled();
+      for (const [payload] of (thread.send as jest.Mock).mock.calls)
+        expect(payload).toMatchObject({ nonce: thread.id, enforceNonce: true });
+    }
+  );
+
+  it.each(['archived', 'history unavailable', 'history incomplete'])(
+    'does not send a replacement legacy welcome when %s',
+    async (failure) => {
+      const manager = createManager({ user: { id: 'bot' } } as Client);
+      Object.assign(thread, {
+        archived: failure === 'archived',
+        fetch: jest.fn().mockResolvedValue(thread),
+      });
+      const history = new Collection<string, Message>();
+      if (failure === 'history incomplete')
+        for (let index = 0; index < 100; index++)
+          history.set(String(index), {
+            id: String(index),
+            author: { id: 'reporter' },
+            createdTimestamp: Date.now(),
+          } as Message);
+      (thread.messages.fetch as jest.Mock).mockResolvedValue(history);
+      if (failure === 'history unavailable')
+        (thread.messages.fetch as jest.Mock).mockRejectedValue(new Error('Forbidden'));
+      expect(
+        await manager.activateReportIntakeThread(
+          thread,
+          buildMember('guild-1', 'reporter-1'),
+          'intake-1',
+          'resume'
+        )
+      ).toBe(false);
+      expect(thread.send).not.toHaveBeenCalled();
+      expect(thread.setArchived).not.toHaveBeenCalled();
+    }
+  );
 
   it('adds configured case responder role members to private report review threads', async () => {
     const staffMember = { id: 'staff-1' };

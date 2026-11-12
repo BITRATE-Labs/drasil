@@ -47,6 +47,7 @@ import {
 import { getDiscordErrorCode } from '../utils/discordErrors';
 import { getVerificationActionFailureCode } from '../utils/verificationActionFailures';
 import { parseAdminActionCustomId } from '../utils/adminActionCustomIds';
+import { findAuthoredReportMessage } from '../utils/reportPresentationDiscord';
 
 export const VERIFICATION_THREAD_TYPE_METADATA_KEY = 'thread_type';
 export const VERIFICATION_THREAD_TYPE = 'verification';
@@ -1654,7 +1655,7 @@ export class ThreadManager implements IThreadManager {
           return true;
         }
       }
-      if (mode === 'resume') return true;
+      if (mode === 'resume' && (await this.hasLegacyReportWelcome(thread))) return true;
       const components = reportIntakeId
         ? [
             new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -1672,6 +1673,8 @@ export class ThreadManager implements IThreadManager {
 
       await thread.send({
         content: this.buildReportIntakeThreadMessage(),
+        nonce: thread.id,
+        enforceNonce: true,
         ...(components.length ? { components } : {}),
         allowedMentions: {
           parse: [],
@@ -1686,6 +1689,22 @@ export class ThreadManager implements IThreadManager {
       console.error(`Failed to activate report intake thread ${thread.id}:`, error);
       return false;
     }
+  }
+
+  private async hasLegacyReportWelcome(thread: ThreadChannel): Promise<boolean> {
+    if (!this.client.user) throw new Error('Report welcome author unavailable');
+    const existing = await findAuthoredReportMessage(
+      thread,
+      this.client.user.id,
+      (message) =>
+        message.channelId === thread.id &&
+        message.content === this.buildReportIntakeThreadMessage(),
+      new Date(0)
+    );
+    if (existing) return true;
+    // Sending can automatically reopen an archived thread; resume must preserve its closure.
+    if ((await thread.fetch(true)).archived) throw new Error('Report intake thread is archived');
+    return false;
   }
 
   private async setPrivateEvidenceThreadState(
