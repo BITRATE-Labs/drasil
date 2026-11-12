@@ -1,6 +1,10 @@
+import { IModerationQueueRepository } from '../repositories/ModerationQueueRepository';
 import { IConfigService } from '../config/ConfigService';
 import { getReportIntakeSettings } from '../utils/reportIntakeSettings';
-import { findAuthoredReportMessage } from '../utils/reportPresentationDiscord';
+import {
+  findAuthoredReportMessage,
+  ReportHistoryRecoveryError,
+} from '../utils/reportPresentationDiscord';
 import { inject, injectable } from 'inversify';
 import {
   Client,
@@ -45,7 +49,8 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
   constructor(
     @inject(TYPES.ReportIntakeRepository) private repository: IReportIntakeRepository,
     @inject(TYPES.DiscordClient) private client: Client,
-    @inject(TYPES.ConfigService) private configService: IConfigService
+    @inject(TYPES.ConfigService) private configService: IConfigService,
+    @inject(TYPES.ModerationQueueRepository) private queueRepository: IModerationQueueRepository
   ) {}
   async reconcile(intakeId: string): Promise<boolean> {
     let intake = await this.repository.findById(intakeId);
@@ -152,7 +157,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     if (state.status === 'needs_admin_confirmation') {
       return analysis.handoff.state !== 'none' && analysis.handoff.state !== 'pending'
         ? { kind: 'review', actions: [{ ...close, label: 'Close thread' }, admin] }
-        : { kind: 'checking', actions: [] };
+        : { kind: 'checking', actions };
     }
     if (
       state.status === 'needs_reporter_confirmation' &&
@@ -196,7 +201,11 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     if (readReporterPresentation(intake)?.threadMissing) return;
     try {
       await this.presentAvailableClaim(claim);
+      if (readReporterPresentation(await this.current(claim))?.deliveryAttention)
+        await this.queueRepository.setReportDeliveryFailure(claim, null);
     } catch (error) {
+      if (error instanceof ReportHistoryRecoveryError)
+        await this.queueRepository.setReportDeliveryFailure(claim, error.reason);
       if ((error as { code?: number }).code !== 10003) throw error;
       const latest = await this.current(claim);
       const reporter = readReporterPresentation(latest);

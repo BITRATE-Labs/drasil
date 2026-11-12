@@ -91,8 +91,7 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
           if (!result.delivered || !result.channelId || !result.messageId)
             throw new Error('Report review delivery pending');
         } catch (error) {
-          if (projectReportIntakeState(current).submission)
-            await this.reporterPresentation.presentClaim(claim);
+          await this.reporterPresentation.presentClaim(claim);
           throw error;
         }
         if (

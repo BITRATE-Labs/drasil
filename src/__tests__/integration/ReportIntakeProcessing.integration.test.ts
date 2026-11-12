@@ -132,6 +132,74 @@ describeIntegration('durable report intake processing', () => {
     });
   });
 
+  it('records history recovery attention once without replacing identity delivery metadata', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    await f.prisma.report_intakes.update({
+      where: { id: f.intake.id },
+      data: { thread_id: 'report-thread' },
+    });
+    const claim = (await f.repository.claimPendingPresentation(new Date(), f.intake.id))!;
+    const queue = new ModerationQueueRepository(f.prisma);
+    await queue.setReportDeliveryFailure(claim, 'history_incomplete');
+    const item = (await queue.listByReportIntake(f.intake.id))[0];
+    await f.prisma.moderation_queue_items.update({
+      where: { id: item.id },
+      data: {
+        queue_channel_id: 'review-channel',
+        queue_message_id: 'review-message',
+        metadata: { identity_review: { revision: 0, send_reserved: true }, retained: 'value' },
+      },
+    });
+    await queue.setReportDeliveryFailure(claim, 'history_ambiguous');
+    expect(await queue.listByReportIntake(f.intake.id)).toHaveLength(1);
+    expect(await queue.findById(item.id)).toMatchObject({
+      queue_channel_id: 'review-channel',
+      queue_message_id: 'review-message',
+      metadata: {
+        identity_review: { send_reserved: true },
+        retained: 'value',
+        reporter_delivery_failure: 'history_ambiguous',
+      },
+    });
+    await queue.setReportDeliveryFailure(claim, null);
+    expect(await queue.findById(item.id)).toMatchObject({
+      queue_message_id: 'review-message',
+      metadata: { identity_review: { send_reserved: true }, retained: 'value' },
+    });
+    expect(
+      ((await queue.findById(item.id))!.metadata as Record<string, unknown>)
+        .reporter_delivery_failure
+    ).toBeUndefined();
+    await queue.setReportDeliveryFailure(claim, 'history_ambiguous');
+    await f.repository.update(f.intake.id, { status: ReportIntakeStatus.EXPIRED });
+    await queue.setReportDeliveryFailure(claim, 'history_incomplete');
+    expect((await queue.findById(item.id))!.metadata).toMatchObject({
+      reporter_delivery_failure: 'history_ambiguous',
+    });
+  });
+
+  it('removes resolved failure-only attention and preserves acknowledged cleanup records', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    await f.prisma.report_intakes.update({
+      where: { id: f.intake.id },
+      data: { thread_id: 'report-thread' },
+    });
+    const claim = (await f.repository.claimPendingPresentation(new Date(), f.intake.id))!;
+    const queue = new ModerationQueueRepository(f.prisma);
+    await queue.setReportDeliveryFailure(claim, 'history_incomplete');
+    await queue.setReportDeliveryFailure(claim, null);
+    expect(await queue.listByReportIntake(f.intake.id)).toHaveLength(0);
+    await queue.setReportDeliveryFailure(claim, 'history_incomplete');
+    const item = (await queue.listByReportIntake(f.intake.id))[0];
+    await queue.reserveOrdinaryAcknowledgement(item.id, item.server_id);
+    await queue.setReportDeliveryFailure(claim, 'history_ambiguous');
+    expect(await queue.findById(item.id)).toMatchObject({
+      attention_cleanup_pending: true,
+      metadata: { attention_cleanup: { source_thread_id: 'report-thread' } },
+    });
+    expect(await queue.listByReportIntake(f.intake.id)).toHaveLength(1);
+  });
+
   it('serializes reporter presentation claims and rejects a stale claim after submission', async () => {
     const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
     const claims = await Promise.all([

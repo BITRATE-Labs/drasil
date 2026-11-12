@@ -1,8 +1,16 @@
+import { findAuthoredReportMessage } from '../../utils/reportPresentationDiscord';
+import type { IModerationQueueRepository } from '../../repositories/ModerationQueueRepository';
 import type { IConfigService } from '../../config/ConfigService';
 import type { IThreadManager } from '../../services/ThreadManager';
 import { mock } from 'jest-mock-extended';
 import { ReportIntakeService } from '../../services/ReportIntakeService';
-import { Client, Collection, EmbedBuilder, type MessageCreateOptions } from 'discord.js';
+import {
+  Client,
+  Collection,
+  EmbedBuilder,
+  type MessageCreateOptions,
+  type Message,
+} from 'discord.js';
 import { ReportIntakePresentationService } from '../../services/ReportIntakePresentationService';
 import {
   InMemoryReportIntakeRepository,
@@ -81,8 +89,9 @@ async function fixture() {
   config.getServerConfig.mockResolvedValue({
     settings: { report_intake_staged_enabled: true },
   } as never);
-  const service = new ReportIntakePresentationService(repository, client, config);
-  return { repository, intake, channel, messages, service, client, config };
+  const queue = mock<IModerationQueueRepository>();
+  const service = new ReportIntakePresentationService(repository, client, config, queue);
+  return { repository, intake, channel, messages, service, client, config, queue };
 }
 async function suggest(f: Awaited<ReturnType<typeof fixture>>): Promise<void> {
   const candidate = {
@@ -269,6 +278,8 @@ it.each(['unknown', 'dispatching'])('never enables retry for %s submission', asy
         targetUserId: 'target',
         state,
         claimedAt: new Date().toISOString(),
+        dispatchedAt: new Date().toISOString(),
+        ...(state === 'unknown' ? { settledAt: new Date().toISOString() } : {}),
       },
     },
   });
@@ -305,6 +316,10 @@ it('stops recovery when history is incomplete rather than duplicating an uncerta
   );
   f.channel.messages.fetch.mockResolvedValue(page as never);
   await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('incomplete');
+  expect(f.queue.setReportDeliveryFailure).toHaveBeenCalledWith(
+    expect.objectContaining({ intake: expect.objectContaining({ id: f.intake.id }) }),
+    'history_incomplete'
+  );
   expect(f.channel.send).not.toHaveBeenCalled();
 });
 
@@ -532,4 +547,39 @@ it('preserves malformed delivery obligations on direct worker publication', asyn
     reporter_presentation: invalid,
   });
   expect(f.channel.send).not.toHaveBeenCalled();
+});
+
+it('clears recovery attention after the card is successfully restored', async () => {
+  const f = await fixture();
+  await f.repository.update(f.intake.id, {
+    metadata: {
+      workflow: 'staged',
+      reporter_presentation: { deliveryAttention: true, nextDueAt: new Date().toISOString() },
+    },
+  });
+  await f.service.reconcile(f.intake.id);
+  expect(f.queue.setReportDeliveryFailure).toHaveBeenCalledWith(
+    expect.objectContaining({ intake: expect.objectContaining({ id: f.intake.id }) }),
+    null
+  );
+});
+
+it('does not assume a recovered match is unique beyond the bounded history window', async () => {
+  const now = Date.now();
+  const messages = new Collection<string, Message>(
+    Array.from({ length: 100 }, (_, index) => [
+      String(index),
+      { id: String(index), author: { id: 'bot' }, createdTimestamp: now } as Message,
+    ])
+  );
+  const fetch = jest.fn().mockResolvedValue(messages);
+  await expect(
+    findAuthoredReportMessage(
+      { messages: { fetch } },
+      'bot',
+      (message) => message.id === '0',
+      new Date(now - 60000)
+    )
+  ).rejects.toThrow('incomplete');
+  expect(fetch).toHaveBeenCalledTimes(10);
 });

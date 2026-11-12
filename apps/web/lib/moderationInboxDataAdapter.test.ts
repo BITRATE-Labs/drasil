@@ -510,3 +510,19 @@ it('omits obsolete queue response after durable source completion even if Discor
     })
   ).toBeNull();
 });
+
+it.each(['history_ambiguous', 'history_incomplete'])(
+  'surfaces %s recovery attention without a Discord mirror',
+  (reason) => {
+    const view = parseModerationQueueRow({
+      ...baseQueueRow,
+      item_type: 'report_thread_attention',
+      report_intake_id: 'report-1',
+      queue_channel_id: null,
+      queue_message_id: null,
+      metadata: { reporter_delivery_failure: reason },
+    })!;
+    expect(view.summary).toContain('Report card recovery blocked:');
+    expect(view.summary).toContain('Review the report thread.');
+  }
+);

@@ -6,6 +6,14 @@ export interface ReportHistoryChannel {
   };
 }
 
+export class ReportHistoryRecoveryError extends Error {
+  constructor(readonly reason: 'history_ambiguous' | 'history_incomplete') {
+    super(
+      `Report presentation history is ${reason === 'history_ambiguous' ? 'ambiguous' : 'incomplete'}`
+    );
+  }
+}
+
 // A full bounded scan is required before retrying an uncertain accepted send.
 export async function findAuthoredReportMessage(
   channel: ReportHistoryChannel,
@@ -26,12 +34,12 @@ export async function findAuthoredReportMessage(
       if (!matches) continue;
       if (typeof marker === 'string') return message;
       if (recovered && recovered.id !== message.id)
-        throw new Error('Report presentation history is ambiguous');
+        throw new ReportHistoryRecoveryError('history_ambiguous');
       recovered = message;
     }
     const last = messages.last();
     if (!last || messages.size < 100 || last.createdTimestamp < since.getTime()) return recovered;
     before = last.id;
   }
-  throw new Error('Report presentation history is incomplete');
+  throw new ReportHistoryRecoveryError('history_incomplete');
 }

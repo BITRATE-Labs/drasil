@@ -303,6 +303,9 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
       .map((item) => ({ ...item }));
   }
 
+  async setReportDeliveryFailure(): Promise<void> {
+    throw new Error('Not used by this fixture');
+  }
   async upsertIdentityReview(
     data: Parameters<IModerationQueueRepository['upsert']>[0],
     claim: ReportPresentationClaim

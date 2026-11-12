@@ -1,3 +1,4 @@
+import type { IModerationQueueRepository } from '../../repositories/ModerationQueueRepository';
 import { mock } from 'jest-mock-extended';
 import type { IConfigService } from '../../config/ConfigService';
 import { ReportIntakePresentationService } from '../../services/ReportIntakePresentationService';
@@ -288,7 +289,8 @@ it('delivers staff review before one shared receipt and persists receipt complet
   const presenter = new ReportIntakePresentationService(
     f.repository,
     f.client as unknown as Client,
-    mock<IConfigService>()
+    mock<IConfigService>(),
+    mock<IModerationQueueRepository>()
   );
   const service = new ReportIntakeHandoffService(
     f.repository,
@@ -323,7 +325,8 @@ it('does not claim moderators have the report when staff delivery fails', async 
   const presenter = new ReportIntakePresentationService(
     f.repository,
     f.client as unknown as Client,
-    mock<IConfigService>()
+    mock<IConfigService>(),
+    mock<IModerationQueueRepository>()
   );
   const service = new ReportIntakeHandoffService(
     f.repository,
@@ -334,7 +337,9 @@ it('does not claim moderators have the report when staff delivery fails', async 
     presenter
   );
   await service.publishOutcome(f.intake.id);
-  expect(f.channel.send).not.toHaveBeenCalled();
+  expect(f.channel.send).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(f.channel.send.mock.calls)).toContain('Close report');
+  expect(JSON.stringify(f.channel.send.mock.calls)).not.toContain('Sent to moderators');
   expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
     analysis: { handoff: { state: 'pending', receipt: 'pending' } },
   });
@@ -363,7 +368,8 @@ it.each(['not_dispatched', 'unknown'])(
     const presenter = new ReportIntakePresentationService(
       f.repository,
       f.client as unknown as Client,
-      mock<IConfigService>()
+      mock<IConfigService>(),
+      mock<IModerationQueueRepository>()
     );
     const service = new ReportIntakeHandoffService(
       f.repository,
@@ -415,7 +421,8 @@ it('keeps staff reconciliation claimable when the reporter thread is missing', a
   const presenter = new ReportIntakePresentationService(
     f.repository,
     f.client as unknown as Client,
-    mock<IConfigService>()
+    mock<IConfigService>(),
+    mock<IModerationQueueRepository>()
   );
   const configured = new ReportIntakeHandoffService(
     f.repository,

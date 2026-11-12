@@ -1,3 +1,4 @@
+import { readReporterPresentation, reportRoot } from '../utils/reportIntakePresentationMetadata';
 import {
   acknowledgeIdentityReviewMetadata,
   acknowledgeAutomaticResponseMetadata,
@@ -59,6 +60,10 @@ export interface IModerationQueueRepository extends Pick<
     itemTypes: ModerationQueueItemType[]
   ): Promise<ModerationQueueItem[]>;
   upsert(data: ModerationQueueItemUpsert): Promise<ModerationQueueItem>;
+  setReportDeliveryFailure(
+    claim: ReportPresentationClaim,
+    reason: 'history_ambiguous' | 'history_incomplete' | null
+  ): Promise<void>;
   upsertIdentityReview(
     data: ModerationQueueItemUpsert,
     claim: ReportPresentationClaim
@@ -270,6 +275,72 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
     } catch (error) {
       this.handleError(error, 'listModerationQueueItemsByServerAndTypes');
     }
+  }
+
+  async setReportDeliveryFailure(
+    claim: ReportPresentationClaim,
+    reason: 'history_ambiguous' | 'history_incomplete' | null
+  ): Promise<void> {
+    await this.prisma.$transaction(async (transaction) => {
+      const rows = await transaction.$queryRaw<
+        ReportIntake[]
+      >`SELECT * FROM report_intakes WHERE id=${claim.intake.id}::uuid FOR UPDATE`;
+      const intake = rows.at(0);
+      if (!intake?.thread_id || !ownsPresentation(intake, claim, new Date())) return;
+      const items = await transaction.$queryRaw<ModerationQueueItem[]>`
+        SELECT * FROM moderation_queue_items WHERE server_id=${intake.server_id}
+        AND item_type='report_thread_attention' AND attention_cleanup_pending=false
+        AND (report_intake_id=${intake.id}::uuid OR source_thread_id=${intake.thread_id})
+        ORDER BY id LIMIT 1 FOR UPDATE`;
+      const existing = items.at(0);
+      const prior = existing?.metadata;
+      const metadata: Prisma.JsonObject = {
+        ...(prior && typeof prior === 'object' && !Array.isArray(prior) ? prior : {}),
+      };
+      const failureOnly = metadata.reporter_delivery_only === true;
+      if (reason) metadata.reporter_delivery_failure = reason;
+      else {
+        delete metadata.reporter_delivery_failure;
+        delete metadata.reporter_delivery_only;
+      }
+      if (existing) {
+        if (
+          !reason &&
+          failureOnly &&
+          !Object.keys(metadata).length &&
+          !existing.queue_message_id &&
+          !existing.last_source_message_id
+        )
+          await transaction.moderation_queue_items.delete({ where: { id: existing.id } });
+        else
+          await transaction.moderation_queue_items.update({
+            where: { id: existing.id },
+            data: { metadata: metadata as Prisma.InputJsonValue, updated_at: new Date() },
+          });
+      } else if (reason) {
+        await transaction.moderation_queue_items.create({
+          data: {
+            server_id: intake.server_id,
+            user_id: intake.reporter_id,
+            item_type: 'report_thread_attention',
+            report_intake_id: intake.id,
+            source_thread_id: intake.thread_id,
+            metadata: { reporter_delivery_failure: reason, reporter_delivery_only: true },
+          },
+        });
+      }
+      const reporter = readReporterPresentation(intake);
+      if (reporter)
+        await transaction.report_intakes.update({
+          where: { id: intake.id },
+          data: {
+            metadata: {
+              ...reportRoot(intake),
+              reporter_presentation: { ...reporter, deliveryAttention: reason !== null },
+            } as Prisma.InputJsonValue,
+          },
+        });
+    });
   }
 
   async upsertIdentityReview(
