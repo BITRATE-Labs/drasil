@@ -54,7 +54,15 @@ async function fixture() {
     fetch: jest.fn(async (): Promise<{ archived: boolean }> => ({ archived: channel.archived })),
     messages: {
       fetch: jest.fn(async (input: unknown) => {
-        if (typeof input !== 'string') return new Collection(messages);
+        if (typeof input !== 'string') {
+          const options = input as { limit: number; before?: string };
+          return new Collection(
+            [...messages]
+              .reverse()
+              .filter(([id]) => !options.before || BigInt(id) < BigInt(options.before))
+              .slice(0, options.limit)
+          );
+        }
         const message = messages.get(input);
         if (!message) throw Object.assign(new Error('Missing'), { code: 10008 });
         return message;
@@ -361,6 +369,35 @@ it('recovers an accepted confirmation reservation even when newer evidence chang
   ).toHaveLength(1);
 });
 
+it.each([-60000, 60000])(
+  'recovers an unrecorded confirmation with Discord clock offset %i',
+  async (offset) => {
+    const f = await fixture();
+    await f.service.reconcile(f.intake.id);
+    await suggest(f);
+    const send = f.channel.send.getMockImplementation()!;
+    f.channel.send.mockImplementation(async (payload) => {
+      const message = await send(payload);
+      message.createdTimestamp += offset;
+      return message;
+    });
+    const update = f.repository.updateIfCurrent.bind(f.repository);
+    let fail = true;
+    jest.spyOn(f.repository, 'updateIfCurrent').mockImplementation(async (intake, data) => {
+      if (fail && JSON.stringify(data.metadata).includes('followupMessageId":"2')) {
+        fail = false;
+        throw new Error('ID save failed');
+      }
+      return update(intake, data);
+    });
+    await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('ID save failed');
+    expect(f.messages.get('2')!.components).toEqual([]);
+    await f.service.reconcile(f.intake.id);
+    expect(f.channel.send).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(f.messages.get('2')!.components)).toContain('Submit report');
+  }
+);
+
 it('does not ping again when an uncertain first confirmation was deleted before recovery', async () => {
   const f = await fixture();
   await suggest(f);
@@ -413,22 +450,40 @@ it('rechecks the rollout before enabling a newly sent confirmation', async () =>
   expect(f.messages.get('1')!.components).toEqual([]);
 });
 
-it('updates a closed card while active and restores archival without reopening it on later reconciliation', async () => {
-  const f = await fixture();
-  await f.service.reconcile(f.intake.id);
-  await f.repository.update(f.intake.id, {
-    status: ReportIntakeStatus.CLOSED_BY_REPORTER,
-    closedAt: new Date(),
-  });
-  f.channel.archived = true;
-  await f.service.reconcile(f.intake.id);
-  expect(f.channel.setArchived.mock.calls.map(([archived]) => archived)).toEqual([false, true]);
-  expect(f.channel.archived).toBe(true);
-  expect(JSON.stringify([...f.messages.values()].map((m) => m.embeds))).toContain('Thread closed');
-  f.channel.setArchived.mockClear();
-  await f.service.reconcile(f.intake.id);
-  expect(f.channel.setArchived).not.toHaveBeenCalled();
-});
+it.each([
+  ReportIntakeStatus.CLOSED_BY_REPORTER,
+  ReportIntakeStatus.DISMISSED,
+  ReportIntakeStatus.FALSE_POSITIVE,
+  ReportIntakeStatus.ACTIONED,
+])(
+  'updates a %s card and restores archival without reopening it on later reconciliation',
+  async (status) => {
+    const f = await fixture();
+    await f.service.reconcile(f.intake.id);
+    await f.repository.update(f.intake.id, {
+      status,
+      closedAt: new Date(),
+      ...(status === ReportIntakeStatus.ACTIONED
+        ? {
+            metadata: {
+              ...((await f.repository.findById(f.intake.id))!.metadata as object),
+              observed_action_closed_at: new Date().toISOString(),
+            },
+          }
+        : {}),
+    });
+    f.channel.archived = true;
+    await f.service.reconcile(f.intake.id);
+    expect(f.channel.setArchived.mock.calls.map(([archived]) => archived)).toEqual([false, true]);
+    expect(f.channel.archived).toBe(true);
+    expect(JSON.stringify([...f.messages.values()].map((m) => m.embeds))).toContain(
+      'Thread closed'
+    );
+    f.channel.setArchived.mockClear();
+    await f.service.reconcile(f.intake.id);
+    expect(f.channel.setArchived).not.toHaveBeenCalled();
+  }
+);
 it('recovers a failed rearchive without editing or reopening the finished card again', async () => {
   const f = await fixture();
   await f.service.reconcile(f.intake.id);
@@ -452,6 +507,46 @@ it('recovers a failed rearchive without editing or reopening the finished card a
   await f.service.reconcile(f.intake.id);
   expect(f.channel.setArchived.mock.calls.map(([archived]) => archived)).toEqual([true]);
   expect(f.channel.archived).toBe(true);
+});
+it.each(['before archive', 'during archive'])('preserves moderator undo %s', async (timing) => {
+  const f = await fixture();
+  await f.service.reconcile(f.intake.id);
+  const original = (await f.repository.findById(f.intake.id))!;
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.DISMISSED,
+    closedAt: new Date(),
+    metadata: {
+      ...(original.metadata as object),
+      observed_action_closed_at: new Date().toISOString(),
+    },
+  });
+  f.channel.archived = true;
+  const undo = async (): Promise<void> => {
+    const current = (await f.repository.findById(f.intake.id))!;
+    const metadata = { ...(current.metadata as Record<string, unknown>) };
+    delete metadata.observed_action_closed_at;
+    await f.repository.update(f.intake.id, {
+      status: ReportIntakeStatus.SUBMITTED,
+      closedAt: null,
+      metadata: { ...metadata, observed_action_reopened_at: new Date().toISOString() },
+    });
+    f.channel.archived = false;
+  };
+  let undone = false;
+  const archive = f.channel.setArchived.getMockImplementation()!;
+  f.channel.setArchived.mockImplementation(async (archived) => {
+    if (
+      !undone &&
+      ((timing === 'before archive' && !archived) || (timing === 'during archive' && archived))
+    ) {
+      undone = true;
+      await undo();
+    }
+    await archive(archived);
+  });
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('Report presentation changed');
+  expect(f.channel.archived).toBe(false);
+  expect((await f.repository.findById(f.intake.id))?.status).toBe(ReportIntakeStatus.SUBMITTED);
 });
 it('retires confirmation controls if the rollout is disabled during their edit', async () => {
   const f = await fixture();

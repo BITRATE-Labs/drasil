@@ -9,6 +9,7 @@ import { inject, injectable } from 'inversify';
 import {
   Client,
   ComponentType,
+  SnowflakeUtil,
   type Message,
   type ThreadChannel,
   type EmbedBuilder,
@@ -121,11 +122,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       state.status === 'submitted' ||
       state.status === 'actioned' ||
       (analysis.handoff.state !== 'none' && analysis.handoff.state !== 'pending');
-    if (
-      reportRoot(intake).thread_closed_at ||
-      (intake.closed_at && state.status !== 'submitted' && state.status !== 'actioned')
-    )
-      return { kind: reviewed ? 'closed_review' : 'closed', actions: [] };
+    if (this.isClosed(intake)) return { kind: reviewed ? 'closed_review' : 'closed', actions: [] };
     if (state.status === 'submitted' || state.submission?.state === 'accepted') {
       const outcome = analysis.outcome;
       const candidate =
@@ -222,14 +219,17 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
   }
   private async presentAvailableClaim(claim: ReportPresentationClaim): Promise<void> {
     let intake = await this.current(claim);
-    const closed = Boolean(
-      reportRoot(intake).thread_closed_at || intake.status === ReportIntakeStatus.CLOSED_BY_REPORTER
-    );
-    if (!closed) return this.presentActiveClaim(claim);
+    const closed = this.isClosed(intake);
+    if (!closed && !readReporterPresentation(intake)?.restoreArchive)
+      return this.presentActiveClaim(claim);
     const channel = intake.thread_id ? await this.client.channels.fetch(intake.thread_id) : null;
     if (!channel) throw Object.assign(new Error('Report thread missing'), { code: 10003 });
     if (!channel.isThread() || channel.guildId !== intake.server_id)
       throw new Error('Report thread mismatch');
+    if (!closed) {
+      await this.restoreClosedThread(claim, channel);
+      return this.presentActiveClaim(claim);
+    }
     let reporter = readReporterPresentation(intake);
     if (!channel.archived && !reporter?.restoreArchive) throw new Error('Thread closure pending');
     const view = reporterViewKey(intake);
@@ -263,17 +263,45 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       await this.restoreClosedThread(claim, channel);
     }
   }
+  private isClosed(intake: ReportIntake): boolean {
+    const metadata = reportRoot(intake);
+    return Boolean(
+      metadata.thread_closed_at ||
+      metadata.observed_action_closed_at ||
+      intake.status === ReportIntakeStatus.CLOSED_BY_REPORTER ||
+      (intake.closed_at &&
+        intake.status !== ReportIntakeStatus.SUBMITTED &&
+        intake.status !== ReportIntakeStatus.ACTIONED)
+    );
+  }
   private async restoreClosedThread(
     claim: ReportPresentationClaim,
     channel: ThreadChannel
   ): Promise<void> {
-    // The durable obligation survives uncertain unarchive responses and process restarts.
-    try {
-      await channel.setArchived(true, 'Report intake closed');
-    } catch (error) {
-      const verified = await channel.fetch(true).catch(() => null);
-      if (!verified?.archived) throw error;
+    // An observed-action undo can race the archive call; keep repair durable until intent agrees.
+    let settled = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await this.repository.findById(claim.intake.id);
+      if (!before || before.thread_id !== channel.id) throw new Error('Report closure changed');
+      const archived = this.isClosed(before);
+      if (!archived && !reportRoot(before).observed_action_reopened_at)
+        throw new Error('Report closure changed');
+      try {
+        await channel.setArchived(
+          archived,
+          archived ? 'Report intake closed' : 'Report intake reopened'
+        );
+      } catch (error) {
+        const verified = await channel.fetch(true).catch(() => null);
+        if (!verified || verified.archived !== archived) throw error;
+      }
+      const after = await this.repository.findById(claim.intake.id);
+      if (after && this.isClosed(after) === archived) {
+        settled = true;
+        break;
+      }
     }
+    if (!settled) throw new Error('Report closure changed');
     const intake = await this.current(claim);
     const reporter = readReporterPresentation(intake);
     if (
@@ -311,11 +339,14 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
         this.client.user.id,
         (candidate) =>
           candidate.channelId === intake.thread_id &&
-          candidate.createdTimestamp >= new Date(reservation.reservedAt).getTime() &&
+          (!reservation.afterMessageId ||
+            BigInt(candidate.id) > BigInt(reservation.afterMessageId)) &&
           candidate.embeds.some(
             (embed) => embed.author?.name === 'Your report' && embed.title === reservation.title
           ),
-        new Date(reservation.reservedAt)
+        new Date(
+          reservation.afterMessageId ? SnowflakeUtil.timestampFrom(reservation.afterMessageId) : 0
+        )
       );
       intake = await this.current(claim);
       const resolved = { ...reporter, ...(recovered ? { [reservation.slot]: recovered.id } : {}) };
@@ -351,11 +382,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       (message.author.id !== this.client.user.id || message.channelId !== intake.thread_id)
     )
       throw new Error('Report message mismatch');
-    if (!message && (!previousId || reporter.pendingSend)) {
-      const reservation = reporter.pendingSend;
-      const since = reservation
-        ? new Date(reservation.reservedAt)
-        : (intake.created_at ?? new Date(0));
+    if (!message && !previousId) {
       message = await findAuthoredReportMessage(
         channel,
         this.client.user.id,
@@ -380,17 +407,9 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
           const receipt =
             slot === 'followupMessageId' &&
             candidate.embeds.some((e) => e.footer?.text === `Report receipt ${intake.id}`);
-          const reserved =
-            reservation?.slot === slot &&
-            candidate.createdTimestamp >= since.getTime() &&
-            candidate.embeds.some(
-              (e) => e.author?.name === 'Your report' && e.title === reservation.title
-            );
-          return (
-            (slot === 'openingMessageId' ? opening : confirmation) || receipt || Boolean(reserved)
-          );
+          return (slot === 'openingMessageId' ? opening : confirmation) || receipt;
         },
-        since
+        intake.created_at ?? new Date(0)
       );
     }
     const payload = buildReportIntakePresentation(state);
@@ -399,6 +418,8 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       reporter = readReporterPresentation(intake) ?? reporter;
       const title = (payload.embeds?.[0] as EmbedBuilder | undefined)?.data.title;
       if (!title) throw new Error('Report card title missing');
+      // Discord's latest message is a recovery boundary independent of our host clock.
+      const latestMessage = (await channel.messages.fetch({ limit: 1 })).first();
       const first =
         state.kind === 'confirm' &&
         !previousId &&
@@ -410,7 +431,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
         pendingSend: {
           slot,
           revision: intake.evidence_revision,
-          reservedAt: new Date().toISOString(),
+          afterMessageId: latestMessage?.id ?? null,
           title,
         },
       };

@@ -15,7 +15,7 @@ export const reporterPresentationSchema = z.object({
     .object({
       slot: z.enum(['openingMessageId', 'followupMessageId']),
       revision: z.number().int().nonnegative(),
-      reservedAt: z.string(),
+      afterMessageId: z.string().regex(/^\d+$/).nullable(),
       title: z.string(),
     })
     .optional(),
