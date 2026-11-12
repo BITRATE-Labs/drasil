@@ -507,7 +507,11 @@ export function completePresentationChange(
   const success =
     result.kind === 'published' || (result.kind === 'delivered' && result.receipt === 'sent');
   const nextDueAt =
-    result.kind === 'published'
+    result.kind === 'published' &&
+    !(
+      intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION &&
+      ['delivered', 'acknowledged'].includes(analysis.handoff.state)
+    )
       ? null
       : new Date(
           now.getTime() +
@@ -516,8 +520,7 @@ export function completePresentationChange(
               : (PRESENTATION_RETRY_MS[attempts - 1] ?? PRESENTATION_RECONCILE_MS))
         ).toISOString();
   const reporter = readReporterPresentation(intake);
-  if (reporter)
-    metadata.reporter_presentation = { ...reporter, nextDueAt: success ? null : nextDueAt };
+  if (reporter) metadata.reporter_presentation = { ...reporter, nextDueAt };
   analysis.presentation = {
     revision: claim.revision,
     attempts,

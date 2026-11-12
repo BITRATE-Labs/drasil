@@ -74,13 +74,20 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
         current.status === 'needs_admin_confirmation' &&
         !current.closed_at
       ) {
-        const result = await this.queue.upsertReportIdentityReview({
-          intake: current,
-          outcome: analysis.outcome,
-          revision: claim.revision,
-        });
-        if (!result.delivered || !result.channelId || !result.messageId)
-          throw new Error('Report review delivery pending');
+        let result: Awaited<ReturnType<IModerationQueueService['upsertReportIdentityReview']>>;
+        try {
+          result = await this.queue.upsertReportIdentityReview({
+            intake: current,
+            outcome: analysis.outcome,
+            revision: claim.revision,
+          });
+          if (!result.delivered || !result.channelId || !result.messageId)
+            throw new Error('Report review delivery pending');
+        } catch (error) {
+          if (projectReportIntakeState(current).submission)
+            await this.reporterPresentation.presentClaim(claim);
+          throw error;
+        }
         if (
           !(await this.repository.completePresentation(claim, {
             kind: 'delivered',

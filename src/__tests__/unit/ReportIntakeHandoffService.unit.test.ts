@@ -304,6 +304,12 @@ it('delivers staff review before one shared receipt and persists receipt complet
   });
   await service.publishOutcome(f.intake.id);
   expect(f.channel.send).toHaveBeenCalledTimes(1);
+  expect(
+    await f.repository.claimPendingPresentation(
+      new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
+      f.intake.id
+    )
+  ).not.toBeNull();
 });
 it('does not claim moderators have the report when staff delivery fails', async () => {
   const f = await fixture();
@@ -329,3 +335,43 @@ it('does not claim moderators have the report when staff delivery fails', async 
     analysis: { handoff: { state: 'pending', receipt: 'pending' } },
   });
 });
+
+it.each(['not_dispatched', 'unknown'])(
+  'renders %s submission status even when staff delivery fails',
+  async (state) => {
+    const f = await fixture();
+    await f.repository.update(f.intake.id, {
+      confirmedTargetUserId: 'target',
+      metadata: {
+        ...(f.intake.metadata as object),
+        workflow: 'staged',
+        submission: {
+          state,
+          token: 'token',
+          targetUserId: 'target',
+          claimedAt: new Date().toISOString(),
+          dispatchedAt: new Date().toISOString(),
+          settledAt: new Date().toISOString(),
+        },
+      },
+    });
+    f.queue.upsertReportIdentityReview.mockRejectedValue(new Error('Forbidden'));
+    const presenter = new ReportIntakePresentationService(
+      f.repository,
+      f.client as unknown as Client
+    );
+    const service = new ReportIntakeHandoffService(
+      f.repository,
+      f.queue as unknown as IModerationQueueService,
+      f.client as unknown as Client,
+      f.intakeService as unknown as IReportIntakeService,
+      f.threads as unknown as IThreadManager,
+      presenter
+    );
+    await service.publishOutcome(f.intake.id);
+    expect(f.channel.send).toHaveBeenCalledTimes(1);
+    const payload = JSON.stringify(f.channel.send.mock.calls[0]);
+    expect(payload).toContain(state === 'unknown' ? 'Checking submission' : 'Try again');
+    expect(payload).not.toContain('Sent to moderators');
+  }
+);
