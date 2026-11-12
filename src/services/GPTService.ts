@@ -178,7 +178,7 @@ const ReportIdentityProviderSchema = ReportIdentityResponseSchema.extend({
   subjects: z
     .array(
       identitySubject.extend({
-        messageLinks: z.array(z.string().max(200)).max(4),
+        messageLinks: z.array(z.string().min(1).max(200)).max(4),
       })
     )
     .max(8),

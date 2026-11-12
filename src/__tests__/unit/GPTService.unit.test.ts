@@ -102,7 +102,7 @@ describe('GPTService (unit)', () => {
       const item =
         parse.mock.calls[0][0].text.format.schema.properties.subjects.items.properties.messageLinks
           .items;
-      expect(item).toMatchObject({ type: 'string', maxLength: 200 });
+      expect(item).toMatchObject({ type: 'string', minLength: 1, maxLength: 200 });
       expect(item).not.toHaveProperty('pattern');
     });
 
