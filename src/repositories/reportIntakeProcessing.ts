@@ -1,4 +1,8 @@
 import {
+  readReporterPresentation,
+  reporterViewKey,
+} from '../utils/reportIntakePresentationMetadata';
+import {
   reportAnalysisMetadataSchema,
   projectReportIntakeState,
   reportAnalysisOutcomeSchema,
@@ -393,6 +397,7 @@ export function presentationMetadata(intake: ReportIntake): ReturnType<typeof pr
 }
 
 export function canPresent(intake: ReportIntake): boolean {
+  if (readReporterPresentation(intake)) return true;
   return (
     OPEN_ANALYSIS_STATUSES.includes(intake.status) &&
     !intake.closed_at &&
@@ -410,7 +415,34 @@ export function presentationClaimChange(
   change: Partial<ReportIntake>;
 } | null {
   if (!canPresent(intake)) return null;
+  const reporter = readReporterPresentation(intake);
   const { metadata, analysis } = presentationMetadata(intake);
+  if (reporter) {
+    if (
+      !reporter.nextDueAt ||
+      new Date(reporter.nextDueAt) > now ||
+      (analysis.presentation?.lease && new Date(analysis.presentation.lease.until) > now)
+    )
+      return null;
+    const leaseToken = randomUUID();
+    analysis.presentation = {
+      revision: intake.evidence_revision,
+      attempts: (analysis.presentation?.attempts ?? 0) + 1,
+      nextDueAt: reporter.nextDueAt,
+      lease: {
+        token: leaseToken,
+        until: new Date(now.getTime() + PRESENTATION_LEASE_MS).toISOString(),
+      },
+    };
+    const change = {
+      metadata: { ...metadata, analysis } as ReportIntake['metadata'],
+      updated_at: now,
+    };
+    return {
+      claim: { intake: { ...intake, ...change }, revision: intake.evidence_revision, leaseToken },
+      change,
+    };
+  }
   if (
     !analysis.outcome ||
     analysis.handoff.state === 'resolved' ||
@@ -455,7 +487,9 @@ export function ownsPresentation(
   if (!canPresent(intake) || intake.evidence_revision !== claim.revision) return false;
   const { analysis } = presentationMetadata(intake);
   return (
-    analysis.handoff.state !== 'resolved' &&
+    (readReporterPresentation(intake)
+      ? reporterViewKey(intake) === reporterViewKey(claim.intake)
+      : analysis.handoff.state !== 'resolved') &&
     analysis.presentation?.lease?.token === claim.leaseToken &&
     new Date(analysis.presentation.lease.until) > now
   );
@@ -481,6 +515,9 @@ export function completePresentationChange(
               ? PRESENTATION_RECONCILE_MS
               : (PRESENTATION_RETRY_MS[attempts - 1] ?? PRESENTATION_RECONCILE_MS))
         ).toISOString();
+  const reporter = readReporterPresentation(intake);
+  if (reporter)
+    metadata.reporter_presentation = { ...reporter, nextDueAt: success ? null : nextDueAt };
   analysis.presentation = {
     revision: claim.revision,
     attempts,
@@ -502,7 +539,15 @@ export function completePresentationChange(
         attempts,
         nextDueAt,
       });
-    } else analysis.handoff = { ...handoff, attempts, nextDueAt: nextDueAt ?? now.toISOString() };
+    } else
+      analysis.handoff = {
+        ...handoff,
+        ...(reporter && result.kind === 'published' && handoff.state !== 'pending'
+          ? { receipt: 'sent' as const }
+          : {}),
+        attempts,
+        nextDueAt: nextDueAt ?? now.toISOString(),
+      };
   }
   return { metadata: { ...metadata, analysis } as ReportIntake['metadata'], updated_at: now };
 }

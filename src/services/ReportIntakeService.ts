@@ -1,6 +1,8 @@
+import { IReportIntakePresentationService } from './ReportIntakePresentationService';
 import { formatReportIdentity } from '../utils/reportIdentityPresentation';
 import {
   projectReportIntakeState,
+  isRetryableReportSubmission,
   reportAnalysisMetadataSchema,
   type ReportCommand,
   type ReportSubmissionProgress,
@@ -95,6 +97,8 @@ export interface OpenReportIntakeInput {
 }
 
 export interface IReportIntakeService {
+  refreshPresentation?(intakeId: string): Promise<void>;
+  restoreFailedThreadClose?(before: ReportIntake, closed: ReportIntake): Promise<boolean>;
   publishSavedConfirmation(
     intakeId: string,
     message: Message,
@@ -116,6 +120,7 @@ export interface IReportIntakeService {
   confirmCandidate(input: {
     intakeId: string;
     targetUserId: string;
+    promptToken?: string;
     confirmedById: string;
     confirmedByStaff?: boolean;
     currentMember?: ReportDirectoryMember;
@@ -180,8 +185,15 @@ export class ReportIntakeService implements IReportIntakeService {
     @inject(TYPES.ThreadManager) private threadManager: IThreadManager,
     @inject(TYPES.ModerationQueueService)
     @optional()
-    private moderationQueueService?: IModerationQueueService
+    private moderationQueueService?: IModerationQueueService,
+    @inject(TYPES.ReportIntakePresentationService)
+    @optional()
+    private reporterPresentation?: IReportIntakePresentationService
   ) {}
+
+  async refreshPresentation(intakeId: string): Promise<void> {
+    await this.reporterPresentation?.reconcile(intakeId);
+  }
 
   async publishSavedConfirmation(
     intakeId: string,
@@ -190,6 +202,11 @@ export class ReportIntakeService implements IReportIntakeService {
   ): Promise<boolean> {
     const intake = await this.reportIntakeRepository.findById(intakeId);
     if (!intake || !(await this.canPublishSavedConfirmation(intake, claim))) return false;
+    if (this.reporterPresentation) {
+      if (claim) await this.reporterPresentation.presentClaim(claim);
+      else await this.reporterPresentation.reconcile(intakeId);
+      return true;
+    }
     const { analysis, metadata } = processingMetadata(intake);
     if (analysis.outcome?.kind !== 'confirm') return false;
     const candidate: ReportCandidate = {
@@ -469,46 +486,17 @@ export class ReportIntakeService implements IReportIntakeService {
     });
     if (result === 'recorded') {
       await this.retireConfirmationPrompts(intake, getReportConfirmationMessageIds(intake));
-      await this.acknowledgeStagedEvidence(intake.id, message);
+      await this.reporterPresentation
+        ?.reconcile(intake.id)
+        .catch((error) => console.warn('Report card update pending:', error));
     }
     return true;
-  }
-
-  private async acknowledgeStagedEvidence(intakeId: string, message: Message): Promise<void> {
-    if (!hasMessageSend(message.channel)) return;
-    const current = await this.reportIntakeRepository.findById(intakeId);
-    if (!current) return;
-    const metadata = toRecord(current.metadata);
-    if (metadata.evidence_acknowledgement) return;
-    const reserved = await this.reportIntakeRepository.updateIfCurrent(current, {
-      metadata: { ...metadata, evidence_acknowledgement: { state: 'reserved' } },
-    });
-    if (!reserved) return;
-    let state = 'sent';
-    try {
-      await message.channel.send({
-        content: 'Evidence saved.',
-        components: [],
-        allowedMentions: { parse: [] },
-      });
-    } catch {
-      state = 'failed';
-    }
-    for (let attempt = 0; attempt < REPORT_INTAKE_STATE_WRITE_ATTEMPTS; attempt++) {
-      const latest = await this.reportIntakeRepository.findById(intakeId);
-      if (!latest) return;
-      if (
-        await this.reportIntakeRepository.updateIfCurrent(latest, {
-          metadata: { ...toRecord(latest.metadata), evidence_acknowledgement: { state } },
-        })
-      )
-        return;
-    }
   }
 
   async confirmCandidate(input: {
     intakeId: string;
     targetUserId: string;
+    promptToken?: string;
     confirmedById: string;
     confirmedByStaff?: boolean;
     currentMember?: ReportDirectoryMember;
@@ -525,6 +513,12 @@ export class ReportIntakeService implements IReportIntakeService {
     if (!intake) {
       return { confirmed: false, message: 'This report could not be found.' };
     }
+    if (
+      toRecord(intake.metadata).reporter_presentation &&
+      input.promptMessageId === toRecord(intake.metadata).last_confirmation_prompt_message_id &&
+      input.promptToken !== toRecord(intake.metadata).last_confirmation_prompt_token
+    )
+      return { confirmed: false, message: 'Use the latest confirmation message in this thread.' };
     const confirmedByReporter = intake.reporter_id === input.confirmedById;
     if (!confirmedByReporter && input.confirmedByStaff !== true) {
       return {
@@ -540,6 +534,19 @@ export class ReportIntakeService implements IReportIntakeService {
         input.promptMessageId !== state.promptMessageId)
     )
       return { confirmed: false, message: 'Use the latest report review message.' };
+    if (isRetryableReportSubmission(state) && input.targetUserId === state.confirmedTargetUserId) {
+      const evidence = activeReportEvidence(
+        intake,
+        await this.reportIntakeRepository.listEvidence(intake.id)
+      );
+      return {
+        confirmed: true,
+        message: 'Retrying report submission.',
+        reporterId: intake.reporter_id,
+        reason: this.buildSubmissionReason(intake, evidence),
+        attachments: this.buildSubmissionAttachments(evidence),
+      };
+    }
     const adminSelection =
       input.confirmedByStaff === true &&
       intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION;
@@ -1078,6 +1085,24 @@ export class ReportIntakeService implements IReportIntakeService {
     await this.clearReportThreadAttention(input.intakeId);
   }
 
+  async restoreFailedThreadClose(before: ReportIntake, closed: ReportIntake): Promise<boolean> {
+    if (
+      before.id !== closed.id ||
+      before.evidence_revision !== closed.evidence_revision ||
+      before.confirmed_target_user_id !== closed.confirmed_target_user_id
+    )
+      return false;
+    // Only undo our exact close snapshot; never overwrite a concurrent report action.
+    const restored = await this.reportIntakeRepository.updateIfCurrent(closed, {
+      status: before.status,
+      closedAt: before.closed_at,
+      metadata: toRecord(before.metadata),
+    });
+    if (!restored) return false;
+    await this.refreshPresentation(before.id).catch(() => undefined);
+    return true;
+  }
+
   async closeIntakeForThread(input: {
     threadId: string;
     closedById: string;
@@ -1095,6 +1120,19 @@ export class ReportIntakeService implements IReportIntakeService {
         return {
           closed: false,
           message: 'Only the reporter or a moderator can close this report.',
+        };
+      const submission = projectReportIntakeState(intake).submission;
+      if (
+        toRecord(intake.metadata).reporter_presentation &&
+        !input.closeMode &&
+        submission &&
+        (submission.state === 'dispatching' ||
+          submission.state === 'unknown' ||
+          (submission.state === 'not_dispatched' && !submission.settledAt))
+      )
+        return {
+          closed: false,
+          message: 'Wait until the submission outcome is known before closing this thread.',
         };
       if (input.closeMode?.kind === 'resolve_submission') {
         const submission = projectReportIntakeState(intake).submission;
@@ -1937,6 +1975,7 @@ export function getReportConfirmationUnavailableMessage(intake: ReportIntake): s
     intake.status !== ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION
   )
     return 'This report is closed.';
+  if (isRetryableReportSubmission(projectReportIntakeState(intake))) return null;
   if (intake.confirmed_target_user_id)
     return 'A person is already selected. Submission is not confirmed. No second report was submitted.';
   if (intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION)

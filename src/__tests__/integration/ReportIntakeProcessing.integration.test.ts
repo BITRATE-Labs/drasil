@@ -63,6 +63,50 @@ describeIntegration('durable report intake processing', () => {
     return { prisma, repository, intake, batch };
   }
 
+  it('serializes reporter presentation claims and rejects a stale claim after submission', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    const claims = await Promise.all([
+      f.repository.claimPendingPresentation(now, f.intake.id),
+      f.repository.claimPendingPresentation(now, f.intake.id),
+    ]);
+    const claim = claims.find(Boolean)!;
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    await f.repository.update(f.intake.id, { status: ReportIntakeStatus.SUBMITTED });
+    expect(await f.repository.completePresentation(claim, { kind: 'published' })).toBe(false);
+    const next = await f.repository.claimPendingPresentation(
+      new Date(Date.now() + 61000),
+      f.intake.id
+    );
+    expect(next?.intake.status).toBe(ReportIntakeStatus.SUBMITTED);
+    expect(await f.repository.completePresentation(next!, { kind: 'published' })).toBe(true);
+    const saved = await f.repository.findById(f.intake.id);
+    expect(saved?.metadata).toMatchObject({ reporter_presentation: { nextDueAt: null } });
+  });
+
+  it('preserves durable message IDs when new evidence retires confirmation authority', async () => {
+    const f = await fixture({
+      reporter_presentation: {
+        openingMessageId: 'opening',
+        followupMessageId: 'followup',
+        nextDueAt: null,
+      },
+      last_confirmation_prompt_token: 'old',
+      last_confirmation_prompt_message_id: 'followup',
+    });
+    await f.repository.recordEvidenceBatch(f.batch);
+    const saved = await f.repository.findById(f.intake.id);
+    expect(saved?.metadata).toMatchObject({
+      reporter_presentation: {
+        openingMessageId: 'opening',
+        followupMessageId: 'followup',
+        nextDueAt: expect.any(String),
+      },
+    });
+    expect(
+      (saved?.metadata as Record<string, unknown>).last_confirmation_prompt_token
+    ).toBeUndefined();
+  });
+
   it.each([
     'corrupt',
     ['corrupt'],

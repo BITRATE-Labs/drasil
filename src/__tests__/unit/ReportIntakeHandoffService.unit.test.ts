@@ -1,3 +1,4 @@
+import { ReportIntakePresentationService } from '../../services/ReportIntakePresentationService';
 import { reportHandoffReasonSchema, type ReportAnalysisOutcome } from '@drasil/application';
 import {
   Client,
@@ -62,7 +63,11 @@ async function fixture(
     id: 'thread',
     guildId: 'guild',
     messages: {
-      fetch: jest.fn(async () => new Collection(sent.map((message) => [message.id, message]))),
+      fetch: jest.fn(async (id?: unknown) =>
+        typeof id === 'string'
+          ? sent.find((message) => message.id === id)
+          : new Collection(sent.map((message) => [message.id, message]))
+      ),
     },
     send: jest.fn(async (payload: MessageCreateOptions) => {
       const message = {
@@ -70,8 +75,10 @@ async function fixture(
         channelId: 'thread',
         author: { id: 'bot' },
         createdTimestamp: Date.now(),
+        components: payload.components ?? [],
+        edit: jest.fn().mockResolvedValue(undefined),
         embeds: (payload.embeds as EmbedBuilder[]).map((embed) => embed.toJSON()),
-      } as Message;
+      } as unknown as Message;
       sent.push(message);
       return message;
     }),
@@ -268,5 +275,57 @@ describe('saved report handoff', () => {
     expect(
       processingMetadata((await repository.findById(intake.id))!).analysis.presentation?.nextDueAt
     ).toBe('2026-11-03T00:00:30.000Z');
+  });
+});
+
+it('delivers staff review before one shared receipt and persists receipt completion', async () => {
+  const f = await fixture();
+  await f.repository.update(f.intake.id, {
+    metadata: { ...(f.intake.metadata as object), workflow: 'staged' },
+  });
+  const presenter = new ReportIntakePresentationService(
+    f.repository,
+    f.client as unknown as Client
+  );
+  const service = new ReportIntakeHandoffService(
+    f.repository,
+    f.queue as unknown as IModerationQueueService,
+    f.client as unknown as Client,
+    f.intakeService as unknown as IReportIntakeService,
+    f.threads as unknown as IThreadManager,
+    presenter
+  );
+  await service.publishOutcome(f.intake.id);
+  expect(f.queue.upsertReportIdentityReview).toHaveBeenCalledTimes(1);
+  expect(f.channel.send).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(f.channel.send.mock.calls[0])).toContain('Sent to moderators');
+  expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
+    analysis: { handoff: { state: 'delivered', receipt: 'sent' } },
+  });
+  await service.publishOutcome(f.intake.id);
+  expect(f.channel.send).toHaveBeenCalledTimes(1);
+});
+it('does not claim moderators have the report when staff delivery fails', async () => {
+  const f = await fixture();
+  await f.repository.update(f.intake.id, {
+    metadata: { ...(f.intake.metadata as object), workflow: 'staged' },
+  });
+  f.queue.upsertReportIdentityReview.mockRejectedValue(new Error('Forbidden'));
+  const presenter = new ReportIntakePresentationService(
+    f.repository,
+    f.client as unknown as Client
+  );
+  const service = new ReportIntakeHandoffService(
+    f.repository,
+    f.queue as unknown as IModerationQueueService,
+    f.client as unknown as Client,
+    f.intakeService as unknown as IReportIntakeService,
+    f.threads as unknown as IThreadManager,
+    presenter
+  );
+  await service.publishOutcome(f.intake.id);
+  expect(f.channel.send).not.toHaveBeenCalled();
+  expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
+    analysis: { handoff: { state: 'pending', receipt: 'pending' } },
   });
 });

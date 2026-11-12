@@ -1,3 +1,4 @@
+import { scheduleReporterChange } from '../../utils/reportIntakePresentationMetadata';
 import { getReportIntakeSettings } from '../../utils/reportIntakeSettings';
 import {
   analysisClaimChange,
@@ -1619,7 +1620,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
             sourceAuthorId: input.sourceAuthorId,
           } as ReportIntakeEvidence['metadata'],
         });
-    Object.assign(intake, result.change);
+    Object.assign(intake, scheduleReporterChange(intake, result.change));
     return result.result;
   }
   async claimPendingPresentation(
@@ -1635,7 +1636,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
         continue;
       const result = presentationClaimChange(intake, now);
       if (!result) continue;
-      Object.assign(intake, result.change);
+      Object.assign(intake, scheduleReporterChange(intake, result.change));
       return result.claim;
     }
     return null;
@@ -1672,7 +1673,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
       if (scanned++ >= ANALYSIS_CLAIM_SCAN_LIMIT) break;
       const result = analysisClaimChange(intake, now, leaseMs);
       if (result) {
-        Object.assign(intake, result.change);
+        Object.assign(intake, scheduleReporterChange(intake, result.change));
         if (result.claim) return structuredClone(result.claim);
       }
     }
@@ -1882,6 +1883,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
           : existing.metadata,
       updated_at: new Date(),
     };
+    Object.assign(updated, scheduleReporterChange(this.intakes[index], updated));
     this.intakes[index] = updated;
     return { ...updated };
   }
@@ -1933,6 +1935,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
       metadata: data.metadata as ReportIntake['metadata'],
       updated_at: new Date(),
     };
+    Object.assign(updated, scheduleReporterChange(this.intakes[index], updated));
     this.intakes[index] = updated;
     return { ...updated };
   }

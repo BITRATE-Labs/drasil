@@ -1245,6 +1245,23 @@ describe('ReportInteractionHandler (unit)', () => {
       return { interaction, thread };
     };
 
+    it('asks before closing a card-based report', async () => {
+      const service = createReportIntakeService();
+      service.findIntakeById.mockResolvedValue(
+        buildReportIntake({
+          metadata: { reporter_presentation: { openingMessageId: 'opening', nextDueAt: null } },
+        })
+      );
+      const { interaction, thread } = buildThreadCloseInteraction('reporter-1');
+      prepareReportClient(client, interaction);
+      await createHandler(service).handleReportIntakeAdminAction(interaction, interaction.customId);
+      expect(service.closeIntakeForThread).not.toHaveBeenCalled();
+      expect(thread.setArchived).not.toHaveBeenCalled();
+      expect(JSON.stringify((interaction.editReply as jest.Mock).mock.calls)).toContain(
+        'Close this report?'
+      );
+    });
+
     it.each([
       'Report cancelled. No report was submitted.',
       'The selected person remains recorded for moderator review.',
@@ -1342,6 +1359,30 @@ describe('ReportInteractionHandler (unit)', () => {
         allowedMentions: { parse: [] },
       });
       expect((interaction.message as any).edit).toHaveBeenCalledWith({ components: [] });
+    });
+  });
+
+  it('rejects an older token when the same confirmation message is reused', async () => {
+    const service = createReportIntakeService();
+    service.findIntakeById.mockResolvedValue(
+      buildReportIntake({
+        status: ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION,
+        thread_id: 'thread-1',
+        metadata: {
+          last_confirmation_prompt_message_id: 'prompt-1',
+          last_confirmation_prompt_token: 'current',
+          last_confirmation_prompt_candidate_ids: ['user-1'],
+          reporter_presentation: { followupMessageId: 'prompt-1', nextDueAt: null },
+        },
+      })
+    );
+    const interaction = buildInteraction('report_intake_confirm:intake-1:user-1:old', 'guild-1', {
+      id: 'reporter-1',
+    } as User);
+    await createHandler(service).handleReportIntakeConfirm(interaction, interaction.customId);
+    expect(service.confirmCandidate).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: 'Use the latest confirmation message in this thread.',
     });
   });
 

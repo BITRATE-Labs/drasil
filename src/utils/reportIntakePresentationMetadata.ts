@@ -1,0 +1,55 @@
+import { z } from 'zod';
+import type { ReportIntake } from '../repositories/types';
+
+export const reporterPresentationSchema = z.object({
+  openingMessageId: z.string().optional(),
+  followupMessageId: z.string().optional(),
+  nextDueAt: z.string().nullable().default(null),
+  pendingSend: z
+    .object({
+      slot: z.enum(['openingMessageId', 'followupMessageId']),
+      revision: z.number().int().nonnegative(),
+      reservedAt: z.string(),
+      title: z.string(),
+    })
+    .optional(),
+});
+export type ReporterPresentation = z.infer<typeof reporterPresentationSchema>;
+export function reportRoot(intake: ReportIntake): Record<string, unknown> {
+  const parsed = z.record(z.string(), z.unknown()).safeParse(intake.metadata ?? {});
+  return parsed.success ? parsed.data : {};
+}
+export function readReporterPresentation(intake: ReportIntake): ReporterPresentation | null {
+  const value = reportRoot(intake).reporter_presentation;
+  return value === undefined ? null : reporterPresentationSchema.parse(value);
+}
+export function reporterViewKey(intake: ReportIntake): string {
+  const m = reportRoot(intake);
+  const a = m.analysis as Record<string, unknown> | undefined;
+  return JSON.stringify([
+    intake.status,
+    intake.closed_at,
+    intake.evidence_revision,
+    intake.analysis_revision,
+    intake.confirmed_target_user_id,
+    m.submission,
+    m.thread_closed_at,
+    a?.outcome,
+    (a?.handoff as { state?: string } | undefined)?.state,
+  ]);
+}
+export function scheduleReporterChange(
+  intake: ReportIntake,
+  change: Partial<ReportIntake>
+): Partial<ReportIntake> {
+  const next = { ...intake, ...change };
+  const presentation = readReporterPresentation(next);
+  if (!presentation || reporterViewKey(intake) === reporterViewKey(next)) return change;
+  return {
+    ...change,
+    metadata: {
+      ...reportRoot(next),
+      reporter_presentation: { ...presentation, nextDueAt: new Date().toISOString() },
+    } as ReportIntake['metadata'],
+  };
+}

@@ -1,4 +1,6 @@
-import { inject, injectable } from 'inversify';
+import { projectReportIntakeState } from '@drasil/application';
+import { IReportIntakePresentationService } from './ReportIntakePresentationService';
+import { inject, injectable, optional } from 'inversify';
 import { Client, EmbedBuilder } from 'discord.js';
 import { TYPES } from '../di/symbols';
 import { IReportIntakeRepository } from '../repositories/ReportIntakeRepository';
@@ -22,7 +24,10 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
     @inject(TYPES.ModerationQueueService) private queue: IModerationQueueService,
     @inject(TYPES.DiscordClient) private client: Client,
     @inject(TYPES.ReportIntakeService) private intakeService: IReportIntakeService,
-    @inject(TYPES.ThreadManager) private threads: IThreadManager
+    @inject(TYPES.ThreadManager) private threads: IThreadManager,
+    @inject(TYPES.ReportIntakePresentationService)
+    @optional()
+    private reporterPresentation?: IReportIntakePresentationService
   ) {}
   async deliverPending(limit = 5): Promise<number> {
     let delivered = 0;
@@ -63,6 +68,35 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
     const current = await this.repository.findById(claim.intake.id);
     if (!current || !ownsPresentation(current, claim, new Date())) return;
     const { analysis } = presentationMetadata(current);
+    if (this.reporterPresentation && projectReportIntakeState(current).staged) {
+      if (
+        analysis.outcome?.kind === 'admin_review' &&
+        current.status === 'needs_admin_confirmation' &&
+        !current.closed_at
+      ) {
+        const result = await this.queue.upsertReportIdentityReview({
+          intake: current,
+          outcome: analysis.outcome,
+          revision: claim.revision,
+        });
+        if (!result.delivered || !result.channelId || !result.messageId)
+          throw new Error('Report review delivery pending');
+        if (
+          !(await this.repository.completePresentation(claim, {
+            kind: 'delivered',
+            channelId: result.channelId,
+            messageId: result.messageId,
+            receipt: 'pending',
+          }))
+        )
+          return;
+        await this.reporterPresentation.reconcile(current.id);
+      } else {
+        await this.reporterPresentation.presentClaim(claim);
+        await this.repository.completePresentation(claim, { kind: 'published' });
+      }
+      return;
+    }
     if (!analysis.outcome) return;
     if (analysis.outcome.kind === 'confirm') {
       await this.publishConfirmation(claim);

@@ -1,4 +1,8 @@
 import {
+  IReportIntakePresentationService,
+  ReportIntakePresentationService,
+} from '../services/ReportIntakePresentationService';
+import {
   IReportIntakeHandoffService,
   ReportIntakeHandoffService,
 } from '../services/ReportIntakeHandoffService';
@@ -439,6 +443,10 @@ function configureServices(container: Container): void {
     .to(ReportCandidateService)
     .inSingletonScope();
 
+  container
+    .bind<IReportIntakePresentationService>(TYPES.ReportIntakePresentationService)
+    .to(ReportIntakePresentationService)
+    .inSingletonScope();
   container
     .bind<IReportIntakeService>(TYPES.ReportIntakeService)
     .to(ReportIntakeService)

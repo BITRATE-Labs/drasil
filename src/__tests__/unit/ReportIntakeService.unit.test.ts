@@ -146,6 +146,55 @@ describe('ReportIntakeService', () => {
     return { ...setup, intake, prompt, send, message };
   }
 
+  it('restores an unchanged draft after a verified archive failure', async () => {
+    const f = await preparePrompt();
+    const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    await f.service.closeIntakeForThread({ threadId: 'thread-1', closedById: 'reporter-1' });
+    const closed = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    expect(await f.service.restoreFailedThreadClose(before, closed)).toBe(true);
+    expect(await f.reportIntakeRepository.findById(f.intake.id)).toMatchObject({
+      status: before.status,
+      closed_at: null,
+    });
+  });
+  it('does not undo a concurrent change while recovering a failed close', async () => {
+    const f = await preparePrompt();
+    const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    await f.service.closeIntakeForThread({ threadId: 'thread-1', closedById: 'reporter-1' });
+    const closed = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    await f.reportIntakeRepository.update(f.intake.id, { metadata: { other_action: true } });
+    expect(await f.service.restoreFailedThreadClose(before, closed)).toBe(false);
+    expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toMatchObject({
+      other_action: true,
+    });
+  });
+
+  it.each(['dispatching', 'unknown'])(
+    'does not close a report with an unresolved %s submission',
+    async (state) => {
+      const f = await preparePrompt();
+      await f.reportIntakeRepository.update(f.intake.id, {
+        status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+        confirmedTargetUserId: 'target',
+        metadata: {
+          reporter_presentation: { nextDueAt: null },
+          submission: {
+            state,
+            token: 'token',
+            targetUserId: 'target',
+            claimedAt: new Date().toISOString(),
+            dispatchedAt: new Date().toISOString(),
+            settledAt: new Date().toISOString(),
+          },
+        },
+      });
+      expect(
+        await f.service.closeIntakeForThread({ threadId: 'thread-1', closedById: 'reporter-1' })
+      ).toMatchObject({ closed: false });
+      expect((await f.reportIntakeRepository.findById(f.intake.id))?.closed_at).toBeNull();
+    }
+  );
+
   async function stagedSetup() {
     const setup = await preparePrompt();
     jest.mocked(setup.configService.getServerConfig).mockResolvedValue({
@@ -403,7 +452,7 @@ describe('ReportIntakeService', () => {
     expect(prompt.edit).toHaveBeenCalledWith({ components: [] });
   });
 
-  it('saves one complete screenshot-only revision before acknowledging once', async () => {
+  it('saves one complete screenshot-only revision without a separate acknowledgment', async () => {
     const {
       service,
       reportIntakeRepository,
@@ -426,7 +475,7 @@ describe('ReportIntakeService', () => {
     expect(await reportIntakeRepository.listEvidence(intake.id)).toEqual([
       expect.objectContaining({ kind: ReportIntakeEvidenceKind.SCREENSHOT }),
     ]);
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
     expect(candidateService.resolvePlatformBackedCandidates).not.toHaveBeenCalled();
     expect(moderationQueueService.recordReportThreadAttention).not.toHaveBeenCalled();
   });
@@ -880,7 +929,7 @@ describe('ReportIntakeService', () => {
     });
   });
 
-  it('acknowledges concurrent distinct evidence batches only once', async () => {
+  it('saves concurrent distinct evidence without acknowledgment messages', async () => {
     const { service, reportIntakeRepository, intake, message, send } = await stagedSetup();
     await Promise.all([
       service.handleThreadMessage(message),
@@ -889,16 +938,15 @@ describe('ReportIntakeService', () => {
     expect(await reportIntakeRepository.findById(intake.id)).toMatchObject({
       evidence_revision: 2,
     });
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it('keeps accepted evidence when the initial acknowledgement fails', async () => {
+  it('keeps accepted evidence without requiring a separate acknowledgment', async () => {
     const { service, reportIntakeRepository, intake, message, send } = await stagedSetup();
     send.mockRejectedValue(new Error('transport unavailable'));
     await expect(service.handleThreadMessage(message)).resolves.toBe(true);
     expect(await reportIntakeRepository.findById(intake.id)).toMatchObject({
       evidence_revision: 1,
-      metadata: { evidence_acknowledgement: { state: 'failed' } },
     });
     expect(await reportIntakeRepository.listEvidence(intake.id)).toHaveLength(2);
   });

@@ -1,3 +1,4 @@
+import { readReporterPresentation } from '../../utils/reportIntakePresentationMetadata';
 import {
   reportDirectoryMember,
   type ReportDirectoryMember,
@@ -137,6 +138,7 @@ export function createBotReportActions(
         return intakes.confirmCandidate({
           intakeId: command.intakeId,
           targetUserId: command.targetUserId,
+          promptToken: command.promptToken,
           confirmedById: actorId(context),
           confirmedByStaff: staff,
           ...(currentMember ? { currentMember } : {}),
@@ -258,6 +260,7 @@ export function createBotReportActions(
             .catch(() => ({ id: intake.reporterId, username: 'unknown', tag: 'unknown' }) as User);
           if (token && !(await intakes.beginConfirmedSubmission(intake.id, token)))
             throw new ActionDeniedError('stale_state');
+          await intakes.refreshPresentation?.(intake.id).catch(() => undefined);
           dispatched = true;
           const result = await submission.submitConfirmedReportIntake(
             member,
@@ -310,6 +313,33 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
       const loadedThread = await thread(intake.threadId);
       if (loadedThread.guildId !== context.guildId)
         throw new Error('Report intake thread does not belong to this server.');
+      const current = await deps.reportIntakeService.findIntakeById(intake.id);
+      if (current && readReporterPresentation(current))
+        return {
+          finish: async (result): Promise<{ archived: boolean; message: string }> => {
+            let archived = loadedThread.archived ?? false;
+            const closed = await deps.reportIntakeService.findIntakeById(intake.id);
+            try {
+              if (result.shouldArchiveThread && !archived) {
+                await loadedThread.setArchived(true, 'Report intake closed');
+                archived = true;
+              }
+              if (archived) await deps.reportIntakeService.refreshPresentation?.(intake.id);
+            } catch (error) {
+              console.warn('Report thread close pending:', error);
+              const verified = await loadedThread.fetch(true).catch(() => null);
+              archived = verified?.archived === true;
+              if (verified && !verified.archived && closed)
+                await deps.reportIntakeService.restoreFailedThreadClose?.(current, closed);
+              if (archived)
+                await deps.reportIntakeService
+                  .refreshPresentation?.(intake.id)
+                  .catch(() => undefined);
+            }
+            if (!archived) throw new Error("Couldn't close the thread. Try again.");
+            return { archived, message: result.message };
+          },
+        };
       return { finish: async (result) => finishReportThreadClose(loadedThread, result) };
     },
     async create(
@@ -368,6 +398,10 @@ async function notifySubmitted(
 ): Promise<void> {
   try {
     const current = await deps.reportIntakeService.findIntakeById(intake.id);
+    if (current && readReporterPresentation(current)) {
+      await deps.reportIntakeService.refreshPresentation?.(intake.id);
+      return;
+    }
     const channel = intake.threadId
       ? await deps.client.channels.fetch(intake.threadId).catch(() => null)
       : null;

@@ -138,3 +138,19 @@ Run `src/__tests__/integration/ReportIntakeStagedFlow.integration.test.ts` only 
 Run `node -r ts-node/register src/scripts/evaluateReportIntake.ts` to validate the synthetic PNG assets and labels with zero provider requests. Paid execution requires separate approval and `--execute-paid`. The tool never creates a Discord client or performs moderation.
 
 See the [acceptance report and controlled rollout checklist](superpowers/reports/2026-11-03-staged-report-intake-acceptance.md) for actual results, live checks still pending, rollout/rollback steps and the known failed-submission recovery limitation. Local mocks are not live acceptance.
+
+## Report thread cards
+
+For staged report intake, verify with synthetic evidence in an isolated local dev bot:
+
+- Opening instructions become progress; evidence produces no separate acknowledgment.
+- First account confirmation appears below evidence and mentions only the reporter once.
+- Later evidence invalidates old controls immediately, including old tokens on a reused message.
+- Confirmation becomes the receipt; no extra public or private success messages, raw IDs, or receipt GUIDs.
+- No match or rejection delivers staff review before displaying the moderator receipt.
+- Definitely undispatched failures may retry the existing submission; unknown outcomes cannot.
+- Closing first asks privately. Cancel preserves current status. A verified archive failure restores an unchanged draft; concurrent changes are never rolled back.
+- Restart or deletion of a bot-owned card recovers without another mention. Permission failures and incomplete history never trigger replacement sends.
+- Existing non-staged reports retain their multiple-candidate flow.
+
+Live preview testing stops before submission or moderation unless separately authorized. Final receipts and dispatch failures can be exercised with repository fakes and an isolated test database.

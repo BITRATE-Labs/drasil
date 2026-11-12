@@ -1,3 +1,4 @@
+import { isRetryableReportSubmission } from './intakeState';
 import {
   hasAuthority,
   hasStaffAuthority,
@@ -192,17 +193,31 @@ export function createReportActions(deps: ReportDependencies): ReportActions {
         outcome: {
           kind: command.kind,
           status: result.closed ? 'closed' : claimed ? 'busy' : 'not_closed',
-          result: { ...result, ...(closed ? { message: closed.message } : {}) },
+          result: {
+            ...result,
+            ...(closed ? { message: closed.message } : {}),
+          },
           intake,
           ...(closed ? { archived: closed.archived } : {}),
         },
       };
     }
+    if (
+      command.kind === 'confirm_intake_candidate' &&
+      command.promptToken !== undefined &&
+      command.promptToken !== intake.promptToken
+    )
+      return { kind: 'denied', code: 'stale_state' };
+    const retry =
+      command.kind === 'confirm_intake_candidate' &&
+      isRetryableReportSubmission(intake) &&
+      command.targetUserId === intake.confirmedTargetUserId;
     if (intake.threadId !== command.threadId) return { kind: 'denied', code: 'binding_mismatch' };
     if (
       (intake.status !== 'needs_reporter_confirmation' &&
-        !(isStaff && intake.status === 'needs_admin_confirmation')) ||
-      intake.confirmedTargetUserId ||
+        !(isStaff && intake.status === 'needs_admin_confirmation') &&
+        !retry) ||
+      (intake.confirmedTargetUserId && !retry) ||
       intake.promptMessageId !== command.promptMessageId
     )
       return { kind: 'denied', code: 'confirmation_required' };

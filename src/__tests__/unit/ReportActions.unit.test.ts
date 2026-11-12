@@ -189,3 +189,37 @@ it('passes uncached current identity fields to the staged confirmation service',
     })
   );
 });
+
+it.each([true, false])(
+  'restores failed card closure only when unarchived state is verified: %s',
+  async (verified) => {
+    const f = fixture();
+    f.intake.metadata = { workflow: 'staged', reporter_presentation: { nextDueAt: null } };
+    const before = { ...f.intake };
+    let current = f.intake;
+    f.intakes.findIntakeById.mockImplementation(async () => current);
+    f.intakes.closeIntakeForThread.mockImplementation(async () => {
+      current = {
+        ...current,
+        status: ReportIntakeStatus.CLOSED_BY_REPORTER,
+        closed_at: new Date(),
+      };
+      return { closed: true, shouldArchiveThread: true, message: 'Closed' };
+    });
+    const thread = {
+      guildId: 'guild',
+      isThread: () => true,
+      archived: false,
+      setArchived: jest.fn().mockRejectedValue(new Error('archive failed')),
+      fetch: verified
+        ? jest.fn().mockResolvedValue({ archived: false })
+        : jest.fn().mockRejectedValue(new Error('unknown')),
+    };
+    jest.spyOn(f.client.channels, 'fetch').mockResolvedValue(thread as never);
+    await expect(
+      f.actions.execute(context, { kind: 'close_report_intake', intakeId: 'intake' })
+    ).rejects.toThrow("Couldn't close");
+    if (verified) expect(f.intakes.restoreFailedThreadClose).toHaveBeenCalledWith(before, current);
+    else expect(f.intakes.restoreFailedThreadClose).not.toHaveBeenCalled();
+  }
+);

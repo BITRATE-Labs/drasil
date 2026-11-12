@@ -10,20 +10,27 @@ export interface ReportHistoryChannel {
 export async function findAuthoredReportMessage(
   channel: ReportHistoryChannel,
   authorId: string,
-  marker: string,
+  marker: string | ((message: Message) => boolean),
   since: Date
 ): Promise<Message | null> {
   let before: string | undefined;
+  let recovered: Message | null = null;
   for (let page = 0; page < 10; page++) {
     const messages = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
-    const found = messages.find(
-      (message) =>
-        message.author.id === authorId &&
-        message.embeds.some((embed) => embed.footer?.text === marker)
-    );
-    if (found) return found;
+    for (const message of messages.values()) {
+      if (message.author.id !== authorId) continue;
+      const matches =
+        typeof marker === 'string'
+          ? message.embeds.some((embed) => embed.footer?.text === marker)
+          : marker(message);
+      if (!matches) continue;
+      if (typeof marker === 'string') return message;
+      if (recovered && recovered.id !== message.id)
+        throw new Error('Report presentation history is ambiguous');
+      recovered = message;
+    }
     const last = messages.last();
-    if (!last || messages.size < 100 || last.createdTimestamp < since.getTime()) return null;
+    if (!last || messages.size < 100 || last.createdTimestamp < since.getTime()) return recovered;
     before = last.id;
   }
   throw new Error('Report presentation history is incomplete');

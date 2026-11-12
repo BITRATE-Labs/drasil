@@ -1,3 +1,5 @@
+import { reporterPresentationSchema } from '../utils/reportIntakePresentationMetadata';
+import { scheduleReporterChange } from '../utils/reportIntakePresentationMetadata';
 import { getReportIntakeSettings } from '../utils/reportIntakeSettings';
 import type { ReportAnalysisOutcome } from '@drasil/application';
 import {
@@ -107,6 +109,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     intake: ReportIntake,
     change: Partial<ReportIntake>
   ): Promise<void> {
+    change = scheduleReporterChange(intake, change);
     await transaction.report_intakes.update({
       where: { id: intake.id },
       data: {
@@ -177,6 +180,21 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     now: Date,
     intakeId?: string
   ): Promise<ReportPresentationClaim | null> {
+    const reporter = await this.prisma.$transaction(async (transaction) => {
+      const rows = await transaction.$queryRaw<ReportIntake[]>`SELECT * FROM report_intakes
+        WHERE (${intakeId ?? null}::uuid IS NULL OR id = ${intakeId ?? null}::uuid)
+        AND metadata->'reporter_presentation'->>'nextDueAt' <= ${now.toISOString()}
+        AND (metadata->'analysis'->'presentation'->'lease'->>'until' IS NULL OR metadata->'analysis'->'presentation'->'lease'->>'until' <= ${now.toISOString()})
+        ORDER BY updated_at, id FOR UPDATE SKIP LOCKED LIMIT ${ANALYSIS_CLAIM_SCAN_LIMIT}`;
+      for (const intake of rows) {
+        const result = presentationClaimChange(intake, now);
+        if (!result) continue;
+        await this.writeProcessing(transaction, intake, result.change);
+        return result.claim;
+      }
+      return null;
+    });
+    if (reporter) return reporter;
     const quarantined = await this.claimQuarantinedPresentation(now, intakeId);
     if (quarantined) return quarantined;
     return this.prisma.$transaction(async (transaction) => {
@@ -432,45 +450,8 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
   }
 
   async update(id: string, data: ReportIntakeUpdate): Promise<ReportIntake | null> {
-    try {
-      const updateData: Prisma.report_intakesUpdateManyMutationInput = {
-        updated_at: new Date(),
-      };
-
-      if (data.status !== undefined) {
-        updateData.status = data.status as report_intake_status;
-      }
-      if (data.summary !== undefined) {
-        updateData.summary = data.summary;
-      }
-      if (data.confirmedTargetUserId !== undefined) {
-        updateData.confirmed_target_user_id = data.confirmedTargetUserId;
-      }
-      if (data.closedAt !== undefined) {
-        updateData.closed_at = data.closedAt;
-      }
-      if (data.metadata !== undefined) {
-        updateData.metadata = data.metadata as Prisma.InputJsonValue;
-      }
-
-      const updated = await this.prisma.report_intakes.updateManyAndReturn({
-        where: {
-          id,
-          OR: [
-            { metadata: { path: ['report_ban_operation_id'], equals: Prisma.AnyNull } },
-            { metadata: { path: ['report_ban_operation_id'], equals: '' } },
-          ],
-        },
-        data: updateData,
-      });
-      return (updated[0] as ReportIntake | undefined) ?? null;
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
-        console.warn(`Attempted to update non-existent report intake: ${id}`);
-        return null;
-      }
-      this.handleError(error, 'updateReportIntake');
-    }
+    const current = await this.findById(id);
+    return current ? this.updateIfCurrent(current, data) : null;
   }
 
   async updateIfCurrent(
@@ -478,6 +459,19 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     data: ReportIntakeUpdate
   ): Promise<ReportIntake | null> {
     try {
+      const scheduled = scheduleReporterChange(intake, {
+        ...intake,
+        status: data.status ?? intake.status,
+        closed_at: data.closedAt === undefined ? intake.closed_at : data.closedAt,
+        confirmed_target_user_id:
+          data.confirmedTargetUserId === undefined
+            ? intake.confirmed_target_user_id
+            : data.confirmedTargetUserId,
+        metadata: (data.metadata === undefined
+          ? intake.metadata
+          : data.metadata) as ReportIntake['metadata'],
+      });
+      data = { ...data, metadata: scheduled.metadata as Record<string, unknown> };
       const updated = await this.prisma.report_intakes.updateManyAndReturn({
         where: {
           id: intake.id,
@@ -540,7 +534,17 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
         },
         data: {
           confirmed_target_user_id: data.targetUserId,
-          metadata: data.metadata as Prisma.InputJsonValue,
+          metadata: {
+            ...data.metadata,
+            ...(data.metadata.reporter_presentation
+              ? {
+                  reporter_presentation: {
+                    ...reporterPresentationSchema.parse(data.metadata.reporter_presentation),
+                    nextDueAt: new Date().toISOString(),
+                  },
+                }
+              : {}),
+          } as Prisma.InputJsonValue,
           updated_at: new Date(),
         },
       });

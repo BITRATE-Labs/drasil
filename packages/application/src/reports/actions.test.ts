@@ -512,3 +512,65 @@ it.each(['staff', 'reporter', 'wrong token', 'changed evidence', 'mcp'] as const
     expect(f.submissionCount()).toBe(0);
   }
 );
+it.each(['unknown', 'dispatching', 'accepted'] as const)(
+  'never retries a %s submission',
+  async (state) => {
+    const f = fixture();
+    f.intake.status = 'needs_admin_confirmation';
+    f.intake.confirmedTargetUserId = 'target';
+    f.intake.submission = {
+      token: 'same-token',
+      targetUserId: 'target',
+      state,
+      claimedAt: '2026-11-12T00:00:00.000Z',
+      dispatchedAt: '2026-11-12T00:00:01.000Z',
+      settledAt: '2026-11-12T00:00:02.000Z',
+    };
+    const result = await f.actions.execute(context, {
+      kind: 'confirm_intake_candidate',
+      intakeId: 'intake',
+      threadId: 'thread',
+      promptMessageId: 'current',
+      promptToken: 'token',
+      targetUserId: 'target',
+    });
+    expect(result.kind).toBe('denied');
+    expect(f.submissionCount()).toBe(0);
+  }
+);
+it('retries a settled undispatched submission through the same action boundary', async () => {
+  const f = fixture();
+  f.intake.status = 'needs_admin_confirmation';
+  f.intake.confirmedTargetUserId = 'target';
+  f.intake.submission = {
+    token: 'same-token',
+    targetUserId: 'target',
+    state: 'not_dispatched',
+    claimedAt: '2026-11-12T00:00:00.000Z',
+    settledAt: '2026-11-12T00:00:02.000Z',
+  };
+  const result = await f.actions.execute(context, {
+    kind: 'confirm_intake_candidate',
+    intakeId: 'intake',
+    threadId: 'thread',
+    promptMessageId: 'current',
+    promptToken: 'token',
+    targetUserId: 'target',
+  });
+  expect(result.kind).toBe('outcome');
+  expect(f.submissionCount()).toBe(1);
+  expect(f.intake.submission.token).toBe('same-token');
+});
+it('rejects a stale provided token even when the message ID is unchanged', async () => {
+  const f = fixture();
+  const result = await f.actions.execute(context, {
+    kind: 'confirm_intake_candidate',
+    intakeId: 'intake',
+    threadId: 'thread',
+    promptMessageId: 'current',
+    promptToken: 'old',
+    targetUserId: 'target',
+  });
+  expect(result.kind).toBe('denied');
+  expect(f.submissionCount()).toBe(0);
+});

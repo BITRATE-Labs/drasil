@@ -1,3 +1,5 @@
+import { buildReportIntakePresentation } from '../utils/reportIntakePresentation';
+import { readReporterPresentation, reportRoot } from '../utils/reportIntakePresentationMetadata';
 import { requestSlashCommandConfirmation } from '../utils/slashCommandConfirmations';
 import {
   reportAnalysisMetadataSchema,
@@ -43,6 +45,7 @@ import { formatInlineIdentifier } from '../utils/discordUserIdentity';
 import { REPORT_MESSAGE_REASON_FIELD_ID } from '../utils/userReportSettings';
 import { canModerateReportIntake } from '../utils/reportIntakeStaffAuthorization';
 import {
+  buildReportIntakeAdminActionCustomId,
   buildReportIntakeAdminBanCustomId,
   buildReportIntakeReviewCustomId,
   type ParsedReportIntakeAdminActionCustomId,
@@ -175,7 +178,7 @@ export class ReportInteractionHandler {
         return;
       }
 
-      const [, intakeId, targetUserId] = customId.split(':');
+      const [, intakeId, targetUserId, promptToken] = customId.split(':');
       if (!intakeId || !targetUserId) {
         await interaction.editReply({ content: 'This report confirmation button is invalid.' });
         return;
@@ -187,6 +190,15 @@ export class ReportInteractionHandler {
 
       const context = await this.resolveReportConfirmationContext(interaction, intakeId);
       if (!context) return;
+      if (
+        readReporterPresentation(context.intake) &&
+        promptToken !== reportRoot(context.intake).last_confirmation_prompt_token
+      ) {
+        await interaction.editReply({
+          content: 'Use the latest confirmation message in this thread.',
+        });
+        return;
+      }
       const guild = context.guild;
       const targetMember = await guild.members
         .fetch({ user: targetUserId, force: true })
@@ -200,6 +212,7 @@ export class ReportInteractionHandler {
 
       const outcome = await this.executeReport(interaction, {
         kind: 'confirm_intake_candidate',
+        ...(promptToken ? { promptToken } : {}),
         intakeId,
         targetUserId,
         threadId: interaction.channelId,
@@ -216,6 +229,10 @@ export class ReportInteractionHandler {
       selectionAccepted = true;
       submissionSucceeded = true;
       statusRecorded = outcome.statusRecorded === true;
+      if (readReporterPresentation(context.intake)) {
+        await interaction.deleteReply();
+        return;
+      }
       const acknowledgement = statusRecorded
         ? 'Report submitted.'
         : "Report submitted. Drasil couldn't record its final status. Please ask a moderator to review this thread.";
@@ -273,6 +290,10 @@ export class ReportInteractionHandler {
       });
       if (outcome.kind !== 'reject_intake_candidates') return;
       const result = outcome.result;
+      if (result.rejected && readReporterPresentation(context.intake)) {
+        await interaction.deleteReply();
+        return;
+      }
       await interaction.editReply({ content: result.message }).catch((error: unknown) => {
         console.warn('Failed to deliver report selection result:', error);
       });
@@ -407,10 +428,62 @@ export class ReportInteractionHandler {
         responseMode,
         // The in-thread close button is reporter-facing; closeIntakeForThread applies the
         // reporter-or-staff rule itself, so do not gate the lookup on moderation permissions.
-        { requireModerator: parsed.action !== 'thread_close' }
+        {
+          requireModerator: !['thread_close', 'thread_confirm_close', 'thread_keep_open'].includes(
+            parsed.action
+          ),
+        }
       );
       if (!context) {
         return;
+      }
+
+      if (
+        ['thread_close', 'thread_confirm_close', 'thread_keep_open'].includes(parsed.action) &&
+        readReporterPresentation(context.intake)
+      ) {
+        if (interaction.user.id !== context.intake.reporter_id && !context.canModerate) {
+          await interaction.editReply({
+            content: 'Only the reporter or a moderator can close this report.',
+            components: [],
+          });
+          return;
+        }
+        if (parsed.action === 'thread_keep_open') {
+          await interaction.deleteReply();
+          return;
+        }
+        if (parsed.action === 'thread_close') {
+          const state = projectReportIntakeState(context.intake);
+          const review =
+            state.status === 'submitted' || state.status === 'needs_admin_confirmation';
+          const payload = buildReportIntakePresentation({
+            kind: review ? 'close_review' : 'close_draft',
+            actions: [
+              {
+                label: 'Keep open',
+                customId: buildReportIntakeAdminActionCustomId(
+                  'thread_keep_open',
+                  context.intake.id
+                ),
+                primary: true,
+              },
+              {
+                label: review ? 'Close thread' : 'Close report',
+                customId: buildReportIntakeAdminActionCustomId(
+                  'thread_confirm_close',
+                  context.intake.id
+                ),
+              },
+            ],
+          });
+          await interaction.editReply({
+            content: payload.content,
+            embeds: payload.embeds,
+            components: payload.components,
+          } as Parameters<ButtonInteraction['editReply']>[0]);
+          return;
+        }
       }
 
       if (parsed.action === 'menu') {

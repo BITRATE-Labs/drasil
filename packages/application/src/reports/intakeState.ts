@@ -71,7 +71,14 @@ function confirmationState(
   analysis: ReportAnalysisMetadata | null,
   status: string
 ): ConfirmationState {
-  const admin = status === 'needs_admin_confirmation';
+  const progress = reportSubmissionProgressSchema.safeParse(metadata.submission);
+  const retry = Boolean(
+    metadata.reporter_presentation &&
+    progress.success &&
+    progress.data.state === 'not_dispatched' &&
+    progress.data.settledAt
+  );
+  const admin = status === 'needs_admin_confirmation' && !retry;
   const handoff = analysis?.handoff;
   const adminPrompt =
     admin &&
@@ -116,4 +123,13 @@ function confirmationState(
         ? boundRevision
         : null,
   };
+}
+
+export function isRetryableReportSubmission(state: ReportIntakeState): boolean {
+  return (
+    state.status === 'needs_admin_confirmation' &&
+    state.submission?.state === 'not_dispatched' &&
+    Boolean(state.submission.settledAt) &&
+    state.confirmedTargetUserId === state.submission.targetUserId
+  );
 }

@@ -287,6 +287,7 @@ function define(
             ? {
                 threadId: bindings.intakePrompt?.threadId,
                 promptMessageId: bindings.intakePrompt?.promptMessageId,
+                promptToken: bindings.intakePrompt?.promptToken,
                 expectedEvidenceRevision: bindings.intakePrompt?.expectedEvidenceRevision,
               }
             : kind === 'close_report_intake' && bindings.intakePrompt

@@ -1,7 +1,8 @@
+import { IReportIntakePresentationService } from './ReportIntakePresentationService';
 import type { ImageChallengeReference } from './CaptchaImageService';
 import type { ResolvedThreadClosureResult } from '@drasil/application';
 export type { ResolvedThreadClosureResult } from '@drasil/application';
-import { injectable, inject } from 'inversify';
+import { injectable, inject, optional } from 'inversify';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -258,7 +259,10 @@ export class ThreadManager implements IThreadManager {
     verificationEventRepository: IVerificationEventRepository,
     @inject(TYPES.UserRepository) userRepository: IUserRepository,
     @inject(TYPES.ServerRepository) serverRepository: IServerRepository,
-    @inject(TYPES.ServerMemberRepository) serverMemberRepository: IServerMemberRepository
+    @inject(TYPES.ServerMemberRepository) serverMemberRepository: IServerMemberRepository,
+    @inject(TYPES.ReportIntakePresentationService)
+    @optional()
+    private reporterPresentation?: IReportIntakePresentationService
   ) {
     this.client = client;
     this.configService = configService;
@@ -1624,6 +1628,13 @@ export class ThreadManager implements IThreadManager {
 
       await this.addCaseResponderMembers(reporter.guild, thread, [reporter.id]);
 
+      if (
+        reportIntakeId &&
+        this.reporterPresentation &&
+        (await this.reporterPresentation.reconcile(reportIntakeId))
+      ) {
+        return true;
+      }
       const components = reportIntakeId
         ? [
             new ActionRowBuilder<ButtonBuilder>().addComponents(
