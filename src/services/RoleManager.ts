@@ -63,6 +63,9 @@ export class RoleManager implements IRoleManager {
       PermissionFlagsBits.ModerateMembers,
       PermissionFlagsBits.KickMembers,
       PermissionFlagsBits.BanMembers,
+      PermissionFlagsBits.MuteMembers,
+      PermissionFlagsBits.DeafenMembers,
+      PermissionFlagsBits.MoveMembers,
     ];
     const channels = await member.guild.channels.fetch();
     for (const channel of channels.values()) {

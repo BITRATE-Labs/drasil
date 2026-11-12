@@ -45,6 +45,9 @@ describe('RoleManager grant safety', () => {
       'ModerateMembers',
       'KickMembers',
       'BanMembers',
+      'MuteMembers',
+      'DeafenMembers',
+      'MoveMembers',
     ],
   ])('rejects unsafe case roles before role mutation', async (unsafe) => {
     const { manager, member, role, channels } = fixture();

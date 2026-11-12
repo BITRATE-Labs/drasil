@@ -1,3 +1,7 @@
+import {
+  readAutomaticModerationResponse,
+  type AutomaticModerationResponse,
+} from '@drasil/application';
 import { createTracingRecorder } from '../fakes/recordingTracing';
 import { withObservation } from '../../observability/langfuse';
 import { Client, Guild, GuildMember, Message, User } from 'discord.js';
@@ -1260,6 +1264,144 @@ describe('SecurityActionService (unit)', () => {
         failures: expect.arrayContaining([{ step: 'thread', code: 'thread_creation_failed' }]),
       },
     });
+  });
+
+  it.each([
+    ['null', false],
+    ['throw', false],
+    ['null', true],
+    ['throw', true],
+  ] as const)(
+    'saves no-case delivery %s failure and preserves acknowledgement only if unchanged (%s)',
+    async (delivery, alreadyFailed) => {
+      const service = buildService();
+      const member = buildMember('delivery-failure-guild', 'delivery-failure-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      const id = await service.recordSuspiciousMessage(member, detection);
+      const initial: AutomaticModerationResponse = {
+        action: 'kick',
+        outcome: 'kicked',
+        attention: 'required',
+        caseId: null,
+        updatedAt: new Date().toISOString(),
+        failures: [{ step: 'persistence', code: 'persistence_failed' }],
+      };
+      await detectionEventsRepository.patchMetadata(id, {
+        automatic_moderation_response: {
+          ...initial,
+          attention: 'acknowledged',
+          failures: [
+            ...initial.failures,
+            ...(alreadyFailed
+              ? [{ step: 'notification', code: 'notification_delivery_failed' }]
+              : []),
+          ],
+        },
+      });
+      const mirror = jest.fn().mockResolvedValue(undefined);
+      (
+        service as unknown as { moderationQueueService: Partial<IModerationQueueService> }
+      ).moderationQueueService = { upsertObservedAlertMirrorById: mirror };
+      if (delivery === 'null')
+        notificationManager.upsertObservedDetectionNotification.mockResolvedValue(null);
+      else
+        notificationManager.upsertObservedDetectionNotification.mockRejectedValue(
+          new Error('private provider error')
+        );
+      await service.recordAutomaticResponseFailure(member, detection, initial);
+      const saved = readAutomaticModerationResponse(
+        (await detectionEventsRepository.findById(id))?.metadata
+      );
+      expect(saved).toMatchObject({
+        action: 'kick',
+        outcome: 'kicked',
+        attention: alreadyFailed ? 'acknowledged' : 'required',
+        caseId: null,
+        failures: [
+          { step: 'persistence', code: 'persistence_failed' },
+          { step: 'notification', code: 'notification_delivery_failed' },
+        ],
+      });
+      expect(mirror).toHaveBeenLastCalledWith(id);
+      expect(mirror).toHaveBeenCalledTimes(alreadyFailed ? 1 : 2);
+      expect(notificationManager.upsertObservedDetectionNotification).toHaveBeenCalledTimes(1);
+      expect(userModerationService.kickUser).not.toHaveBeenCalled();
+      expect(JSON.stringify(saved)).not.toContain('private provider error');
+    }
+  );
+
+  it.each(['missing', 'null_write', 'throw_write'] as const)(
+    'propagates unavailable durable delivery-failure recording (%s)',
+    async (failure) => {
+      const service = buildService();
+      const member = buildMember('write-failure-guild', 'write-failure-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      const mirror = jest.fn().mockResolvedValue(undefined);
+      (
+        service as unknown as { moderationQueueService: Partial<IModerationQueueService> }
+      ).moderationQueueService = { upsertObservedAlertMirrorById: mirror };
+      notificationManager.upsertObservedDetectionNotification.mockImplementation(async () => {
+        if (failure === 'missing')
+          jest.spyOn(detectionEventsRepository, 'findById').mockResolvedValue(null);
+        else if (failure === 'null_write')
+          jest.spyOn(detectionEventsRepository, 'patchMetadata').mockResolvedValue(null);
+        else
+          jest
+            .spyOn(detectionEventsRepository, 'patchMetadata')
+            .mockRejectedValue(new Error('write unavailable'));
+        return null;
+      });
+      await expect(
+        service.recordAutomaticResponseFailure(member, detection, {
+          action: 'kick',
+          outcome: 'kicked',
+          attention: 'required',
+          caseId: null,
+          updatedAt: new Date().toISOString(),
+          failures: [{ step: 'persistence', code: 'persistence_failed' }],
+        })
+      ).rejects.toThrow(
+        failure === 'missing'
+          ? 'Missing automatic response'
+          : failure === 'null_write'
+            ? 'Could not persist automatic notification failure'
+            : 'write unavailable'
+      );
+      expect(mirror).toHaveBeenCalledTimes(1);
+      expect(notificationManager.upsertObservedDetectionNotification).toHaveBeenCalledTimes(1);
+      expect(userModerationService.kickUser).not.toHaveBeenCalled();
+    }
+  );
+
+  it('propagates an unavailable staff observed failure write without retrying delivery', async () => {
+    const service = buildService();
+    const member = buildMember('observed-failure-guild', 'observed-failure-user');
+    const detection: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.8,
+      reasons: [],
+      triggerSource: DetectionType.PATTERN_MATCH,
+      triggerContent: '',
+    };
+    notificationManager.upsertObservedDetectionNotification.mockResolvedValue(null);
+    jest.spyOn(detectionEventsRepository, 'patchMetadata').mockResolvedValue(null);
+    await expect(service.observeSuspiciousMessage(member, detection)).rejects.toThrow(
+      'Could not persist automatic response failure'
+    );
+    expect(notificationManager.upsertObservedDetectionNotification).toHaveBeenCalledTimes(1);
+    expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
   });
 
   it('persists no-case failure attention before configured delivery and propagates a failed write', async () => {

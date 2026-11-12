@@ -1,3 +1,11 @@
+import { EventHandler } from '../../controllers/EventHandler';
+import {
+  PermissionFlagsBits,
+  PermissionsBitField,
+  type Message,
+  type Client,
+  type GuildMember,
+} from 'discord.js';
 import { SecurityActionService } from '../../services/SecurityActionService';
 import { ServerMemberRepository } from '../../repositories/ServerMemberRepository';
 import type { INotificationManager } from '../../services/NotificationManager';
@@ -23,7 +31,6 @@ import {
   ModerationQueueItemType,
 } from '../../repositories/types';
 import type { IConfigService } from '../../config/ConfigService';
-import type { Client, GuildMember } from 'discord.js';
 import { getPrismaClient } from '../testDb';
 const suite = process.env.JEST_INTEGRATION === '1' ? describe : describe.skip;
 const response = {
@@ -63,6 +70,187 @@ suite('automatic moderation attention', () => {
     );
     return { prisma, server, detections, queue, event, service };
   }
+  it.each(['null', 'throw'])(
+    'staff watchlist delivery %s leaves one durable notify attention without enforcement',
+    async (failure) => {
+      const f = await fixture();
+      await f.prisma.detection_events.delete({ where: { id: f.event.id } });
+      const deliver =
+        failure === 'null'
+          ? jest.fn().mockResolvedValue(null)
+          : jest.fn().mockRejectedValue(new Error('private provider error'));
+      const notifications = {
+        upsertObservedDetectionNotification: deliver,
+      } as unknown as INotificationManager;
+      const cases = new VerificationEventRepository(f.prisma);
+      const enforce = jest.fn();
+      const security = new SecurityActionService(
+        notifications,
+        f.detections,
+        new ServerMemberRepository(f.prisma),
+        cases,
+        new UserRepository(f.prisma),
+        new ServerRepository(f.prisma),
+        {} as IAdminActionService,
+        {} as IThreadManager,
+        { applyCaseRole: enforce, kickUser: enforce } as unknown as IUserModerationService &
+          ICombinedBanLifecycleService,
+        {} as Client,
+        undefined,
+        undefined,
+        f.service
+      );
+      const config = {
+        initialize: jest.fn().mockResolvedValue(undefined),
+        getCachedServerConfig: () => f.server,
+        getServerConfig: async () => ({
+          ...f.server,
+          settings: { detection_response_mode: 'restrict' },
+        }),
+      } as unknown as IConfigService;
+      type Dependencies = ConstructorParameters<typeof EventHandler>;
+      const handler = new EventHandler(
+        {} as Client,
+        {} as Dependencies[1],
+        notifications,
+        config,
+        security,
+        {} as Dependencies[5],
+        {} as Dependencies[6],
+        {} as Dependencies[7],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        f.service,
+        undefined,
+        undefined,
+        {
+          findEnabled: async () => [
+            {
+              id: 'test-watchlist',
+              label: 'Synthetic watched link',
+              term: 'riskydomain.test',
+              requiresLinkOrVideo: true,
+            },
+          ],
+        } as unknown as Dependencies[18]
+      );
+      const member = {
+        id: 'attention-user',
+        guild: { id: f.server.guild_id },
+        permissions: new PermissionsBitField(PermissionFlagsBits.KickMembers),
+        user: { id: 'attention-user', username: 'synthetic', createdTimestamp: 0 },
+      } as unknown as GuildMember;
+      const message = {
+        id: 'synthetic-message',
+        author: { id: member.id, bot: false },
+        guild: member.guild,
+        member,
+        system: false,
+        content: 'riskydomain.test https://example.com/video',
+        channelId: 'synthetic-channel',
+        channel: { isThread: () => false },
+        delete: jest.fn(),
+      } as unknown as Message;
+      await handler['handleMessage'](message);
+      expect(deliver).toHaveBeenCalledTimes(1);
+      const rows = await f.queue.listByServer(f.server.guild_id);
+      expect(rows).toHaveLength(1);
+      expect(readAutomaticModerationResponse(rows[0].metadata)).toMatchObject({
+        action: 'notify',
+        outcome: 'failed',
+        attention: 'required',
+        caseId: null,
+        failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+      });
+      expect(await f.prisma.verification_events.count()).toBe(0);
+      expect(await f.prisma.detection_events.count()).toBe(1);
+      expect(enforce).not.toHaveBeenCalled();
+      expect(message.delete).not.toHaveBeenCalled();
+      expect(JSON.stringify(rows)).not.toContain('private provider error');
+    }
+  );
+  it.each([false, true])(
+    'refreshes no-case delivery failure after acknowledgement during delivery (already known: %s)',
+    async (alreadyKnown) => {
+      const f = await fixture();
+      const initial = {
+        action: 'kick' as const,
+        outcome: 'kicked' as const,
+        attention: 'required' as const,
+        caseId: null,
+        updatedAt: new Date().toISOString(),
+        failures: [{ step: 'persistence' as const, code: 'persistence_failed' as const }],
+      };
+      await f.detections.updateMetadata(f.event.id, {
+        automatic_moderation_response: {
+          ...initial,
+          failures: [...initial.failures, ...(alreadyKnown ? response.failures : [])],
+        },
+      });
+      let acknowledged:
+        Awaited<ReturnType<typeof f.queue.acknowledgeAutomaticResponse>> | undefined;
+      const deliver = jest.fn().mockImplementation(async () => {
+        const item = (await f.queue.findByObservedAlert(f.event.id))!;
+        acknowledged = await f.queue.acknowledgeAutomaticResponse({
+          itemId: item.id,
+          guildId: f.server.guild_id,
+          actorId: 'staff',
+          acknowledgedAt: new Date(),
+        });
+        return null;
+      });
+      const security = new SecurityActionService(
+        { upsertObservedDetectionNotification: deliver } as unknown as INotificationManager,
+        f.detections,
+        new ServerMemberRepository(f.prisma),
+        new VerificationEventRepository(f.prisma),
+        new UserRepository(f.prisma),
+        new ServerRepository(f.prisma),
+        {} as IAdminActionService,
+        {} as IThreadManager,
+        {} as IUserModerationService & ICombinedBanLifecycleService,
+        {} as Client,
+        undefined,
+        undefined,
+        f.service
+      );
+      await security.recordAutomaticResponseFailure(
+        {
+          id: 'attention-user',
+          guild: { id: f.server.guild_id },
+          user: { username: 'synthetic' },
+        } as GuildMember,
+        {
+          label: 'SUSPICIOUS',
+          confidence: 0.8,
+          reasons: [],
+          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+          triggerContent: '',
+          detectionEventId: f.event.id,
+        },
+        initial
+      );
+      const saved = readAutomaticModerationResponse(
+        (await f.detections.findById(f.event.id))?.metadata
+      );
+      expect(saved).toMatchObject({
+        action: 'kick',
+        outcome: 'kicked',
+        attention: alreadyKnown ? 'acknowledged' : 'required',
+        failures: [...initial.failures, ...response.failures],
+      });
+      const rows = await f.queue.listByServer(f.server.guild_id);
+      expect(rows).toHaveLength(1);
+      expect(acknowledged).toBe('acknowledged');
+      expect(readAutomaticModerationResponse(rows[0].metadata)).toEqual(saved);
+      expect(deliver).toHaveBeenCalledTimes(1);
+    }
+  );
   it('persists one case mirror with no Discord destinations and never an observed failure duplicate', async () => {
     const f = await fixture();
     await f.service.upsertObservedAlertMirrorById(f.event.id);
@@ -437,6 +625,39 @@ suite('automatic moderation attention', () => {
       );
     }
   );
+  it('scheduled stale cleanup preserves attention created after source enumeration', async () => {
+    const f = await fixture();
+    await f.detections.updateMetadata(f.event.id, {});
+    const enumerate = f.detections.findUnresolvedObservedNotificationsByServer.bind(f.detections);
+    let enumerated!: () => void;
+    let resume!: () => void;
+    const captured = new Promise<void>((resolve) => {
+      enumerated = resolve;
+    });
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    jest
+      .spyOn(f.detections, 'findUnresolvedObservedNotificationsByServer')
+      .mockImplementationOnce(async (serverId) => {
+        const events = await enumerate(serverId);
+        enumerated();
+        await paused;
+        return events;
+      });
+    const reconciliation = f.service.syncServerQueue(f.server.guild_id);
+    await captured;
+    try {
+      await f.detections.patchMetadata(f.event.id, { automatic_moderation_response: response });
+      await f.service.upsertObservedAlertMirrorById(f.event.id);
+    } finally {
+      resume();
+    }
+    await reconciliation;
+    const rows = await f.queue.listByServer(f.server.guild_id);
+    expect(rows).toHaveLength(1);
+    expect(readAutomaticModerationResponse(rows[0].metadata)).toEqual(response);
+  });
   it('stale cleanup cannot delete newer required attention', async () => {
     const f = await fixture();
     await f.service.upsertObservedAlertMirrorById(f.event.id);

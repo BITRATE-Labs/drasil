@@ -805,7 +805,14 @@ export class ModerationQueueService implements IModerationQueueService {
       const staleObserved =
         item.item_type === ModerationQueueItemType.OBSERVED_ALERT_MIRROR &&
         (!item.detection_event_id || !activeObservedIds.has(item.detection_event_id));
-      if (staleCase || staleObserved) {
+      if (
+        staleObserved &&
+        item.detection_event_id &&
+        readAutomaticModerationResponse(item.metadata)
+      ) {
+        // Revalidate under the detection lock; source enumeration predates concurrent responses.
+        await this.upsertObservedAlertMirrorById(item.detection_event_id);
+      } else if (staleCase || staleObserved) {
         await this.deleteQueueItems([item]);
       }
     }

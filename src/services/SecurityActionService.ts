@@ -1676,14 +1676,31 @@ export class SecurityActionService implements ISecurityActionService {
         detectionResult,
         sourceMessage
       );
-      const notificationMessage =
-        await this.notificationManager.upsertObservedDetectionNotification(
+      let notificationMessage: Message | null;
+      try {
+        notificationMessage = await this.notificationManager.upsertObservedDetectionNotification(
           member,
           detectionResult,
           sourceMessage
         );
+      } catch {
+        notificationMessage = null;
+      }
       if (!notificationMessage) {
-        throw new Error('Failed to send or update observed suspicious message notification');
+        await this.recordAutomaticResponseFailure(
+          member,
+          detectionResult,
+          {
+            action: 'notify',
+            outcome: 'failed',
+            attention: 'required',
+            caseId: null,
+            updatedAt: new Date().toISOString(),
+            failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+          },
+          sourceMessage
+        );
+        return false;
       }
       await this.ensureObservedEvidenceThread(
         member,
@@ -2578,12 +2595,9 @@ export class SecurityActionService implements ISecurityActionService {
     response: AutomaticModerationResponse,
     sourceMessage?: Message
   ): Promise<void> {
+    let detectionEventId: string;
     try {
-      const detectionEventId = await this.recordSuspiciousMessage(
-        member,
-        detectionResult,
-        sourceMessage
-      );
+      detectionEventId = await this.recordSuspiciousMessage(member, detectionResult, sourceMessage);
       const detection = await this.detectionEventsRepository.findById(detectionEventId);
       if (!detection) throw new Error('Missing automatic response detection.');
       const owner = detection.latest_verification_event_id
@@ -2600,18 +2614,34 @@ export class SecurityActionService implements ISecurityActionService {
           (previous.outcome === 'kicked' && response.outcome !== 'kicked'))
       )
         response = previous;
-      if (response.attention === 'resolved') {
-        recordWorkflowOutcome({
-          output: { verdict: detectionResult.label, actual_outcome: response.outcome },
-        });
-        return;
-      }
       const liveOwner =
         owner?.status === VerificationStatus.PENDING &&
         owner.attention_state !== CaseAttentionState.PARKED;
       response = { ...response, caseId: liveOwner ? owner.id : null };
       if (owner && response.action === 'restrict')
         response = { ...response, outcome: 'case_opened' };
+      if (previous?.action === response.action && previous.outcome === response.outcome) {
+        const addedFailures = response.failures.filter(
+          (failure) =>
+            !previous.failures.some(
+              (saved) => saved.step === failure.step && saved.code === failure.code
+            )
+        );
+        response = {
+          ...response,
+          failures: [...previous.failures, ...addedFailures],
+          attention:
+            !addedFailures.length && previous.caseId === response.caseId
+              ? previous.attention
+              : response.attention,
+        };
+      }
+      if (response.attention === 'resolved') {
+        recordWorkflowOutcome({
+          output: { verdict: detectionResult.label, actual_outcome: response.outcome },
+        });
+        return;
+      }
       if (
         !(await this.detectionEventsRepository.patchMetadata(detectionEventId, {
           automatic_moderation_response: response,
@@ -2661,11 +2691,32 @@ export class SecurityActionService implements ISecurityActionService {
         detectionResult,
         sourceMessage
       );
-      if (!delivered)
-        recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'notification_delivery_failed' });
+      if (delivered) return;
     } catch {
-      recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'notification_delivery_failed' });
+      // Failed delivery is recorded below without retrying the notification or enforcement.
     }
+    recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'notification_delivery_failed' });
+    const current = readAutomaticModerationResponse(
+      (await this.detectionEventsRepository.findById(detectionEventId))?.metadata
+    );
+    if (!current) throw new Error('Missing automatic response after notification failure.');
+    if (current.failures.some((failure) => failure.code === 'notification_delivery_failed')) return;
+    const updated: AutomaticModerationResponse = {
+      ...current,
+      failures: [
+        ...current.failures,
+        { step: 'notification', code: 'notification_delivery_failed' },
+      ],
+      attention: current.attention === 'resolved' ? 'resolved' : 'required',
+      updatedAt: new Date().toISOString(),
+    };
+    if (
+      !(await this.detectionEventsRepository.patchMetadata(detectionEventId, {
+        automatic_moderation_response: updated,
+      }))
+    )
+      throw new Error('Could not persist automatic notification failure.');
+    await this.moderationQueueService?.upsertObservedAlertMirrorById(detectionEventId);
   }
 
   private async handleSuspiciousMember(
