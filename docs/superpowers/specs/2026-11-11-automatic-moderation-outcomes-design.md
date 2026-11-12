@@ -6,7 +6,7 @@ Drasil should attempt the configured moderation response when a detection qualif
 
 This fixes a demonstrated failure where a high-confidence detection requested restriction but was silently downgraded to `record_only` because the case role had extra verification-channel media and reaction permissions.
 
-The user has selected removal of the blanket readiness gate, including for automatic kicks. This document proposes the concrete failure-reporting behavior for approval. No product code, live settings, or Discord permissions have changed.
+The user has selected removal of the blanket readiness gate, including for automatic kicks. The user approved this design on 2026-11-11. No product code, live settings, or Discord permissions have changed.
 
 The tradeoff is deliberate: Drasil may provide incomplete restriction while moderators repair configuration. It must describe what actually happened, rather than implying complete isolation. It must not replace a configured restriction with a kick unless the existing automatic-kick policy independently selects that action.
 
