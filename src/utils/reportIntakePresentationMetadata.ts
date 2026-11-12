@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
+import { canonicalDigest } from '@drasil/application';
 import type { ReportIntake } from '../repositories/types';
 
 export const reporterPresentationSchema = z.object({
@@ -34,21 +34,17 @@ export function readReporterPresentation(intake: ReportIntake): ReporterPresenta
 export function reporterViewKey(intake: ReportIntake): string {
   const m = reportRoot(intake);
   const a = m.analysis as Record<string, unknown> | undefined;
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        intake.status,
-        intake.closed_at,
-        intake.evidence_revision,
-        intake.analysis_revision,
-        intake.confirmed_target_user_id,
-        m.submission,
-        m.thread_closed_at,
-        a?.outcome,
-        (a?.handoff as { state?: string } | undefined)?.state,
-      ])
-    )
-    .digest('hex');
+  return canonicalDigest([
+    intake.status,
+    intake.closed_at ?? null,
+    intake.evidence_revision,
+    intake.analysis_revision,
+    intake.confirmed_target_user_id ?? null,
+    m.submission ?? null,
+    m.thread_closed_at ?? null,
+    a?.outcome ?? null,
+    (a?.handoff as { state?: string } | undefined)?.state ?? null,
+  ]);
 }
 export function scheduleReporterChange(
   intake: ReportIntake,

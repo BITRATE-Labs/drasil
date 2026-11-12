@@ -257,7 +257,6 @@ export function createBotReportActions(
             .catch(() => ({ id: intake.reporterId, username: 'unknown', tag: 'unknown' }) as User);
           if (token && !(await intakes.beginConfirmedSubmission(intake.id, token)))
             throw new ActionDeniedError('stale_state');
-          await intakes.refreshPresentation?.(intake.id).catch(() => undefined);
           dispatched = true;
           const result = await submission.submitConfirmedReportIntake(
             member,
@@ -371,12 +370,18 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
       if (created) loaded.set(created.id, created);
       return created;
     },
-    async activate(context: ActionContext, threadId: string, intakeId: string): Promise<boolean> {
+    async activate(
+      context: ActionContext,
+      threadId: string,
+      intakeId: string,
+      mode?: 'resume'
+    ): Promise<boolean> {
       const guild = await deps.client.guilds.fetch(context.guildId);
       return deps.threadManager.activateReportIntakeThread(
         await thread(threadId),
         await guild.members.fetch(actorId(context)),
-        intakeId
+        intakeId,
+        ...(mode ? ([mode] as const) : [])
       );
     },
     async deleteFailed(threadId: string): Promise<void> {

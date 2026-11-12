@@ -1,9 +1,11 @@
 import { ModerationQueueRepository } from '../../repositories/ModerationQueueRepository';
+import { reporterViewKey } from '../../utils/reportIntakePresentationMetadata';
 import { ReportIntakeAnalysisWorker } from '../../services/ReportIntakeAnalysisWorker';
 import type { IReportIntakeAgentService } from '../../services/ReportIntakeAgentService';
 import type { IConfigService } from '../../config/ConfigService';
 import {
   ANALYSIS_CLAIM_SCAN_LIMIT,
+  PRESENTATION_RECONCILE_MS,
   processingMetadata,
 } from '../../repositories/reportIntakeProcessing';
 import { readFileSync } from 'fs';
@@ -219,6 +221,77 @@ describeIntegration('durable report intake processing', () => {
     const saved = await f.repository.findById(f.intake.id);
     expect(saved?.metadata).toMatchObject({ reporter_presentation: { nextDueAt: null } });
   });
+
+  it.each(['delivered', 'acknowledged'])(
+    'keeps settled reporter cards idle while reclaiming %s staff review',
+    async (state) => {
+      const f = await fixture({
+        workflow: 'staged',
+        reporter_presentation: { nextDueAt: now.toISOString() },
+        analysis: {
+          schemaVersion: 1,
+          sources: {},
+          outcome,
+          coverage: outcome.coverage,
+          requestReservations: [],
+          handoff: {
+            state,
+            reason: 'ambiguous',
+            messageId: 'review-message',
+            channelId: 'review-channel',
+            attempts: 1,
+            nextDueAt: now.toISOString(),
+            receipt: 'sent',
+            ...(state === 'acknowledged'
+              ? { acknowledgedBy: 'moderator', acknowledgedAt: now.toISOString() }
+              : {}),
+          },
+        },
+      });
+      await f.repository.update(f.intake.id, {
+        status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      });
+      const reporterClaim = await f.repository.claimPendingPresentation(new Date(), f.intake.id);
+      expect(reporterClaim).not.toBeNull();
+      const persistedClaim = (await f.repository.findById(f.intake.id))!;
+      expect(reporterViewKey(persistedClaim)).toBe(reporterViewKey(reporterClaim!.intake));
+      expect(await f.repository.completePresentation(reporterClaim!, { kind: 'published' })).toBe(
+        true
+      );
+      const settled = (await f.repository.findById(f.intake.id))!;
+      expect(settled.metadata).toMatchObject({ reporter_presentation: { nextDueAt: null } });
+      const staffDueAt = processingMetadata(settled).analysis.presentation!.nextDueAt!;
+      expect(await f.repository.claimPendingPresentation(new Date(), f.intake.id)).toBeNull();
+
+      const staffClaim = await f.repository.claimPendingPresentation(
+        new Date(new Date(staffDueAt).getTime() + 1)
+      );
+      expect(staffClaim?.intake.id).toBe(f.intake.id);
+      expect(staffClaim?.intake.metadata).toMatchObject({
+        reporter_presentation: { nextDueAt: null },
+      });
+      const completedAt = Date.now();
+      expect(
+        await f.repository.completePresentation(staffClaim!, {
+          kind: 'delivered',
+          channelId: 'review-channel',
+          messageId: 'review-message',
+          receipt: 'pending',
+        })
+      ).toBe(true);
+      const refreshed = (await f.repository.findById(f.intake.id))!;
+      expect(refreshed.metadata).toMatchObject({
+        reporter_presentation: { nextDueAt: null },
+        analysis: {
+          presentation: { lastFailure: null },
+          handoff: { state, receipt: 'sent' },
+        },
+      });
+      expect(
+        new Date(processingMetadata(refreshed).analysis.presentation!.nextDueAt!).getTime()
+      ).toBeGreaterThanOrEqual(completedAt + PRESENTATION_RECONCILE_MS);
+    }
+  );
 
   it('preserves durable message IDs when new evidence retires confirmation authority', async () => {
     const f = await fixture({

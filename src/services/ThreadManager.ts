@@ -154,7 +154,8 @@ export interface IThreadManager {
   activateReportIntakeThread(
     thread: ThreadChannel,
     reporter: GuildMember,
-    reportIntakeId?: string
+    reportIntakeId?: string,
+    mode?: 'resume'
   ): Promise<boolean>;
 
   /**
@@ -1636,7 +1637,8 @@ export class ThreadManager implements IThreadManager {
   public async activateReportIntakeThread(
     thread: ThreadChannel,
     reporter: GuildMember,
-    reportIntakeId?: string
+    reportIntakeId?: string,
+    mode?: 'resume'
   ): Promise<boolean> {
     try {
       await thread.members.add(reporter.id);
@@ -1652,6 +1654,7 @@ export class ThreadManager implements IThreadManager {
           return true;
         }
       }
+      if (mode === 'resume') return true;
       const components = reportIntakeId
         ? [
             new ActionRowBuilder<ButtonBuilder>().addComponents(

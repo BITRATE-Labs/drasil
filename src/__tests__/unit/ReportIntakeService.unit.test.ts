@@ -164,6 +164,54 @@ describe('ReportIntakeService', () => {
       await f.reportIntakeRepository.claimPendingPresentation(new Date(), intake.id)
     ).not.toBeNull();
   });
+  it('rechecks rollout before accepting a retry and immediately before dispatch', async () => {
+    const f = await preparePrompt();
+    jest
+      .mocked(f.configService.getServerConfig)
+      .mockResolvedValue({ settings: { report_intake_staged_enabled: true } } as never);
+    await f.reportIntakeRepository.update(f.intake.id, {
+      status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      confirmedTargetUserId: 'target',
+      metadata: {
+        workflow: 'staged',
+        reporter_presentation: { followupMessageId: 'prompt', nextDueAt: null },
+        last_confirmation_prompt_message_id: 'prompt',
+        last_confirmation_prompt_token: 'prompt-token',
+        last_confirmation_prompt_revision: 0,
+        submission: {
+          state: 'not_dispatched',
+          token: 'submission-token',
+          targetUserId: 'target',
+          claimedAt: new Date().toISOString(),
+          settledAt: new Date().toISOString(),
+        },
+      },
+    });
+    const input = {
+      intakeId: f.intake.id,
+      targetUserId: 'target',
+      confirmedById: 'reporter-1',
+      promptMessageId: 'prompt',
+      promptToken: 'prompt-token',
+      expectedEvidenceRevision: 0,
+    };
+    expect(await f.service.confirmCandidate(input)).toMatchObject({ confirmed: true });
+    jest
+      .mocked(f.configService.getServerConfig)
+      .mockResolvedValue({ settings: { report_intake_staged_enabled: false } } as never);
+    expect(await f.service.beginConfirmedSubmission(f.intake.id, 'submission-token')).toBe(false);
+    expect(await f.service.confirmCandidate(input)).toMatchObject({
+      confirmed: false,
+      message: 'Report submission is temporarily unavailable.',
+    });
+    expect(f.configService.getServerConfig).toHaveBeenLastCalledWith('guild-1', {
+      forceRefresh: true,
+      failOnReadError: true,
+    });
+    expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toMatchObject({
+      submission: { state: 'not_dispatched' },
+    });
+  });
 
   it('restores an unchanged draft after a verified archive failure', async () => {
     const f = await preparePrompt();
@@ -374,6 +422,9 @@ describe('ReportIntakeService', () => {
     async ({ field, currentName, accepted }) => {
       const f = await preparePrompt();
       await f.service.handleThreadMessage(f.message);
+      jest.mocked(f.configService.getServerConfig).mockResolvedValue({
+        settings: { report_intake_staged_enabled: true },
+      } as Awaited<ReturnType<IConfigService['getServerConfig']>>);
       const current = (await f.reportIntakeRepository.findById(f.intake.id))!;
       const { metadata, analysis } = processingMetadata(current);
       analysis.outcome = {
@@ -834,7 +885,7 @@ describe('ReportIntakeService', () => {
             displayName: 'Target user-1',
           },
         })
-      ).toMatchObject({ confirmed: true });
+      ).toMatchObject({ confirmed: enabled });
     }
   );
 

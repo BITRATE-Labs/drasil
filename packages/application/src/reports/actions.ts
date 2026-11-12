@@ -70,7 +70,16 @@ export function createReportActions(deps: ReportDependencies): ReportActions {
   }
   async function start(context: ActionContext, channelId: string): Promise<ReportOutcome> {
     const existing = await deps.intakes.findOpen(context);
-    if (existing) return { kind: 'start_report_intake', status: 'existing', intake: existing };
+    if (existing) {
+      const admitted =
+        existing.threadId &&
+        (await deps.threads.activate(context, existing.threadId, existing.id, 'resume'));
+      return {
+        kind: 'start_report_intake',
+        status: admitted ? 'existing' : 'activation_failed',
+        intake: existing,
+      };
+    }
     const thread = await deps.threads.create(context, channelId);
     if (!thread) return { kind: 'start_report_intake', status: 'create_failed', intake: null };
     let activationAttempted = false;

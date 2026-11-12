@@ -309,12 +309,22 @@ it('delivers staff review before one shared receipt and persists receipt complet
   });
   await service.publishOutcome(f.intake.id);
   expect(f.channel.send).toHaveBeenCalledTimes(1);
-  expect(
-    await f.repository.claimPendingPresentation(
-      new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
-      f.intake.id
-    )
-  ).not.toBeNull();
+  expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
+    reporter_presentation: { nextDueAt: null },
+  });
+  f.client.channels.fetch.mockClear();
+  jest.useFakeTimers().setSystemTime(new Date(Date.now() + 2 * 24 * 60 * 60 * 1000));
+  try {
+    await service.publishOutcome(f.intake.id);
+    expect(f.queue.upsertReportIdentityReview).toHaveBeenCalledTimes(2);
+    expect(f.client.channels.fetch).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+  await f.repository.update(f.intake.id, { status: ReportIntakeStatus.SUBMITTED });
+  expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
+    reporter_presentation: { nextDueAt: expect.any(String) },
+  });
 });
 it('does not claim moderators have the report when staff delivery fails', async () => {
   const f = await fixture();
@@ -365,10 +375,14 @@ it.each(['not_dispatched', 'unknown'])(
       },
     });
     f.queue.upsertReportIdentityReview.mockRejectedValue(new Error('Forbidden'));
+    const config = mock<IConfigService>();
+    config.getServerConfig.mockResolvedValue({
+      settings: { report_intake_staged_enabled: true },
+    } as Awaited<ReturnType<IConfigService['getServerConfig']>>);
     const presenter = new ReportIntakePresentationService(
       f.repository,
       f.client as unknown as Client,
-      mock<IConfigService>(),
+      config,
       mock<IModerationQueueRepository>()
     );
     const service = new ReportIntakeHandoffService(

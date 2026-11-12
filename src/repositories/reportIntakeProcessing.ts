@@ -417,9 +417,8 @@ export function presentationClaimChange(
   if (!canPresent(intake)) return null;
   const reporter = readReporterPresentation(intake);
   const { metadata, analysis } = presentationMetadata(intake);
-  if (reporter && !reporter.threadMissing) {
+  if (reporter && !reporter.threadMissing && reporter.nextDueAt) {
     if (
-      !reporter.nextDueAt ||
       new Date(reporter.nextDueAt) > now ||
       (analysis.presentation?.lease && new Date(analysis.presentation.lease.until) > now)
     )
@@ -515,7 +514,9 @@ export function completePresentationChange(
   const success =
     result.kind === 'published' ||
     (result.kind === 'delivered' &&
-      (result.receipt === 'sent' || reporter?.threadMissing === true));
+      (result.receipt === 'sent' ||
+        (analysis.handoff.state !== 'none' && analysis.handoff.receipt === 'sent') ||
+        reporter?.threadMissing === true));
   const nextDueAt =
     result.kind === 'published' &&
     !(
@@ -532,7 +533,10 @@ export function completePresentationChange(
   if (reporter)
     metadata.reporter_presentation = {
       ...reporter,
-      nextDueAt: reporter.threadMissing ? null : nextDueAt,
+      nextDueAt:
+        reporter.threadMissing || result.kind === 'published' || reporter.nextDueAt === null
+          ? null
+          : nextDueAt,
     };
   analysis.presentation = {
     revision: claim.revision,

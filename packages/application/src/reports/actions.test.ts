@@ -238,6 +238,33 @@ it('a claim acquired during closure is reported as busy without thread effects',
   ).toMatchObject({ outcome: { status: 'busy' } });
   expect(effects).toBe(0);
 });
+it.each([true, false])(
+  'retries admission for an existing intake, admitted=%s',
+  async (admitted) => {
+    const f = fixture();
+    f.deps.intakes.findOpen = async () => f.intake;
+    const calls: string[] = [];
+    f.deps.threads.activate = async (_context, threadId, intakeId, mode) => {
+      expect([threadId, intakeId, mode]).toEqual(['thread', 'intake', 'resume']);
+      calls.push('admit');
+      return admitted;
+    };
+    f.deps.threads.create = async () => {
+      calls.push('create');
+      return null;
+    };
+    f.deps.threads.deleteFailed = async () => {
+      calls.push('delete');
+    };
+    f.deps.threads.notifyOpened = async () => {
+      calls.push('notify');
+    };
+    expect(
+      await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
+    ).toMatchObject({ outcome: { status: admitted ? 'existing' : 'activation_failed' } });
+    expect(calls).toEqual(['admit']);
+  }
+);
 it('submission trusts the stored reporter rather than the confirmation payload reporter', async () => {
   const f = fixture();
   let reporter: string | null = null;

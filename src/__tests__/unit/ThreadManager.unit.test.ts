@@ -1645,6 +1645,27 @@ describe('ThreadManager (unit)', () => {
     expect(presentation.reconcile).toHaveBeenCalledWith('intake-1');
     expect(thread.send).not.toHaveBeenCalled();
   });
+  it('restores existing report membership without another legacy welcome or unarchiving', async () => {
+    const manager = new ThreadManager(
+      {} as Client,
+      configService,
+      verificationEventRepository,
+      userRepository,
+      serverRepository,
+      serverMemberRepository
+    );
+    expect(
+      await manager.activateReportIntakeThread(
+        thread,
+        buildMember('guild-1', 'reporter-1'),
+        'intake-1',
+        'resume'
+      )
+    ).toBe(true);
+    expect(thread.members.add).toHaveBeenCalledWith('reporter-1');
+    expect(thread.send).not.toHaveBeenCalled();
+    expect(thread.setArchived).not.toHaveBeenCalled();
+  });
 
   it('adds configured case responder role members to private report review threads', async () => {
     const staffMember = { id: 'staff-1' };

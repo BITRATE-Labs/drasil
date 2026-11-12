@@ -183,7 +183,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     state: ReportIntakePresentationState,
     intake: ReportIntake
   ): Promise<void> {
-    if (state.kind !== 'confirm') return;
+    if (state.kind !== 'confirm' && state.kind !== 'failed') return;
     const config = await this.configService.getServerConfig(intake.server_id, {
       forceRefresh: true,
       failOnReadError: true,

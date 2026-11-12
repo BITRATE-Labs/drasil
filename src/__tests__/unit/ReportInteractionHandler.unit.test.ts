@@ -736,6 +736,11 @@ describe('ReportInteractionHandler (unit)', () => {
     } as User);
 
     prepareReportClient(client, interaction);
+    jest.mocked(client.channels.fetch).mockResolvedValue({
+      id: 'existing-thread-1',
+      guildId: 'guild-1',
+      isThread: () => true,
+    } as never);
 
     await handler.handleReportUserInitiate(interaction);
 

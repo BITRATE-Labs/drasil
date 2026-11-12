@@ -534,6 +534,8 @@ export class ReportIntakeService implements IReportIntakeService {
       };
     }
     const state = projectReportIntakeState(intake);
+    if (state.staged && !(await this.stagedSubmissionEnabled(intake.server_id)))
+      return { confirmed: false, message: 'Report submission is temporarily unavailable.' };
     if (
       state.staged &&
       (input.expectedEvidenceRevision !== state.evidenceRevision ||
@@ -993,6 +995,11 @@ export class ReportIntakeService implements IReportIntakeService {
     const submission = projectReportIntakeState(intake).submission;
     if (!submission || submission.token !== token || submission.state !== 'not_dispatched')
       return false;
+    if (
+      projectReportIntakeState(intake).staged &&
+      !(await this.stagedSubmissionEnabled(intake.server_id))
+    )
+      return false;
     return Boolean(
       await this.reportIntakeRepository.updateIfCurrent(intake, {
         status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
@@ -1004,6 +1011,14 @@ export class ReportIntakeService implements IReportIntakeService {
         }),
       })
     );
+  }
+
+  private async stagedSubmissionEnabled(serverId: string): Promise<boolean> {
+    const config = await this.configService.getServerConfig(serverId, {
+      forceRefresh: true,
+      failOnReadError: true,
+    });
+    return getReportIntakeSettings(config.settings).stagedEnabled;
   }
 
   async settleConfirmedSubmission(

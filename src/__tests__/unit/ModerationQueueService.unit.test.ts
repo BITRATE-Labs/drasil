@@ -731,7 +731,9 @@ describe('ModerationQueueService', () => {
         new InMemoryServerRepository(),
         new InMemoryUserRepository(),
         new InMemoryServerMemberRepository(),
-        { getServerConfig: async () => ({ settings: {} }) } as unknown as IConfigService,
+        {
+          getServerConfig: async () => ({ settings: { report_intake_staged_enabled: true } }),
+        } as unknown as IConfigService,
         new ReportCandidateService(),
         {
           retireReportConfirmationPrompts: async (_intake, ids) => {

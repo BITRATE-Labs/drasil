@@ -104,7 +104,12 @@ export interface ReportDependencies {
       finish(result: ReportCloseResult): Promise<{ archived: boolean; message: string }>;
     }>;
     create(context: ActionContext, channelId: string): Promise<{ id: string; url: string } | null>;
-    activate(context: ActionContext, threadId: string, intakeId: string): Promise<boolean>;
+    activate(
+      context: ActionContext,
+      threadId: string,
+      intakeId: string,
+      mode?: 'resume'
+    ): Promise<boolean>;
     deleteFailed(threadId: string): Promise<void>;
     notifyOpened(context: ActionContext, threadId: string, intakeId: string): Promise<void>;
   };

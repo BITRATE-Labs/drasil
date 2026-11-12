@@ -148,7 +148,7 @@ describe('durable reporter presentation', () => {
     expect(f.messages.size).toBe(1);
     expect(f.channel.send).toHaveBeenCalledTimes(1);
     expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
-      reporter_presentation: { attemptViewKey: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      reporter_presentation: { attemptViewKey: expect.stringMatching(/^v1:sha256:[0-9a-f]{64}$/) },
     });
   });
   it('does not treat permission failures as missing messages', async () => {
@@ -235,27 +235,40 @@ describe('durable reporter presentation', () => {
     expect(f.channel.send).toHaveBeenCalledTimes(1);
   });
 
-  it('offers retry only after a definitely undispatched attempt has settled', async () => {
-    const f = await fixture();
-    await f.service.reconcile(f.intake.id);
-    const intake = (await f.repository.findById(f.intake.id))!;
-    await f.repository.update(f.intake.id, {
-      status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
-      confirmedTargetUserId: 'target',
-      metadata: {
-        ...(intake.metadata as object),
-        submission: {
-          token: 'submission',
-          targetUserId: 'target',
-          state: 'not_dispatched',
-          claimedAt: new Date().toISOString(),
-          settledAt: new Date().toISOString(),
+  it.each([true, false])(
+    'gates a settled undispatched retry on the rollout, enabled=%s',
+    async (enabled) => {
+      const f = await fixture();
+      await f.service.reconcile(f.intake.id);
+      const intake = (await f.repository.findById(f.intake.id))!;
+      await f.repository.update(f.intake.id, {
+        status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+        confirmedTargetUserId: 'target',
+        metadata: {
+          ...(intake.metadata as object),
+          submission: {
+            token: 'submission',
+            targetUserId: 'target',
+            state: 'not_dispatched',
+            claimedAt: new Date().toISOString(),
+            settledAt: new Date().toISOString(),
+          },
         },
-      },
-    });
-    await f.service.reconcile(f.intake.id);
-    expect(JSON.stringify(f.messages.get('2')?.components)).toContain('Try again');
-  });
+      });
+      f.config.getServerConfig.mockResolvedValue({
+        settings: { report_intake_staged_enabled: enabled },
+      } as never);
+      if (enabled) {
+        await f.service.reconcile(f.intake.id);
+        expect(JSON.stringify(f.messages.get('2')?.components)).toContain('Try again');
+      } else {
+        await expect(f.service.reconcile(f.intake.id)).rejects.toThrow(
+          'Staged report confirmation disabled'
+        );
+        expect(f.messages.size).toBe(1);
+      }
+    }
+  );
   it('adopts a shipped receipt without publishing another GUID or message', async () => {
     const f = await fixture();
     await f.channel.send({
@@ -483,7 +496,7 @@ it.each([
       'Thread closed'
     );
     expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
-      reporter_presentation: { closedCardView: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      reporter_presentation: { closedCardView: expect.stringMatching(/^v1:sha256:[0-9a-f]{64}$/) },
     });
     f.channel.setArchived.mockClear();
     await f.service.reconcile(f.intake.id);
