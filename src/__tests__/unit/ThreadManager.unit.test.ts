@@ -33,6 +33,7 @@ import {
   DEFAULT_VERIFICATION_PROMPT_TEMPLATE,
   renderVerificationPromptTemplate,
 } from '../../utils/verificationPromptTemplate';
+import { buildVerificationEvent } from '../fakes/verificationEvents';
 import { parseAdminActionCustomId } from '../../utils/adminActionCustomIds';
 import { parseReportIntakeAdminActionCustomId } from '../../utils/reportIntakeAdminActions';
 
@@ -53,25 +54,6 @@ const buildMember = (
       tag: 'test-user#0001',
     } as User,
   }) as unknown as GuildMember;
-
-const buildVerificationEvent = (overrides: Partial<VerificationEvent> = {}): VerificationEvent => ({
-  id: overrides.id ?? 'ver-1',
-  server_id: overrides.server_id ?? 'guild-1',
-  user_id: overrides.user_id ?? 'user-1',
-  detection_event_id: overrides.detection_event_id ?? null,
-  thread_id: overrides.thread_id ?? null,
-  private_evidence_thread_id: overrides.private_evidence_thread_id ?? null,
-  notification_channel_id: overrides.notification_channel_id ?? null,
-  notification_message_id: overrides.notification_message_id ?? null,
-  status: overrides.status ?? VerificationStatus.PENDING,
-  case_revision: overrides.case_revision ?? 0,
-  created_at: overrides.created_at ?? new Date(),
-  updated_at: overrides.updated_at ?? new Date(),
-  resolved_at: overrides.resolved_at ?? null,
-  resolved_by: overrides.resolved_by ?? null,
-  notes: overrides.notes ?? null,
-  metadata: overrides.metadata ?? null,
-});
 
 const extractComponentCustomIds = (components: unknown[]): string[] =>
   components.flatMap((row) =>
@@ -128,6 +110,24 @@ describe('ThreadManager (unit)', () => {
 
   let channel: ThreadParentChannel;
   let thread: jest.Mocked<ThreadChannel>;
+
+  const createManager = (client: Client = {} as Client): ThreadManager =>
+    new ThreadManager(
+      client,
+      configService,
+      verificationEventRepository,
+      userRepository,
+      serverRepository,
+      serverMemberRepository
+    );
+
+  const createPendingEvent = (): Promise<VerificationEvent> =>
+    verificationEventRepository.createFromDetection(
+      null,
+      'guild-1',
+      'user-1',
+      VerificationStatus.PENDING
+    );
 
   beforeEach(() => {
     thread = buildThread();
@@ -192,14 +192,7 @@ describe('ThreadManager (unit)', () => {
         }),
       },
     };
-    const manager = new ThreadManager(
-      client as unknown as Client,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager(client as unknown as Client);
     await manager.retireReportConfirmationPrompts(
       { id: 'intake-1', thread_id: 'thread-1', server_id: 'guild-1' } as ReportIntake,
       ['prompt-1']
@@ -214,14 +207,7 @@ describe('ThreadManager (unit)', () => {
     const client = {
       channels: { fetch: jest.fn().mockResolvedValue(thread) },
     };
-    const manager = new ThreadManager(
-      client as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager(client as unknown as Client);
 
     await expect(
       manager.sendCaptchaStatus(
@@ -246,14 +232,7 @@ describe('ThreadManager (unit)', () => {
     const client = {
       channels: { fetch: jest.fn().mockResolvedValue(thread) },
     };
-    const manager = new ThreadManager(
-      client as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager(client as unknown as Client);
 
     await expect(
       manager.sendCaptchaChallenge(buildVerificationEvent({ thread_id: thread.id }), challengeUrl)
@@ -269,14 +248,7 @@ describe('ThreadManager (unit)', () => {
     const client = {
       channels: { fetch: jest.fn().mockResolvedValue(thread) },
     };
-    const manager = new ThreadManager(
-      client as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager(client as unknown as Client);
 
     await expect(
       manager.sendCaptchaChallenge(
@@ -295,14 +267,7 @@ describe('ThreadManager (unit)', () => {
 
   it('delivers a generation-bound native image entry button', async () => {
     const client = { channels: { fetch: jest.fn().mockResolvedValue(thread) } };
-    const manager = new ThreadManager(
-      client as unknown as Client,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager(client as unknown as Client);
     await expect(
       manager.sendCaptchaChallenge(buildVerificationEvent({ thread_id: thread.id }), {
         challengeId: '00000000-0000-4000-8000-000000000001',
@@ -323,14 +288,7 @@ describe('ThreadManager (unit)', () => {
     const client = {
       channels: { fetch: jest.fn().mockResolvedValue(thread) },
     };
-    const manager = new ThreadManager(
-      client as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager(client as unknown as Client);
 
     await expect(
       manager.sendCaptchaChallenge(
@@ -349,14 +307,7 @@ describe('ThreadManager (unit)', () => {
     const client = {
       channels: { fetch: jest.fn().mockResolvedValue(thread) },
     };
-    const manager = new ThreadManager(
-      client as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager(client as unknown as Client);
 
     await expect(
       manager.retractCaptchaChallenge(buildVerificationEvent({ thread_id: thread.id }), 'message-1')
@@ -372,14 +323,7 @@ describe('ThreadManager (unit)', () => {
     const client = {
       channels: { fetch: jest.fn().mockResolvedValue(thread) },
     };
-    const manager = new ThreadManager(
-      client as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager(client as unknown as Client);
 
     await expect(
       manager.sendCaptchaStatus(
@@ -390,22 +334,10 @@ describe('ThreadManager (unit)', () => {
   });
 
   it('creates a verification thread and stores thread_id', async () => {
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
 
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     const createdThread = await manager.createVerificationThread(member, event);
     const storedEvent = await verificationEventRepository.findById(event.id);
@@ -448,22 +380,10 @@ describe('ThreadManager (unit)', () => {
   });
 
   it('does not create a verification thread while the member is pending screening', async () => {
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
 
     const member = buildMember('guild-1', 'user-1', 'Test Guild', true);
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     await expect(manager.createVerificationThread(member, event)).rejects.toThrow(
       'membership screening/onboarding'
@@ -478,24 +398,12 @@ describe('ThreadManager (unit)', () => {
     (thread.members.add as jest.Mock)
       .mockRejectedValueOnce(new Error('Missing Access'))
       .mockResolvedValueOnce(undefined);
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     (manager as any).wait = jest.fn().mockResolvedValue(undefined);
     const member = buildMember('guild-1', 'user-1');
     const fetch = jest.fn().mockResolvedValue(member);
     (member as any).fetch = fetch;
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     try {
       const createdThread = await manager.createVerificationThread(member, event);
@@ -521,22 +429,10 @@ describe('ThreadManager (unit)', () => {
     (thread.members.add as jest.Mock).mockRejectedValue(
       Object.assign(new Error('Missing Access'), { code: 50001 })
     );
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     (manager as any).wait = jest.fn().mockResolvedValue(undefined);
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     try {
       await expect(manager.createVerificationThread(member, event)).rejects.toMatchObject({
@@ -561,22 +457,10 @@ describe('ThreadManager (unit)', () => {
     (thread.members.add as jest.Mock).mockRejectedValue(
       Object.assign(new Error('Missing Access'), { code: 50001 })
     );
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     (manager as any).wait = jest.fn().mockResolvedValue(undefined);
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     try {
       await expect(manager.createVerificationThread(member, event)).rejects.toMatchObject({
@@ -595,25 +479,13 @@ describe('ThreadManager (unit)', () => {
     (thread.members.add as jest.Mock).mockRejectedValue(
       Object.assign(new Error('Missing Access'), { code: 50001 })
     );
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     (manager as any).wait = jest.fn().mockResolvedValue(undefined);
     const member = buildMember('guild-1', 'user-1');
     const pendingMember = buildMember('guild-1', 'user-1', 'Test Guild', true);
     const fetch = jest.fn().mockResolvedValue(pendingMember);
     (member as any).fetch = fetch;
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     try {
       await expect(manager.createVerificationThread(member, event)).rejects.toMatchObject({
@@ -634,22 +506,10 @@ describe('ThreadManager (unit)', () => {
     (thread.members.add as jest.Mock).mockRejectedValue(
       Object.assign(new Error('Missing Access'), { code: 50001 })
     );
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     (manager as any).wait = jest.fn().mockResolvedValue(undefined);
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     try {
       await expect(manager.createVerificationThread(member, event)).rejects.toMatchObject({
@@ -665,21 +525,9 @@ describe('ThreadManager (unit)', () => {
   it('keeps a created verification thread linked when prompt send fails', async () => {
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     thread.send.mockRejectedValueOnce(new Error('Missing Send Messages permission'));
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     try {
       await expect(manager.createVerificationThread(member, event)).rejects.toThrow(
@@ -699,21 +547,9 @@ describe('ThreadManager (unit)', () => {
   });
 
   it('repairs an existing verification thread by adding the user and sending a missing prompt', async () => {
-    const manager = new ThreadManager(
-      { user: { id: 'bot-1' } } as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager({ user: { id: 'bot-1' } } as unknown as Client);
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
     await verificationEventRepository.update(event.id, { thread_id: 'thread-1' });
     event.thread_id = 'thread-1';
 
@@ -787,21 +623,9 @@ describe('ThreadManager (unit)', () => {
         ],
       ])
     );
-    const manager = new ThreadManager(
-      { user: { id: 'bot-1' } } as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager({ user: { id: 'bot-1' } } as unknown as Client);
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
     await verificationEventRepository.update(event.id, { thread_id: 'thread-1' });
     event.thread_id = 'thread-1';
 
@@ -826,21 +650,9 @@ describe('ThreadManager (unit)', () => {
         ],
       ])
     );
-    const manager = new ThreadManager(
-      { user: { id: 'bot-1' } } as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager({ user: { id: 'bot-1' } } as unknown as Client);
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
     await verificationEventRepository.update(event.id, { thread_id: 'thread-1' });
     event.thread_id = 'thread-1';
 
@@ -874,23 +686,11 @@ describe('ThreadManager (unit)', () => {
       components: [{ type: 1, components: [{ type: 2, customId }] }],
     });
     const manager = (): ThreadManager =>
-      new ThreadManager(
-        { user: { id: 'bot-1' } } as unknown as Client,
-        configService,
-        verificationEventRepository,
-        userRepository,
-        serverRepository,
-        serverMemberRepository
-      );
+      createManager({ user: { id: 'bot-1' } } as unknown as Client);
     const createCase = async (
       metadata: NonNullable<VerificationEvent['metadata']> = {}
     ): Promise<VerificationEvent> => {
-      const event = await verificationEventRepository.createFromDetection(
-        null,
-        'guild-1',
-        'user-1',
-        VerificationStatus.PENDING
-      );
+      const event = await createPendingEvent();
       return (await verificationEventRepository.update(event.id, {
         thread_id: thread.id,
         metadata,
@@ -911,12 +711,7 @@ describe('ThreadManager (unit)', () => {
           await resume.promise;
           return result;
         });
-      const event = await verificationEventRepository.createFromDetection(
-        null,
-        'guild-1',
-        'user-1',
-        VerificationStatus.PENDING
-      );
+      const event = await createPendingEvent();
       const service = manager();
       const creating = service.createVerificationThread(buildMember('guild-1', 'user-1'), event);
       await stored.promise;
@@ -1149,12 +944,7 @@ describe('ThreadManager (unit)', () => {
       });
     });
     it('preserves a newer thread identity while retiring its late created thread', async () => {
-      const event = await verificationEventRepository.createFromDetection(
-        null,
-        'guild-1',
-        'user-1',
-        VerificationStatus.PENDING
-      );
+      const event = await createPendingEvent();
       channel.threads.create.mockImplementationOnce(async () => {
         await verificationEventRepository.setThreadIdentity(
           event.id,
@@ -1192,15 +982,7 @@ describe('ThreadManager (unit)', () => {
     it.each(['routing', 'repair-unarchive', 'repair-add', 'repair-add-absent', 'send'])(
       'retires setup when resolution wins during %s',
       async (stage) => {
-        const event =
-          stage === 'routing'
-            ? await verificationEventRepository.createFromDetection(
-                null,
-                'guild-1',
-                'user-1',
-                VerificationStatus.PENDING
-              )
-            : await createCase();
+        const event = stage === 'routing' ? await createPendingEvent() : await createCase();
         const resolve = () =>
           verificationEventRepository.update(event.id, {
             status: VerificationStatus.VERIFIED,
@@ -1388,12 +1170,7 @@ describe('ThreadManager (unit)', () => {
     });
 
     it('recovers creation after member addition failed without creating a second thread', async () => {
-      const event = await verificationEventRepository.createFromDetection(
-        null,
-        'guild-1',
-        'user-1',
-        VerificationStatus.PENDING
-      );
+      const event = await createPendingEvent();
       const service = manager();
       const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -1447,12 +1224,7 @@ describe('ThreadManager (unit)', () => {
     });
 
     it('preserves newer resolution and metadata while a stale setup finishes', async () => {
-      const event = await verificationEventRepository.createFromDetection(
-        null,
-        'guild-1',
-        'user-1',
-        VerificationStatus.PENDING
-      );
+      const event = await createPendingEvent();
       const add = thread.members.add as jest.Mock;
       add.mockImplementationOnce(async () => {
         await verificationEventRepository.update(event.id, {
@@ -1477,12 +1249,7 @@ describe('ThreadManager (unit)', () => {
     it.each([false, true])(
       'keeps thread identity and type consistent if a separate metadata write fails (legacy=%s)',
       async (legacy) => {
-        const event = await verificationEventRepository.createFromDetection(
-          null,
-          'guild-1',
-          'user-1',
-          VerificationStatus.PENDING
-        );
+        const event = await createPendingEvent();
         if (legacy) {
           const updated = await verificationEventRepository.update(event.id, {
             thread_id: 'legacy-review',
@@ -1620,12 +1387,7 @@ describe('ThreadManager (unit)', () => {
     });
 
     it('creates a missing thread during repair without waiting on its own setup promise', async () => {
-      const event = await verificationEventRepository.createFromDetection(
-        null,
-        'guild-1',
-        'user-1',
-        VerificationStatus.PENDING
-      );
+      const event = await createPendingEvent();
       expect(
         (await manager().repairVerificationThread(buildMember('guild-1', 'user-1'), event)).threadId
       ).toBe('thread-1');
@@ -1641,22 +1403,10 @@ describe('ThreadManager (unit)', () => {
       },
     });
 
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
 
     const member = buildMember('guild-1', 'user-1', 'My @everyone Server');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     await manager.createVerificationThread(member, event);
 
@@ -1673,22 +1423,10 @@ describe('ThreadManager (unit)', () => {
   });
 
   it('creates a moderator-only report review thread without adding the reported user', async () => {
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
 
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     const createdThread = await manager.createReportReviewThread(member, event, {
       label: 'SUSPICIOUS',
@@ -1734,21 +1472,9 @@ describe('ThreadManager (unit)', () => {
   it('keeps a created report review thread linked when prompt send fails', async () => {
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     thread.send.mockRejectedValueOnce(new Error('Missing Send Messages permission'));
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     try {
       await expect(
@@ -1773,21 +1499,9 @@ describe('ThreadManager (unit)', () => {
   });
 
   it('creates an admin evidence thread from the notification message', async () => {
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
     const notificationMessage = {
       startThread: jest.fn().mockResolvedValue(thread),
       fetch: jest.fn().mockResolvedValue({ thread: null }),
@@ -1829,21 +1543,9 @@ describe('ThreadManager (unit)', () => {
   });
 
   it('recovers an already-attached admin evidence thread when duplicate start fails', async () => {
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
     const notificationMessage = {
       startThread: jest
         .fn()
@@ -1872,14 +1574,7 @@ describe('ThreadManager (unit)', () => {
   });
 
   it('creates an inactive report intake thread before adding the reporter', async () => {
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     const reporter = buildMember('guild-1', 'reporter-1');
 
     const createdThread = await manager.createReportIntakeThread(channel as any, reporter);
@@ -1897,14 +1592,7 @@ describe('ThreadManager (unit)', () => {
   });
 
   it('activates a report intake thread by adding the reporter and welcome message', async () => {
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     const reporter = buildMember('guild-1', 'reporter-1');
 
     const activated = await manager.activateReportIntakeThread(thread, reporter, 'intake-1');
@@ -1963,20 +1651,8 @@ describe('ThreadManager (unit)', () => {
       },
     });
 
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const manager = createManager();
+    const event = await createPendingEvent();
 
     await manager.createReportReviewThread(member, event, {
       label: 'SUSPICIOUS',
@@ -2003,22 +1679,10 @@ describe('ThreadManager (unit)', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     try {
-      const manager = new ThreadManager(
-        {} as any,
-        configService,
-        verificationEventRepository,
-        userRepository,
-        serverRepository,
-        serverMemberRepository
-      );
+      const manager = createManager();
 
       const member = buildMember('guild-1', 'user-1');
-      const event = await verificationEventRepository.createFromDetection(
-        null,
-        'guild-1',
-        'user-1',
-        VerificationStatus.PENDING
-      );
+      const event = await createPendingEvent();
 
       await manager.createVerificationThread(member, event);
 
@@ -2052,22 +1716,10 @@ describe('ThreadManager (unit)', () => {
         },
       });
 
-      const manager = new ThreadManager(
-        {} as any,
-        configService,
-        verificationEventRepository,
-        userRepository,
-        serverRepository,
-        serverMemberRepository
-      );
+      const manager = createManager();
 
       const member = buildMember('guild-1', 'user-1');
-      const event = await verificationEventRepository.createFromDetection(
-        null,
-        'guild-1',
-        'user-1',
-        VerificationStatus.PENDING
-      );
+      const event = await createPendingEvent();
 
       await manager.createVerificationThread(member, event);
 
@@ -2095,22 +1747,10 @@ describe('ThreadManager (unit)', () => {
     (configService.getVerificationChannel as jest.Mock).mockResolvedValue(undefined);
     (configService.getAdminChannel as jest.Mock).mockResolvedValue(channel);
 
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
 
     const member = buildMember('guild-1', 'user-1');
-    const event = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingEvent();
 
     await manager.createVerificationThread(member, event);
 
@@ -2127,14 +1767,7 @@ describe('ThreadManager (unit)', () => {
     (channel.threads.fetch as jest.Mock).mockImplementation((threadId: string) =>
       Promise.resolve(threadId === 'evidence-thread-1' ? evidenceThread : thread)
     );
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
 
     const event = buildVerificationEvent({
       thread_id: 'thread-1',
@@ -2195,14 +1828,7 @@ describe('ThreadManager (unit)', () => {
     (channel.threads.fetch as jest.Mock).mockImplementation((threadId: string) =>
       Promise.resolve(threadId === 'evidence-thread-1' ? evidenceThread : thread)
     );
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
 
     const result = await manager.resolveVerificationThread(
       buildVerificationEvent({
@@ -2226,14 +1852,7 @@ describe('ThreadManager (unit)', () => {
     (channel.threads.fetch as jest.Mock).mockImplementation((threadId: string) =>
       Promise.resolve(threadId === 'evidence-thread-1' ? evidenceThread : thread)
     );
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
     const event = buildVerificationEvent({
       thread_id: 'thread-1',
       private_evidence_thread_id: 'evidence-thread-1',
@@ -2265,21 +1884,9 @@ describe('ThreadManager (unit)', () => {
     (channel.threads.fetch as jest.Mock).mockImplementation((threadId: string) =>
       Promise.resolve(threadId === 'evidence-thread-1' ? evidenceThread : thread)
     );
-    const manager = new ThreadManager(
-      {} as any,
-      configService,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      serverMemberRepository
-    );
+    const manager = createManager();
 
-    const created = await verificationEventRepository.createFromDetection(
-      null,
-      'guild-1',
-      'user-1',
-      VerificationStatus.PENDING
-    );
+    const created = await createPendingEvent();
     const event = (await verificationEventRepository.update(created.id, {
       thread_id: 'thread-1',
       private_evidence_thread_id: 'evidence-thread-1',
