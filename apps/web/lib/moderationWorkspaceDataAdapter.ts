@@ -50,6 +50,7 @@ import { getPostgresPool } from './setupDataAdapter';
 import {
   caseWorkspaceDataSchema,
   workspaceItemDetailSchema,
+  responseReviewClosureSchema,
   type CaseWorkspaceData,
   type WorkspaceItemDetail,
   type WorkspaceActionPolicy,
@@ -438,6 +439,11 @@ export function createModerationWorkspaceDataAdapter(
       observedState.success ? observedState.data : {}
     );
     const response = readAutomaticModerationResponse(row.metadata);
+    const metadata = observedState.success ? observedState.data : {};
+    const reviewClosure = responseReviewClosureSchema.safeParse({
+      actorId: metadata.automatic_response_resolved_by,
+      closedAt: metadata.automatic_response_resolved_at,
+    });
     if (response) {
       const queue = await getPostgresPool().query<{ id: string; metadata: unknown }>(
         `select id, metadata from moderation_queue_items where server_id = $1 and detection_event_id = $2 and item_type = 'observed_alert_mirror' limit 1`,
@@ -480,6 +486,7 @@ export function createModerationWorkspaceDataAdapter(
     return workspaceItemDetailSchema.parse({
       kind: 'observed_alert',
       ...(response ? { automaticResponse: response } : {}),
+      ...(response && reviewClosure.success ? { reviewClosure: reviewClosure.data } : {}),
       item: { ...item, allowedActions: effectivePolicy.allowedActions },
       policy: effectivePolicy,
       detection,

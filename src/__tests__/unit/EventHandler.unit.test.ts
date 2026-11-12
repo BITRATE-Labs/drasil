@@ -22,7 +22,14 @@ import {
   PermissionFlagsBits,
   PermissionsBitField,
 } from 'discord.js';
-import { InMemoryVerificationEventRepository } from '../fakes/inMemoryRepositories';
+import {
+  InMemoryVerificationEventRepository,
+  InMemoryDetectionEventsRepository,
+  InMemoryServerMemberRepository,
+  InMemoryUserRepository,
+  InMemoryServerRepository,
+} from '../fakes/inMemoryRepositories';
+import { SecurityActionService } from '../../services/SecurityActionService';
 import { EventHandler } from '../../controllers/EventHandler';
 import {
   ActiveAccountQuarantineCache,
@@ -4236,34 +4243,131 @@ describe('EventHandler (unit)', () => {
         expect(setupDiagnosticsService.validateGuildSetup).not.toHaveBeenCalled();
     }
   );
-  it('reports failed enforcement above its action threshold even below the observed cutoff', async () => {
-    const securityActionService = {
-      handleSuspiciousMessage: jest.fn().mockResolvedValue(false),
-      recordAutomaticResponseFailure: jest.fn().mockResolvedValue(undefined),
-    };
-    const handler = buildHandler({ securityActionService });
-    const member = { guild: { id: 'guild-1' }, user: { tag: 'test' } } as any;
-    const detection = {
-      label: 'SUSPICIOUS',
-      confidence: 0.8,
-      reasons: [],
-      detectionEventId: 'det-1',
-    };
-    await (handler as any).handleAutomaticDetection(
-      member,
-      detection,
-      { mode: 'restrict', observedMinConfidenceThreshold: 95 },
-      70,
-      {}
-    );
-    expect(securityActionService.handleSuspiciousMessage).toHaveBeenCalledTimes(1);
-    expect(securityActionService.recordAutomaticResponseFailure).toHaveBeenCalledWith(
-      member,
-      detection,
-      expect.objectContaining({ action: 'restrict', outcome: 'failed', attention: 'required' }),
-      {}
-    );
-  });
+  it.each(['message', 'join'] as const)(
+    'does not invent a failure when %s enforcement is suppressed',
+    async (source) => {
+      const securityActionService = {
+        handleSuspiciousMessage: jest.fn().mockResolvedValue(false),
+        handleSuspiciousJoin: jest.fn().mockResolvedValue(false),
+        recordAutomaticResponseFailure: jest.fn().mockResolvedValue(undefined),
+      };
+      const handler = buildHandler({ securityActionService });
+      const member = { guild: { id: 'guild-1' }, user: { tag: 'test' } } as GuildMember;
+      const detection: Parameters<EventHandler['handleAutomaticDetection']>[1] = {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        detectionEventId: 'det-1',
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      await handler['handleAutomaticDetection'](
+        member,
+        detection,
+        { mode: 'restrict', observedMinConfidenceThreshold: 95 } as Parameters<
+          EventHandler['handleAutomaticDetection']
+        >[2],
+        70,
+        source === 'message' ? ({} as Message) : undefined
+      );
+      expect(
+        securityActionService[
+          source === 'message' ? 'handleSuspiciousMessage' : 'handleSuspiciousJoin'
+        ]
+      ).toHaveBeenCalledTimes(1);
+      expect(securityActionService.recordAutomaticResponseFailure).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['message', 'join'] as const)(
+    'keeps stored outcomes unchanged through actual %s replay suppression',
+    async (source) => {
+      type Dependencies = ConstructorParameters<typeof SecurityActionService>;
+      const detections = new InMemoryDetectionEventsRepository();
+      const servers = new InMemoryServerRepository();
+      await servers.upsertByGuildId('guild-replay', {
+        settings: {
+          message_detection_auto_kick_enabled: true,
+          join_detection_auto_kick_enabled: true,
+          auto_kick_min_confidence_threshold: 95,
+        },
+      });
+      const kick = jest.fn();
+      const apply = jest.fn();
+      const security = new SecurityActionService(
+        {
+          upsertObservedDetectionNotification: jest.fn().mockResolvedValue(null),
+        } as unknown as Dependencies[0],
+        detections,
+        new InMemoryServerMemberRepository(),
+        new InMemoryVerificationEventRepository(),
+        new InMemoryUserRepository(),
+        servers,
+        {} as Dependencies[6],
+        {} as Dependencies[7],
+        { kickUser: kick, applyCaseRole: apply } as unknown as Dependencies[8],
+        { user: { id: 'bot' } } as Client
+      );
+      const handler = buildHandler({
+        securityActionService: {
+          handleSuspiciousMessage: jest.fn(security.handleSuspiciousMessage.bind(security)),
+          handleSuspiciousJoin: jest.fn(security.handleSuspiciousJoin.bind(security)),
+          recordAutomaticResponseFailure: jest.fn(
+            security.recordAutomaticResponseFailure.bind(security)
+          ),
+        },
+      });
+      const member = {
+        id: 'user-replay',
+        guild: { id: 'guild-replay' },
+        user: { id: 'user-replay', username: 'synthetic', tag: 'synthetic' },
+      } as GuildMember;
+      for (const [outcome, attention] of [
+        ['pending', 'required'],
+        ['failed', 'required'],
+        ['unknown', 'required'],
+        ['kicked', 'resolved'],
+      ] as const) {
+        const metadata = {
+          observed_action: 'kick',
+          automatic_response_resolved_by: '123456789012345678',
+          automatic_response_resolved_at: '2026-11-12T00:00:00.000Z',
+          automatic_moderation_response: {
+            action: 'kick',
+            outcome,
+            attention,
+            caseId: null,
+            updatedAt: '2026-11-11T00:00:00.000Z',
+            failures: [],
+          },
+        };
+        const event = await detections.create({
+          server_id: member.guild.id,
+          user_id: member.id,
+          detection_type: DetectionType.SUSPICIOUS_CONTENT,
+          confidence: 0.99,
+          metadata,
+        });
+        await handler['handleAutomaticDetection'](
+          member,
+          {
+            label: 'SUSPICIOUS',
+            confidence: 0.99,
+            reasons: [],
+            triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+            triggerContent: '',
+            detectionEventId: event.id,
+          },
+          { mode: 'restrict' } as Parameters<EventHandler['handleAutomaticDetection']>[2],
+          70,
+          source === 'message' ? ({} as Message) : undefined
+        );
+        expect((await detections.findById(event.id))?.metadata).toEqual(metadata);
+      }
+      expect(kick).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+    }
+  );
 
   it('skips detection-time setup validation immediately after a warning attempt', async () => {
     const configService = {

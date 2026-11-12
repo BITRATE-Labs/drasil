@@ -699,6 +699,18 @@ function SelectedDetail({
           <p>
             Detected <Timestamp value={detail.detection.detectedAt} />
           </p>
+          {detail.automaticResponse?.action === 'kick' &&
+          detail.automaticResponse.outcome === 'failed' ? (
+            <p>
+              Open Member history to review existing cases or use Open Case for further moderation.
+            </p>
+          ) : null}
+          {detail.reviewClosure ? (
+            <p>
+              Last review closed by {detail.reviewClosure.actorId},{' '}
+              <Timestamp value={detail.reviewClosure.closedAt} />
+            </p>
+          ) : null}
           <ul>
             {detail.detection.reasons.map((reason, index) => (
               <li key={index}>{reason}</li>

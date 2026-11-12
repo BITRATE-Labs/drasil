@@ -1,4 +1,8 @@
-import { formatCaseActionFailures, readAutomaticModerationResponse } from './automaticResponse';
+import {
+  formatCaseActionFailures,
+  formatAutomaticModerationResponse,
+  readAutomaticModerationResponse,
+} from './automaticResponse';
 import { acknowledgeAutomaticResponseMetadata } from '../operations/attention';
 const response = {
   action: 'kick',
@@ -88,4 +92,16 @@ test('shows a case persistence failure without an automatic response snapshot', 
   ).toBe(
     'Case saved. Case thread could not be created. Moderator action required. Case update failed. Check the case state and bot logs.'
   );
+});
+
+test('failed kick guidance names existing intentional member actions without claiming removal', () => {
+  const failed = readAutomaticModerationResponse({
+    automatic_moderation_response: { ...response, outcome: 'failed' },
+  });
+  if (!failed) throw new Error('Invalid response fixture');
+  const copy = formatAutomaticModerationResponse(failed);
+  expect(copy).toContain('Automatic kick failed.');
+  expect(copy).toContain('In Discord');
+  expect(copy).toContain('Kick User or Ban User');
+  expect(copy).not.toContain('Member kicked.');
 });

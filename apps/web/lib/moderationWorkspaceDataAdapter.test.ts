@@ -980,3 +980,35 @@ it.each(['kicked', 'failed', 'unknown', 'pending'])(
     expect(result?.item.queueItemId).toBe('response-queue');
   }
 );
+
+it.each(['resolved', 'required'])(
+  'projects the last saved review closure on %s response attention',
+  async (attention) => {
+    const row = observedReadRow();
+    row.metadata = {
+      observed_action: 'kick',
+      automatic_response_resolved_by: '123456789012345678',
+      automatic_response_resolved_at: '2026-11-12T00:00:00.000Z',
+      automatic_moderation_response: {
+        action: 'kick',
+        outcome: 'unknown',
+        attention,
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [{ step: 'kick', code: 'kick_outcome_unknown' }],
+      },
+    };
+    state.query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('from detection_events de') ? [row] : [],
+    }));
+    const result = await createModerationWorkspaceDataAdapter(actor).getInboxItemDetail({
+      guildId: 'guild-1',
+      itemId: 'detection:observed-read',
+    });
+    expect(result).toMatchObject({
+      kind: 'observed_alert',
+      reviewClosure: { actorId: '123456789012345678', closedAt: '2026-11-12T00:00:00.000Z' },
+    });
+    expect(result?.item.summary).toContain('Kick outcome could not be confirmed.');
+  }
+);

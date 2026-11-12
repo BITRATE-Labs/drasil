@@ -883,46 +883,13 @@ export class EventHandler implements IEventHandler {
             return;
           }
           if (sourceMessage) {
-            const handled = await this.securityActionService.handleSuspiciousMessage(
+            await this.securityActionService.handleSuspiciousMessage(
               member,
               detectionResult,
               sourceMessage
             );
-            if (handled === false) {
-              await this.securityActionService.recordAutomaticResponseFailure(
-                member,
-                detectionResult,
-                {
-                  action: 'restrict',
-                  outcome: 'failed',
-                  attention: 'required',
-                  caseId: null,
-                  updatedAt: new Date().toISOString(),
-                  failures: [{ step: 'role', code: 'role_assignment_failed' }],
-                },
-                sourceMessage
-              );
-            }
           } else {
-            const handled = await this.securityActionService.handleSuspiciousJoin(
-              member,
-              detectionResult
-            );
-            if (handled === false) {
-              await this.securityActionService.recordAutomaticResponseFailure(
-                member,
-                detectionResult,
-                {
-                  action: 'restrict',
-                  outcome: 'failed',
-                  attention: 'required',
-                  caseId: null,
-                  updatedAt: new Date().toISOString(),
-                  failures: [{ step: 'role', code: 'role_assignment_failed' }],
-                },
-                sourceMessage
-              );
-            }
+            await this.securityActionService.handleSuspiciousJoin(member, detectionResult);
           }
           return;
 

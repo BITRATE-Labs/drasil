@@ -347,6 +347,13 @@ it('renders a completed identity handoff as review resolved without claiming sta
 
 it.each([
   {
+    state: 'failed response',
+    allowed: ['acknowledge', 'dismiss_no_action'],
+    policy: ['acknowledge', 'dismiss_no_action'],
+    queueId: 'response-queue',
+    canQueue: true,
+  },
+  {
     state: 'mixed response',
     allowed: ['acknowledge', 'dismiss_no_action'],
     policy: ['acknowledge', 'dismiss_no_action'],
@@ -398,13 +405,19 @@ it.each([
       allowedActions: allowed,
       statusLabel: state,
       title: 'Automatic response needs review',
-      summary: 'Member kicked. Notification delivery failed.',
+      summary:
+        state === 'failed response'
+          ? 'Automatic kick failed. The member may still have access.'
+          : 'Member kicked. Notification delivery failed.',
     };
     const model = workspaceItemDetailSchema.parse({
       kind: 'observed_alert',
+      ...(['resolved', 'acknowledged'].includes(state)
+        ? { reviewClosure: { actorId: '123456789012345678', closedAt: '2026-11-12T00:00:00.000Z' } }
+        : {}),
       automaticResponse: {
         action: 'kick',
-        outcome: 'kicked',
+        outcome: state === 'failed response' ? 'failed' : 'kicked',
         attention: 'required',
         caseId: null,
         updatedAt: '2026-11-11T00:00:00.000Z',
@@ -481,12 +494,21 @@ it.each([
         },
       })
     );
-    expect(html).toContain('Member kicked. Notification delivery failed.');
+    if (state === 'failed response')
+      expect(html).toContain(
+        'Open Member history to review existing cases or use Open Case for further moderation.'
+      );
+    else expect(html).toContain('Member kicked. Notification delivery failed.');
+    if (state === 'resolved' || state === 'acknowledged') {
+      expect(html).toContain('Last review closed by');
+      expect(html).toContain('123456789012345678');
+      expect(html).toContain('2026-11-12T00:00:00.000Z');
+    }
     if (state === 'mixed response') {
       expect(html).toContain('Close alert');
       expect(matchingInboxRequests(model).map((request) => request.id)).toEqual(['observed-close']);
     }
-    if (state === 'required' || state === 'mixed response')
+    if (state === 'required' || state === 'mixed response' || state === 'failed response')
       expect(html).toContain('Acknowledge response');
     else expect(html).not.toContain('Acknowledge response');
     expect(html).not.toMatch(/Kick member|Ban member|Open case/);

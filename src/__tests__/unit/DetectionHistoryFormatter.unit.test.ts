@@ -71,4 +71,45 @@ describe('DetectionHistoryFormatter (unit)', () => {
       'Accounting: excluded from server future accounting (Marked false positive)'
     );
   });
+  it.each(['resolved', 'required'])(
+    'shows last review attribution without claiming kick success (%s)',
+    (attention) => {
+      const output = DetectionHistoryFormatter.formatHistory(
+        'user-1',
+        [
+          {
+            id: 'event-1',
+            server_id: 'server-1',
+            user_id: 'user-1',
+            detection_type: DetectionType.SUSPICIOUS_CONTENT,
+            confidence: 0.9,
+            reasons: [],
+            detected_at: new Date('2026-11-11T00:00:00.000Z'),
+            thread_id: null,
+            message_id: null,
+            channel_id: null,
+            latest_verification_event_id: null,
+            metadata: {
+              observed_action: 'kick',
+              automatic_response_resolved_by: '123456789012345678',
+              automatic_response_resolved_at: '2026-11-12T00:00:00.000Z',
+              automatic_moderation_response: {
+                action: 'kick',
+                outcome: 'unknown',
+                attention,
+                caseId: null,
+                updatedAt: '2026-11-11T00:00:00.000Z',
+                failures: [{ step: 'kick', code: 'kick_outcome_unknown' }],
+              },
+            },
+          },
+        ],
+        'server-1'
+      );
+      expect(output).toContain('Last review closed by: 123456789012345678');
+      expect(output).toContain('Last review closed at: 2026-11-12T00:00:00.000Z');
+      expect(output).toContain('Kick outcome could not be confirmed.');
+      expect(output).not.toContain('Member kicked.');
+    }
+  );
 });

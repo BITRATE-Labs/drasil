@@ -64,7 +64,9 @@ export function formatAutomaticModerationResponse(response: AutomaticModerationR
         lines.push('Member kicked.');
         break;
       case 'failed':
-        lines.push('Automatic kick failed. The member may still have access.');
+        lines.push(
+          'Automatic kick failed. The member may still have access. In Discord, inspect the member and use the Kick User or Ban User menu action if needed.'
+        );
         break;
       case 'unknown':
         lines.push(
