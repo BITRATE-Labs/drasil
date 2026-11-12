@@ -1303,6 +1303,7 @@ export class SecurityActionService implements ISecurityActionService {
     verificationEvent: VerificationEvent,
     sourceMessage?: Message
   ): Promise<VerificationEvent> {
+    let accumulatedEvent = verificationEvent;
     try {
       const notificationMessage = await this.upsertNotification(
         member,
@@ -1310,7 +1311,7 @@ export class SecurityActionService implements ISecurityActionService {
         verificationEvent,
         sourceMessage
       );
-      const evidenceEvent = await this.ensurePrivateEvidenceThread(
+      accumulatedEvent = await this.ensurePrivateEvidenceThread(
         member,
         verificationEvent,
         detectionResult,
@@ -1318,9 +1319,16 @@ export class SecurityActionService implements ISecurityActionService {
         sourceMessage
       );
       let updatedEvent =
-        (await this.verificationEventRepository.findById(verificationEvent.id)) ?? evidenceEvent;
+        (await this.verificationEventRepository.findById(verificationEvent.id)) ?? accumulatedEvent;
       // Retain in-memory failure evidence if an earlier write failed while independent delivery continued.
-      const failures = getVerificationActionFailures(verificationEvent.metadata);
+      const failures = [
+        ...new Map(
+          [
+            ...getVerificationActionFailures(verificationEvent.metadata),
+            ...getVerificationActionFailures(accumulatedEvent.metadata),
+          ].map((failure) => [failure.action, failure])
+        ).values(),
+      ];
       if (failures.length) {
         const current = getVerificationActionFailures(updatedEvent.metadata);
         updatedEvent = {
@@ -1338,11 +1346,12 @@ export class SecurityActionService implements ISecurityActionService {
           }),
         };
       }
-      await this.upsertNotification(member, detectionResult, updatedEvent, sourceMessage);
+      accumulatedEvent = updatedEvent;
+      await this.upsertNotification(member, detectionResult, accumulatedEvent, sourceMessage);
       return updatedEvent;
     } catch {
       recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'notification_delivery_failed' });
-      return this.recordVerificationActionFailure(verificationEvent, 'notification');
+      return this.recordVerificationActionFailure(accumulatedEvent, 'notification');
     }
   }
 
@@ -2579,7 +2588,12 @@ export class SecurityActionService implements ISecurityActionService {
           );
       const previous = readAutomaticModerationResponse(detection.metadata);
       // Reprocessing cannot rewrite a completed kick or reopen its resolved attention.
-      if (previous?.action === 'kick') response = previous;
+      if (
+        previous?.action === 'kick' &&
+        (response.action !== 'kick' ||
+          (previous.outcome === 'kicked' && response.outcome !== 'kicked'))
+      )
+        response = previous;
       if (response.attention === 'resolved') {
         recordWorkflowOutcome({
           output: { verdict: detectionResult.label, actual_outcome: response.outcome },

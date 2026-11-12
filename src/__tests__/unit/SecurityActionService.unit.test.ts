@@ -575,6 +575,51 @@ describe('SecurityActionService (unit)', () => {
     }
   );
 
+  it('preserves acknowledged kick evidence when two outcome writes fail before recovery', async () => {
+    const member = buildMember('recovered-kick-guild', 'recovered-kick-user');
+    await serverRepository.upsertByGuildId(member.guild.id, {
+      settings: {
+        message_detection_auto_kick_enabled: true,
+        auto_kick_min_confidence_threshold: 95,
+      },
+    });
+    const result: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.99,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    userModerationService.kickUser.mockImplementationOnce(
+      async (_member, _reason, _actor, _id, lifecycle) => {
+        await lifecycle?.beforeSend();
+        await lifecycle?.acknowledged();
+        return true;
+      }
+    );
+    jest
+      .spyOn(detectionEventsRepository, 'patchMetadata')
+      .mockRejectedValueOnce(new Error('first outcome write unavailable'))
+      .mockRejectedValueOnce(new Error('second outcome write unavailable'));
+    const service = buildService({ user: { id: 'bot-1' } } as Client);
+    await expect(service.handleSuspiciousMessage(member, result)).rejects.toMatchObject({
+      outcome: 'kicked',
+      step: 'persistence',
+    });
+    expect(
+      (await detectionEventsRepository.findById(result.detectionEventId!))?.metadata
+    ).toMatchObject({
+      automatic_moderation_response: {
+        action: 'kick',
+        outcome: 'kicked',
+        attention: 'required',
+        failures: [{ step: 'persistence', code: 'persistence_failed' }],
+      },
+    });
+    await expect(service.handleSuspiciousMessage(member, result)).resolves.toBe(false);
+    expect(userModerationService.kickUser).toHaveBeenCalledTimes(1);
+  });
+
   it('falls back to restriction when auto-kick confidence is below threshold', async () => {
     const guildId = 'guild-auto-kick-under-threshold';
     const userId = 'user-auto-kick-under-threshold';
@@ -1017,6 +1062,73 @@ describe('SecurityActionService (unit)', () => {
           (await serverMemberRepository.findByServerAndUser(member.guild.id, member.id))
             ?.case_role_active
         ).toBe(true);
+    }
+  );
+
+  it.each([false, true])(
+    'retains evidence-thread and subsequent notification failures (first failure write unavailable: %s)',
+    async (writeUnavailable) => {
+      const member = buildMember('combined-failure-guild', 'combined-failure-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.8,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      threadManager.createPrivateEvidenceThread.mockRejectedValueOnce(
+        new Error('evidence unavailable')
+      );
+      notificationManager.upsertSuspiciousUserNotification
+        .mockResolvedValueOnce({ id: 'first-notification' } as Message)
+        .mockRejectedValueOnce(new Error('notification unavailable'));
+      if (writeUnavailable) {
+        const patchMetadata = verificationEventRepository.patchMetadata.bind(
+          verificationEventRepository
+        );
+        let failed = false;
+        jest
+          .spyOn(verificationEventRepository, 'patchMetadata')
+          .mockImplementation(async (id, patch, options) => {
+            if (!failed && 'action_failures' in patch) {
+              failed = true;
+              throw new Error('metadata unavailable');
+            }
+            return patchMetadata(id, patch, options);
+          });
+      }
+      const service = buildService();
+      (service as any).moderationQueueService = {
+        upsertCaseMirror: jest.fn(),
+        upsertObservedAlertMirrorById: jest.fn(),
+      };
+      await expect(service.handleSuspiciousMessage(member, detection)).resolves.toBe(true);
+      const owner = await verificationEventRepository.findActiveByUserAndServer(
+        member.id,
+        member.guild.id
+      );
+      expect(getVerificationActionFailures(owner?.metadata)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'private_evidence_thread',
+            message: 'thread_creation_failed',
+          }),
+          expect.objectContaining({
+            action: 'notification',
+            message: 'notification_delivery_failed',
+          }),
+        ])
+      );
+      expect(
+        (await detectionEventsRepository.findById(detection.detectionEventId!))?.metadata
+      ).toMatchObject({
+        automatic_moderation_response: {
+          failures: [
+            { step: 'notification', code: 'notification_delivery_failed' },
+            { step: 'thread', code: 'thread_creation_failed' },
+          ],
+        },
+      });
     }
   );
 
