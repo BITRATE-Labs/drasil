@@ -1,7 +1,6 @@
 import {
   readReporterPresentation,
   reporterViewKey,
-  reportRoot,
 } from '../utils/reportIntakePresentationMetadata';
 import {
   reportAnalysisMetadataSchema,
@@ -398,13 +397,7 @@ export function presentationMetadata(intake: ReportIntake): ReturnType<typeof pr
 }
 
 export function canPresent(intake: ReportIntake): boolean {
-  if (readReporterPresentation(intake)) return true;
-  if (reportRoot(intake).reporter_presentation !== undefined) {
-    console.warn(
-      `Invalid reporter presentation metadata for intake ${intake.id}; delivery blocked`
-    );
-    return false;
-  }
+  if (readReporterPresentation(intake)) return intake.status !== ReportIntakeStatus.EXPIRED;
   return (
     OPEN_ANALYSIS_STATUSES.includes(intake.status) &&
     !intake.closed_at &&
@@ -424,7 +417,7 @@ export function presentationClaimChange(
   if (!canPresent(intake)) return null;
   const reporter = readReporterPresentation(intake);
   const { metadata, analysis } = presentationMetadata(intake);
-  if (reporter) {
+  if (reporter && !reporter.threadMissing) {
     if (
       !reporter.nextDueAt ||
       new Date(reporter.nextDueAt) > now ||
@@ -518,8 +511,11 @@ export function completePresentationChange(
   if (!ownsPresentation(intake, claim, now)) return null;
   const { metadata, analysis } = presentationMetadata(intake);
   const attempts = analysis.presentation?.attempts ?? 1;
+  const reporter = readReporterPresentation(intake);
   const success =
-    result.kind === 'published' || (result.kind === 'delivered' && result.receipt === 'sent');
+    result.kind === 'published' ||
+    (result.kind === 'delivered' &&
+      (result.receipt === 'sent' || reporter?.threadMissing === true));
   const nextDueAt =
     result.kind === 'published' &&
     !(
@@ -533,8 +529,11 @@ export function completePresentationChange(
               ? PRESENTATION_RECONCILE_MS
               : (PRESENTATION_RETRY_MS[attempts - 1] ?? PRESENTATION_RECONCILE_MS))
         ).toISOString();
-  const reporter = readReporterPresentation(intake);
-  if (reporter) metadata.reporter_presentation = { ...reporter, nextDueAt };
+  if (reporter)
+    metadata.reporter_presentation = {
+      ...reporter,
+      nextDueAt: reporter.threadMissing ? null : nextDueAt,
+    };
   analysis.presentation = {
     revision: claim.revision,
     attempts: success && reporter ? 0 : attempts,

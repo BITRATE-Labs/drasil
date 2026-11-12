@@ -483,3 +483,53 @@ it('preserves malformed presentation metadata and blocks only its delivery', asy
     reporter_presentation: { openingMessageId: 123 },
   });
 });
+
+it('reschedules after a lost write without invoking legacy instruction fallback', async () => {
+  const f = await fixture();
+  jest.spyOn(f.repository, 'updateIfCurrent').mockResolvedValueOnce(null);
+  await expect(f.service.reconcile(f.intake.id)).resolves.toBe(true);
+  expect(f.channel.send).toHaveBeenCalledTimes(1);
+});
+
+it('settles reporter delivery only for a definite missing channel', async () => {
+  const f = await fixture();
+  jest
+    .spyOn(f.client.channels, 'fetch')
+    .mockRejectedValue(Object.assign(new Error('Unknown Channel'), { code: 10003 }));
+  await f.service.reconcile(f.intake.id);
+  expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+    reporter_presentation: { threadMissing: true, nextDueAt: null },
+  });
+  expect(
+    await f.repository.claimPendingPresentation(new Date(Date.now() + 86400000), f.intake.id)
+  ).toBeNull();
+});
+it('retains retries when the channel is forbidden rather than deleted', async () => {
+  const f = await fixture();
+  jest
+    .spyOn(f.client.channels, 'fetch')
+    .mockRejectedValue(Object.assign(new Error('Forbidden'), { code: 50001 }));
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('Forbidden');
+  expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+    reporter_presentation: { nextDueAt: expect.any(String) },
+  });
+});
+
+it('preserves malformed delivery obligations on direct worker publication', async () => {
+  const f = await fixture();
+  await suggest(f);
+  const current = (await f.repository.findById(f.intake.id))!;
+  const invalid = { openingMessageId: 123, restoreArchive: true };
+  await f.repository.update(f.intake.id, {
+    metadata: { ...(current.metadata as object), reporter_presentation: invalid },
+  });
+  const claim = await f.repository.claimPendingPresentation(new Date(), f.intake.id);
+  expect(claim).not.toBeNull();
+  await expect(f.service.presentClaim(claim!)).rejects.toThrow(
+    'Invalid reporter presentation metadata'
+  );
+  expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+    reporter_presentation: invalid,
+  });
+  expect(f.channel.send).not.toHaveBeenCalled();
+});

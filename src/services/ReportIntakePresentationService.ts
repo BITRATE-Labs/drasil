@@ -48,19 +48,33 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     @inject(TYPES.ConfigService) private configService: IConfigService
   ) {}
   async reconcile(intakeId: string): Promise<boolean> {
-    const intake = await this.repository.findById(intakeId);
+    let intake = await this.repository.findById(intakeId);
     if (!intake || !projectReportIntakeState(intake).staged) return false;
-    const storedReporter = readReporterPresentation(intake);
-    if (!storedReporter && reportRoot(intake).reporter_presentation !== undefined)
-      throw new Error('Invalid reporter presentation metadata');
-    const reporter = storedReporter ?? { nextDueAt: null };
-    const saved = await this.repository.updateIfCurrent(intake, {
-      metadata: {
-        ...reportRoot(intake),
-        reporter_presentation: { ...reporter, nextDueAt: new Date().toISOString() },
-      },
-    });
-    if (!saved) return true;
+    let scheduled = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const storedReporter = readReporterPresentation(intake);
+      if (storedReporter?.threadMissing) return true;
+      if (!storedReporter && reportRoot(intake).reporter_presentation !== undefined)
+        throw new Error('Invalid reporter presentation metadata');
+      const reporter = storedReporter ?? { nextDueAt: null };
+      const saved = await this.repository.updateIfCurrent(intake, {
+        metadata: {
+          ...reportRoot(intake),
+          reporter_presentation: { ...reporter, nextDueAt: new Date().toISOString() },
+        },
+      });
+      if (saved) {
+        scheduled = true;
+        break;
+      }
+      const latest = await this.repository.findById(intakeId);
+      if (!latest) throw new Error('Report intake unavailable');
+      intake = latest;
+    }
+    if (!scheduled) {
+      if (readReporterPresentation(intake)?.nextDueAt) return true;
+      throw new Error('Report presentation scheduling changed');
+    }
     const claim = await this.repository.claimPendingPresentation(new Date(), intakeId);
     if (!claim) return true;
     try {
@@ -176,13 +190,36 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       throw new Error('Staged report confirmation disabled');
   }
   async presentClaim(claim: ReportPresentationClaim): Promise<void> {
+    const intake = await this.current(claim);
+    if (reportRoot(intake).reporter_presentation !== undefined && !readReporterPresentation(intake))
+      throw new Error('Invalid reporter presentation metadata');
+    if (readReporterPresentation(intake)?.threadMissing) return;
+    try {
+      await this.presentAvailableClaim(claim);
+    } catch (error) {
+      if ((error as { code?: number }).code !== 10003) throw error;
+      const latest = await this.current(claim);
+      const reporter = readReporterPresentation(latest);
+      if (
+        !(await this.repository.updateIfCurrent(latest, {
+          metadata: {
+            ...reportRoot(latest),
+            reporter_presentation: { ...reporter, threadMissing: true, nextDueAt: null },
+          },
+        }))
+      )
+        throw new Error('Report presentation changed');
+    }
+  }
+  private async presentAvailableClaim(claim: ReportPresentationClaim): Promise<void> {
     let intake = await this.current(claim);
     const closed = Boolean(
       reportRoot(intake).thread_closed_at || intake.status === ReportIntakeStatus.CLOSED_BY_REPORTER
     );
     if (!closed) return this.presentActiveClaim(claim);
     const channel = intake.thread_id ? await this.client.channels.fetch(intake.thread_id) : null;
-    if (!channel?.isThread() || channel.guildId !== intake.server_id)
+    if (!channel) throw Object.assign(new Error('Report thread missing'), { code: 10003 });
+    if (!channel.isThread() || channel.guildId !== intake.server_id)
       throw new Error('Report thread mismatch');
     let reporter = readReporterPresentation(intake);
     if (!channel.archived && !reporter?.restoreArchive) throw new Error('Thread closure pending');
@@ -244,8 +281,8 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     let intake = await this.current(claim);
     if (!intake.thread_id || !this.client.user) throw new Error('Report thread unavailable');
     const channel = await this.client.channels.fetch(intake.thread_id);
+    if (!channel) throw Object.assign(new Error('Report thread missing'), { code: 10003 });
     if (
-      !channel ||
       !('messages' in channel) ||
       !('send' in channel) ||
       !('guildId' in channel) ||

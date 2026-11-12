@@ -294,6 +294,11 @@ export function createBotReportActions(
     },
   });
 }
+export class ReportThreadCloseError extends Error {
+  constructor() {
+    super("Couldn't close the thread. Try again.");
+  }
+}
 function createReportThreadPorts(deps: BotReportDependencies): ReportDependencies['threads'] {
   const loaded = new Map<string, ThreadChannel>();
   async function thread(id: string): Promise<ThreadChannel> {
@@ -338,13 +343,19 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
                   result.closeVersion
                 );
               if (archived) {
+                initialArchiveSucceeded = true;
                 await deps.reportIntakeService
                   .refreshPresentation?.(intake.id)
                   .catch(() => undefined);
                 archived = (await loadedThread.fetch(true).catch(() => null))?.archived === true;
               }
             }
-            if (!archived) throw new Error("Couldn't close the thread. Try again.");
+            if (!archived && initialArchiveSucceeded)
+              return {
+                archived: false,
+                message: 'Drasil is still closing the thread. Please try again shortly.',
+              };
+            if (!archived) throw new ReportThreadCloseError();
             return { archived, message: result.message };
           },
         };

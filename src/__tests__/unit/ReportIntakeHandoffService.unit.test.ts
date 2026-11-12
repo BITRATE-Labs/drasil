@@ -380,3 +380,59 @@ it.each(['not_dispatched', 'unknown'])(
     expect(payload).not.toContain('Sent to moderators');
   }
 );
+
+it('delivers staff review while preserving malformed reporter delivery obligations', async () => {
+  const f = await fixture();
+  const invalid = {
+    openingMessageId: 123,
+    restoreArchive: true,
+    nextDueAt: new Date().toISOString(),
+  };
+  await f.repository.update(f.intake.id, {
+    metadata: {
+      ...(f.intake.metadata as object),
+      workflow: 'staged',
+      reporter_presentation: invalid,
+    },
+  });
+  await f.service.publishOutcome(f.intake.id);
+  expect(f.queue.upsertReportIdentityReview).toHaveBeenCalledTimes(1);
+  expect(f.channel.send).not.toHaveBeenCalled();
+  expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+    reporter_presentation: invalid,
+  });
+});
+
+it('keeps staff reconciliation claimable when the reporter thread is missing', async () => {
+  const f = await fixture();
+  await f.repository.update(f.intake.id, {
+    metadata: {
+      ...(f.intake.metadata as object),
+      workflow: 'staged',
+      reporter_presentation: { threadMissing: true, nextDueAt: null },
+    },
+  });
+  const presenter = new ReportIntakePresentationService(
+    f.repository,
+    f.client as unknown as Client,
+    mock<IConfigService>()
+  );
+  const configured = new ReportIntakeHandoffService(
+    f.repository,
+    f.queue as unknown as IModerationQueueService,
+    f.client as unknown as Client,
+    f.intakeService as unknown as IReportIntakeService,
+    f.threads as unknown as IThreadManager,
+    presenter
+  );
+  await configured.publishOutcome(f.intake.id);
+  expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+    reporter_presentation: { nextDueAt: null, threadMissing: true },
+  });
+
+  expect(f.queue.upsertReportIdentityReview).toHaveBeenCalledTimes(1);
+  expect(f.channel.send).not.toHaveBeenCalled();
+  expect(
+    await f.repository.claimPendingPresentation(new Date(Date.now() + 2 * 86400000), f.intake.id)
+  ).not.toBeNull();
+});

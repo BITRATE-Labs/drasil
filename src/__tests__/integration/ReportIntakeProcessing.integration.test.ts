@@ -120,6 +120,18 @@ describeIntegration('durable report intake processing', () => {
     );
   });
 
+  it('does not claim reporter cards after opening has expired', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    await f.repository.update(f.intake.id, {
+      status: ReportIntakeStatus.EXPIRED,
+      closedAt: new Date(),
+    });
+    expect(await f.repository.claimPendingPresentation(new Date(), f.intake.id)).toBeNull();
+    expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+      reporter_presentation: { nextDueAt: null },
+    });
+  });
+
   it('serializes reporter presentation claims and rejects a stale claim after submission', async () => {
     const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
     const claims = await Promise.all([

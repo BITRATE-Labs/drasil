@@ -57,6 +57,20 @@ describeIntegration('ReportIntakeRepository conditional state (integration)', ()
     return { prisma, repository, intake };
   }
 
+  it('denies malformed reporter metadata without throwing or losing obligations', async () => {
+    const { repository, intake } = await pending();
+    const metadata = { reporter_presentation: { openingMessageId: 123, restoreArchive: true } };
+    await repository.update(intake.id, { metadata });
+    await expect(
+      repository.confirmTargetIfUnset(intake.id, {
+        targetUserId: 'target-copy',
+        expectedMetadata: metadata,
+        metadata,
+      })
+    ).resolves.toBeNull();
+    expect((await repository.findById(intake.id))!.metadata).toEqual(metadata);
+  });
+
   it.each([true, false])(
     'only one of confirmation and rejection commits, confirmation first: %s',
     async (confirmationFirst) => {

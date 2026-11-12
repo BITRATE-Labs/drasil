@@ -1,3 +1,4 @@
+import { readReporterPresentation, reportRoot } from '../utils/reportIntakePresentationMetadata';
 import { projectReportIntakeState } from '@drasil/application';
 import { IReportIntakePresentationService } from './ReportIntakePresentationService';
 import { inject, injectable, optional } from 'inversify';
@@ -68,7 +69,13 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
     const current = await this.repository.findById(claim.intake.id);
     if (!current || !ownsPresentation(current, claim, new Date())) return;
     const { analysis } = presentationMetadata(current);
-    if (this.reporterPresentation && projectReportIntakeState(current).staged) {
+    const malformedReporter =
+      reportRoot(current).reporter_presentation !== undefined && !readReporterPresentation(current);
+    if (
+      this.reporterPresentation &&
+      projectReportIntakeState(current).staged &&
+      !malformedReporter
+    ) {
       if (
         analysis.outcome?.kind === 'admin_review' &&
         current.status === 'needs_admin_confirmation' &&
@@ -106,23 +113,29 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
     }
     if (!analysis.outcome) return;
     if (analysis.outcome.kind === 'confirm') {
+      if (malformedReporter) throw new Error('Invalid reporter presentation metadata');
       await this.publishConfirmation(claim);
       await this.repository.completePresentation(claim, { kind: 'published' });
       return;
     }
     let receipt: 'pending' | 'sent' =
       analysis.handoff.state !== 'none' ? analysis.handoff.receipt : 'pending';
-    if (receipt !== 'sent') {
+    if (
+      receipt !== 'sent' &&
+      !malformedReporter &&
+      !readReporterPresentation(current)?.threadMissing
+    ) {
       try {
         if (await this.sendReceipt(claim)) receipt = 'sent';
       } catch {
         /* Receipt delivery and moderator notification recover independently. */
       }
     }
-    await this.threads.retireReportConfirmationPrompts(
-      current,
-      getReportConfirmationMessageIds(current)
-    );
+    if (!malformedReporter)
+      await this.threads.retireReportConfirmationPrompts(
+        current,
+        getReportConfirmationMessageIds(current)
+      );
     const result = await this.queue.upsertReportIdentityReview({
       intake: current,
       outcome: analysis.outcome,

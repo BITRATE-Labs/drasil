@@ -188,6 +188,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
       const rows = await transaction.$queryRaw<ReportIntake[]>`SELECT * FROM report_intakes
         WHERE (${intakeId ?? null}::uuid IS NULL OR id = ${intakeId ?? null}::uuid)
         AND (${after}::uuid IS NULL OR id > ${after}::uuid)
+        AND status <> 'expired'
         AND metadata->'reporter_presentation'->>'nextDueAt' <= ${now.toISOString()}
         AND (metadata->'analysis'->'presentation'->'lease'->>'until' IS NULL OR metadata->'analysis'->'presentation'->'lease'->>'until' <= ${now.toISOString()})
         ORDER BY id FOR UPDATE SKIP LOCKED LIMIT ${ANALYSIS_CLAIM_SCAN_LIMIT}`;
@@ -565,6 +566,8 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     }
   ): Promise<ReportIntake | null> {
     try {
+      const reporter = reporterPresentationSchema.safeParse(data.metadata.reporter_presentation);
+      if (data.metadata.reporter_presentation !== undefined && !reporter.success) return null;
       const updated = await this.prisma.report_intakes.updateManyAndReturn({
         where: {
           id,
@@ -582,10 +585,10 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
           confirmed_target_user_id: data.targetUserId,
           metadata: {
             ...data.metadata,
-            ...(data.metadata.reporter_presentation
+            ...(reporter.success
               ? {
                   reporter_presentation: {
-                    ...reporterPresentationSchema.parse(data.metadata.reporter_presentation),
+                    ...reporter.data,
                     nextDueAt: new Date().toISOString(),
                   },
                 }

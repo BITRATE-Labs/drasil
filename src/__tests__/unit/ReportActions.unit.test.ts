@@ -252,6 +252,12 @@ it('does not report closure from an archive proof that predates a failed card re
   jest.spyOn(f.client.channels, 'fetch').mockResolvedValue(thread as never);
   await expect(
     f.actions.execute(context, { kind: 'close_report_intake', intakeId: 'intake' })
-  ).rejects.toThrow("Couldn't close");
+  ).resolves.toMatchObject({
+    outcome: {
+      status: 'closed',
+      archived: false,
+      result: { message: 'Drasil is still closing the thread. Please try again shortly.' },
+    },
+  });
   expect(f.intakes.restoreFailedThreadClose).not.toHaveBeenCalled();
 });

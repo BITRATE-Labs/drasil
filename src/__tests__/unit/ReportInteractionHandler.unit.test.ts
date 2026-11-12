@@ -1,3 +1,4 @@
+import { ReportThreadCloseError } from '../../application/adapters/reports';
 import { buildReportIntakeAdminActionCustomId } from '../../utils/reportIntakeAdminActions';
 import { handleSlashCommandConfirmationButton } from '../../utils/slashCommandConfirmations';
 import { buildReportActions, prepareReportClient } from './reportApplicationTestHarness';
@@ -1257,6 +1258,18 @@ describe('ReportInteractionHandler (unit)', () => {
       );
       expect(service.closeIntakeForThread).not.toHaveBeenCalled();
       expect(thread.setArchived).not.toHaveBeenCalled();
+    });
+
+    it('shows the specific private error when initial thread closure fails', async () => {
+      const service = createReportIntakeService();
+      service.findIntakeById.mockResolvedValue(buildReportIntake());
+      service.closeIntakeForThread.mockRejectedValue(new ReportThreadCloseError());
+      const { interaction } = buildThreadCloseInteraction('reporter-1');
+      prepareReportClient(client, interaction);
+      await createHandler(service).handleReportIntakeAdminAction(interaction, interaction.customId);
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: "Couldn't close the thread. Try again." })
+      );
     });
 
     it('asks before closing a card-based report', async () => {

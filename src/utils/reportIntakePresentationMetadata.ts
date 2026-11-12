@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ReportIntake } from '../repositories/types';
 
 export const reporterPresentationSchema = z.object({
+  threadMissing: z.boolean().optional(),
   restoreArchive: z.boolean().optional(),
   closedCardView: z.string().optional(),
   attemptViewKey: z.string().optional(),
@@ -54,7 +55,11 @@ export function scheduleReporterChange(
     ...change,
     metadata: {
       ...reportRoot(next),
-      reporter_presentation: { ...presentation, nextDueAt: new Date().toISOString() },
+      reporter_presentation: {
+        ...presentation,
+        nextDueAt:
+          next.status === 'expired' || presentation.threadMissing ? null : new Date().toISOString(),
+      },
     } as ReportIntake['metadata'],
   };
 }

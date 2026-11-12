@@ -9,7 +9,7 @@ import {
   type ReportOutcome,
 } from '@drasil/application';
 import { createDiscordActionContext } from '../application/context';
-import { requireReportOutcome } from '../application/adapters/reports';
+import { ReportThreadCloseError, requireReportOutcome } from '../application/adapters/reports';
 import { getDetectionResponseSettings } from '../utils/detectionResponseSettings';
 import {
   ActionRowBuilder,
@@ -502,7 +502,10 @@ export class ReportInteractionHandler {
       await this.respondToReportIntakeAdminInteraction(
         interaction,
         {
-          content: 'An error occurred while processing this report admin action.',
+          content:
+            error instanceof ReportThreadCloseError
+              ? error.message
+              : 'An error occurred while processing this report admin action.',
           components: [],
         },
         responseMode
