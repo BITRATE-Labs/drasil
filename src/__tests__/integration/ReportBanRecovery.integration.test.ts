@@ -257,6 +257,20 @@ async function fixture(withReport = true, quarantine?: IRoleQuarantineService) {
   });
   const worker = () => new ModerationActionRequestService(requests, application, {} as never);
   return {
+    createPendingCase: () =>
+      cases.createFromDetection(detection.id, guild.id, user.id, VerificationStatus.PENDING),
+    retryInput: (overrides: Partial<PersistenceInput> = {}): PersistenceInput => ({
+      serverId: guild.id,
+      targetUserId: user.id,
+      actorId: moderator.id,
+      actorSurface: 'web',
+      actionType: ModerationActionRequestType.BAN_OBSERVED_DETECTION,
+      reportIntakeId: report.id,
+      detectionEventId: detection.id,
+      idempotencyKey: request.idempotency_key,
+      metadata: {},
+      ...overrides,
+    }),
     application,
     config,
     analytics,
@@ -323,12 +337,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
         observed_notification_channel_id: stored,
       });
     else {
-      const event = await f.cases.createFromDetection(
-        f.detection.id,
-        'guild',
-        'target',
-        VerificationStatus.PENDING
-      );
+      const event = await f.createPendingCase();
       await f.cases.update(event.id, {
         notification_message_id: 'notice',
         notification_channel_id: stored,
@@ -427,21 +436,15 @@ integration('report-ban stale worker recovery with real services and Postgres', 
         await f.security.undoObservedDetectionAction('guild', 'target', f.detection.id, f.moderator)
       ).toBe(AdminActionType.DISMISS);
       expect((await f.reports.findById(f.report.id))?.status).toBe('submitted');
-      const input: PersistenceInput = {
-        serverId: 'guild',
-        targetUserId: 'target',
+      const input: PersistenceInput = f.retryInput({
         actorId: 'new-moderator',
-        actorSurface: 'web',
-        detectionEventId: f.detection.id,
         reportIntakeId: withReport ? f.report.id : null,
-        idempotencyKey: f.request.idempotency_key,
-        actionType: ModerationActionRequestType.BAN_OBSERVED_DETECTION,
         metadata: {
           reason: 'Fresh explicit decision',
           report_ban_attempt_token: 'untrusted-token',
           observed_ban_reviews: [],
         },
-      };
+      });
       await new UserRepository(getPrismaClient()).getOrCreateUser('new-moderator');
       (f.guild.members.fetch as jest.Mock).mockImplementation(async (input) =>
         (typeof input === 'object' ? input.user : input) === 'target'
@@ -551,17 +554,9 @@ integration('report-ban stale worker recovery with real services and Postgres', 
       { observed_ban_result: { status: 'already_handled' } },
       getReportBanAttemptToken(f.request)
     );
-    let input: PersistenceInput = {
-      serverId: 'guild',
-      actorId: 'moderator',
-      actorSurface: 'web',
-      targetUserId: 'target',
-      actionType: ModerationActionRequestType.BAN_OBSERVED_DETECTION,
-      detectionEventId: f.detection.id,
-      reportIntakeId: f.report.id,
-      idempotencyKey: f.request.idempotency_key,
+    let input: PersistenceInput = f.retryInput({
       metadata: { reason: 'Must not replace protected request' },
-    };
+    });
     const prisma = getPrismaClient();
     if (
       ['banned', 'banned_updates_pending', 'ban_outcome_unknown', 'nonexact-receipt'].includes(
@@ -673,17 +668,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
       expect(
         await f.security.undoObservedDetectionAction('guild', 'target', f.detection.id, f.moderator)
       ).toBe(AdminActionType.DISMISS);
-      const input: PersistenceInput = {
-        serverId: 'guild',
-        actorId: 'moderator',
-        actorSurface: 'web',
-        targetUserId: 'target',
-        actionType: ModerationActionRequestType.BAN_OBSERVED_DETECTION,
-        detectionEventId: f.detection.id,
-        reportIntakeId: f.report.id,
-        idempotencyKey: f.request.idempotency_key,
-        metadata: {},
-      };
+      const input: PersistenceInput = f.retryInput();
       const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
       try {
         const queued =
@@ -901,12 +886,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
         verification_status: VerificationStatus.PENDING,
         case_role_active: false,
       });
-      const event = await f.cases.createFromDetection(
-        f.detection.id,
-        'guild',
-        'target',
-        VerificationStatus.PENDING
-      );
+      const event = await f.createPendingCase();
       const applying = f.moderation
         .applyCaseRole(f.member, f.moderator)
         .catch((error: unknown) => error);
@@ -957,12 +937,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
     'button-ambiguous',
   ])('closes a linked case through actual notification handling: %s', async (mode) => {
     const f = await fixture();
-    const event = await f.cases.createFromDetection(
-      f.detection.id,
-      'guild',
-      'target',
-      VerificationStatus.PENDING
-    );
+    const event = await f.createPendingCase();
     await f.cases.update(event.id, {
       notification_message_id: 'notice',
       notification_channel_id: 'admin',
@@ -1015,12 +990,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
       verification_status: VerificationStatus.PENDING,
       case_role_active: false,
     });
-    const event = await f.cases.createFromDetection(
-      f.detection.id,
-      'guild',
-      'target',
-      VerificationStatus.PENDING
-    );
+    const event = await f.createPendingCase();
     let reached!: () => void;
     let resume!: () => void;
     const paused = new Promise<void>((resolve) => {
@@ -1100,12 +1070,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
       verification_status: VerificationStatus.PENDING,
       case_role_active: false,
     });
-    const event = await f.cases.createFromDetection(
-      f.detection.id,
-      'guild',
-      'target',
-      VerificationStatus.PENDING
-    );
+    const event = await f.createPendingCase();
     let reached!: () => void;
     let resume!: () => void;
     const paused = new Promise<void>((resolve) => {
@@ -1279,17 +1244,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
         if (!requestExists) {
           Object.assign(
             f.request,
-            await f.requests.enqueue({
-              serverId: 'guild',
-              actorId: 'moderator',
-              actorSurface: 'web',
-              targetUserId: 'target',
-              reportIntakeId: f.report.id,
-              detectionEventId: f.detection.id,
-              actionType: ModerationActionRequestType.BAN_OBSERVED_DETECTION,
-              idempotencyKey: 'ban:report',
-              metadata: { reason: 'Confirmed spam' },
-            })
+            await f.requests.enqueue(f.retryInput({ metadata: { reason: 'Confirmed spam' } }))
           );
           startExecution();
           await banEntered;
@@ -1380,17 +1335,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
       await entered;
       Object.assign(
         f.request,
-        await f.requests.enqueue({
-          serverId: 'guild',
-          actorId: 'moderator',
-          actorSurface: 'web',
-          targetUserId: 'target',
-          reportIntakeId: f.report.id,
-          detectionEventId: f.detection.id,
-          actionType: ModerationActionRequestType.BAN_OBSERVED_DETECTION,
-          idempotencyKey: 'ban:report',
-          metadata: { reason: 'Confirmed spam' },
-        })
+        await f.requests.enqueue(f.retryInput({ metadata: { reason: 'Confirmed spam' } }))
       );
       expect(await f.execute()).toEqual({ status: 'banned' });
       release();
@@ -1923,12 +1868,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
 
   async function uncertain(withReport = true) {
     const f = await fixture(withReport);
-    const event = await f.cases.createFromDetection(
-      f.detection.id,
-      'guild',
-      'target',
-      VerificationStatus.PENDING
-    );
+    const event = await f.createPendingCase();
     f.ban.mockRejectedValue(new Error('socket closed'));
     const result = await f.execute();
     expect(result.status).toBe('ban_outcome_unknown');
@@ -2467,12 +2407,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
     'preserves report-ban ownership and historical cleanup across %s',
     async (boundary) => {
       const f = await fixture();
-      const event = await f.cases.createFromDetection(
-        f.detection.id,
-        'guild',
-        'target',
-        VerificationStatus.PENDING
-      );
+      const event = await f.createPendingCase();
       await f.cases.update(event.id, { case_kind: CaseKind.COMPROMISED_ACCOUNT });
       let reached!: () => void;
       let resume!: () => void;
@@ -2663,12 +2598,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
   );
   it('releases stale preparation before old enforcement resumes without erasing newer departure evidence', async () => {
     const f = await fixture();
-    const event = await f.cases.createFromDetection(
-      f.detection.id,
-      'guild',
-      'target',
-      VerificationStatus.PENDING
-    );
+    const event = await f.createPendingCase();
     let reached!: () => void;
     let resume!: () => void;
     const paused = new Promise<void>((resolve) => {
@@ -2716,12 +2646,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
   });
   it('does not release guards when the old preparing snapshot reaches the lock after confirmed enforcement', async () => {
     const f = await fixture();
-    const event = await f.cases.createFromDetection(
-      f.detection.id,
-      'guild',
-      'target',
-      VerificationStatus.PENDING
-    );
+    const event = await f.createPendingCase();
     let reached!: () => void;
     let resume!: () => void;
     const paused = new Promise<void>((resolve) => {
@@ -2792,12 +2717,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
     ['web', 'terminal claim'],
   ])('fences paused preparation from an ordinary %s retry at %s', async (surface, pausePoint) => {
     const f = await fixture();
-    const event = await f.cases.createFromDetection(
-      f.detection.id,
-      'guild',
-      'target',
-      VerificationStatus.PENDING
-    );
+    const event = await f.createPendingCase();
     let reached!: () => void;
     let resumeA!: () => void;
     let resumeB!: () => void;
@@ -2857,17 +2777,10 @@ integration('report-ban stale worker recovery with real services and Postgres', 
       ]);
       const oldSnapshot = (await f.requests.findById(f.request.id))!;
       await f.security.reconcileReportBan(oldSnapshot);
-      const input: PersistenceInput = {
-        serverId: 'guild',
-        targetUserId: 'target',
-        actorId: 'moderator',
+      const input: PersistenceInput = f.retryInput({
         actorSurface: surface,
-        actionType: ModerationActionRequestType.BAN_OBSERVED_DETECTION,
-        reportIntakeId: f.report.id,
-        detectionEventId: f.detection.id,
-        idempotencyKey: f.request.idempotency_key,
         metadata: { reason: 'Confirmed spam' },
-      };
+      });
       if (surface === 'web') {
         const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
         try {
@@ -2943,17 +2856,9 @@ integration('report-ban stale worker recovery with real services and Postgres', 
     'retains uncertain failed %s requests instead of rotating the attempt',
     async (surface) => {
       const f = await fixture();
-      const input: PersistenceInput = {
-        serverId: 'guild',
-        targetUserId: 'target',
-        actorId: 'moderator',
+      const input: PersistenceInput = f.retryInput({
         actorSurface: surface,
-        actionType: ModerationActionRequestType.BAN_OBSERVED_DETECTION,
-        reportIntakeId: f.report.id,
-        detectionEventId: f.detection.id,
-        idempotencyKey: f.request.idempotency_key,
-        metadata: {},
-      };
+      });
       for (const [phase, status] of [
         ['enforcement_started', null],
         ['discord_confirmed', null],
