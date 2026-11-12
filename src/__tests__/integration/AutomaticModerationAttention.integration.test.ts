@@ -1305,16 +1305,22 @@ suite('automatic moderation attention', () => {
       const item = (await f.queue.findByCase(owner.id))!;
       await cases.update(owner.id, { status: VerificationStatus.KICKED });
       const cleanup = jest.spyOn(f.service, 'deleteQueueMessage');
-      if (failure === 'false') {
-        cleanup.mockResolvedValue(false);
-        await f.service.syncServerQueue(f.server.guild_id);
-      } else {
-        cleanup.mockRejectedValue(new Error('cleanup unavailable'));
-        await expect(f.service.syncServerQueue(f.server.guild_id)).rejects.toThrow(
-          'cleanup unavailable'
-        );
+      const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        if (failure === 'false') cleanup.mockResolvedValue(false);
+        else cleanup.mockRejectedValue(new Error('cleanup unavailable'));
+        await expect(f.service.syncServerQueue(f.server.guild_id)).resolves.toBeUndefined();
+        expect((await f.queue.findByCase(owner.id))?.id).toBe(item.id);
+        if (failure === 'throw')
+          expect(warning).toHaveBeenCalledWith('Stale moderation queue cleanup incomplete', {
+            queue_item_id: item.id,
+            item_type: ModerationQueueItemType.CASE_MIRROR,
+            error_kind: 'error',
+          });
+      } finally {
+        warning.mockRestore();
+        cleanup.mockRestore();
       }
-      expect((await f.queue.findByCase(owner.id))?.id).toBe(item.id);
     }
   );
 
