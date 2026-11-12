@@ -1522,15 +1522,17 @@ export class NotificationPresentationBuilder {
       .map((failure) => {
         const timestamp = Math.floor(new Date(failure.at).getTime() / 1000);
         const action =
-          failure.action === 'notification'
-            ? 'Notification delivery failed'
-            : failure.action === 'case_role' || failure.action === 'restrict'
-              ? 'Case role assignment failed'
-              : failure.action === 'private_evidence_thread'
-                ? 'Admin evidence thread setup failed'
-                : failure.action === 'role_quarantine'
-                  ? 'Role quarantine attempt failed'
-                  : 'Case thread setup failed';
+          failure.action === 'persistence'
+            ? 'Case update failed'
+            : failure.action === 'notification'
+              ? 'Notification delivery failed'
+              : failure.action === 'case_role' || failure.action === 'restrict'
+                ? 'Case role assignment failed'
+                : failure.action === 'private_evidence_thread'
+                  ? 'Admin evidence thread setup failed'
+                  : failure.action === 'role_quarantine'
+                    ? 'Role quarantine attempt failed'
+                    : 'Case thread setup failed';
         const message = failure.message.toLowerCase();
         const canRepairCase =
           failure.action === 'thread' ||
@@ -1539,30 +1541,36 @@ export class NotificationPresentationBuilder {
         let summary = canRepairCase
           ? 'If unresolved, check bot logs, then run case repair.'
           : 'Check bot logs for details.';
-        // shortcut: recognize stored error text, add reason codes if producers change the wording.
+        // Retain text matching for shipped action-failure records; new failures use safe codes.
         if (
           failure.action === 'thread' &&
-          message.includes('pending discord membership screening/onboarding')
+          (message === 'membership_screening_pending' ||
+            message.includes('pending discord membership screening/onboarding'))
         ) {
           summary =
             'Member must complete server screening, then run case repair. Moderator actions remain available.';
         } else if (
           failure.action === 'thread' &&
-          message.includes('cannot currently view parent channel')
+          (message === 'parent_channel_access_denied' ||
+            message.includes('cannot currently view parent channel'))
         ) {
           summary =
             'Member cannot view the case channel. Check case-role channel permissions, then run case repair.';
         } else if (
           failure.action === 'thread' &&
-          message.includes("not propagated the user's parent-channel access yet")
+          (message === 'parent_channel_access_pending' ||
+            message.includes("not propagated the user's parent-channel access yet"))
         ) {
           summary = 'Discord channel access may still be updating. Run case repair shortly.';
         } else if (
           failure.action === 'thread' &&
-          message.includes('parent-channel access could not be verified')
+          (message === 'parent_channel_access_unverified' ||
+            message.includes('parent-channel access could not be verified'))
         ) {
           summary = 'Check bot and member access to the case channel, then run case repair.';
         } else if (
+          message === 'missing_permissions' ||
+          message === 'missing_access' ||
           message.includes('missing permissions') ||
           message.includes('missing access') ||
           message.includes('missing thread permissions')

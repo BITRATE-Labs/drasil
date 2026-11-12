@@ -1,6 +1,7 @@
 export const VERIFICATION_ACTION_FAILURES_METADATA_KEY = 'action_failures';
 
 export type VerificationActionFailureKind =
+  | 'persistence'
   | 'notification'
   | 'case_role'
   | 'restrict'
@@ -14,6 +15,30 @@ export interface VerificationActionFailure {
   at: string;
 }
 
+export function getVerificationActionFailureCode(
+  action: VerificationActionFailureKind,
+  error?: unknown
+): string {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  if (action === 'thread') {
+    switch (code) {
+      case 'membership_screening_pending':
+      case 'parent_channel_access_denied':
+      case 'parent_channel_access_pending':
+      case 'parent_channel_access_unverified':
+        return code;
+    }
+  }
+  if (action === 'persistence') return 'persistence_failed';
+  if (action === 'notification') return 'notification_delivery_failed';
+  if (code === 50013 || code === '50013' || code === 'missing_permissions')
+    return 'missing_permissions';
+  if (code === 50001 || code === '50001' || code === 'missing_access') return 'missing_access';
+  return action === 'case_role' || action === 'restrict' || action === 'role_quarantine'
+    ? 'role_assignment_failed'
+    : 'thread_creation_failed';
+}
+
 function metadataToRecord(metadata: unknown): Record<string, unknown> {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
     return {};
@@ -24,6 +49,7 @@ function metadataToRecord(metadata: unknown): Record<string, unknown> {
 
 function isVerificationActionFailureKind(value: unknown): value is VerificationActionFailureKind {
   return (
+    value === 'persistence' ||
     value === 'notification' ||
     value === 'case_role' ||
     value === 'restrict' ||

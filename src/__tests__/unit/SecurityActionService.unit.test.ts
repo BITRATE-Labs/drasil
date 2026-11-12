@@ -460,7 +460,10 @@ describe('SecurityActionService (unit)', () => {
 
     await expect(
       (service as any).upsertNotification(member, detectionResult, verificationEvent)
-    ).rejects.toThrow('CAPTCHA lookup unavailable');
+    ).rejects.toMatchObject({
+      operation: 'captcha_read',
+      message: 'Case notification data could not be loaded.',
+    });
 
     expect(notificationManager.upsertSuspiciousUserNotification).not.toHaveBeenCalled();
   });
@@ -1554,6 +1557,200 @@ describe('SecurityActionService (unit)', () => {
     ]);
   });
 
+  it.each([
+    'membership_screening_pending',
+    'parent_channel_access_denied',
+    'parent_channel_access_pending',
+    'parent_channel_access_unverified',
+    'missing_permissions',
+    'missing_access',
+  ])('preserves the safe thread repair code %s through case creation', async (code) => {
+    const member = buildMember('safe-thread-guild', 'safe-thread-user');
+    const detection: DetectionResult = {
+      label: 'SUSPICIOUS',
+      confidence: 0.9,
+      reasons: [],
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: '',
+    };
+    threadManager.createVerificationThread.mockRejectedValueOnce(
+      Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), { code })
+    );
+    await buildService().handleSuspiciousMessage(member, detection);
+    const owner = await verificationEventRepository.findActiveByUserAndServer(
+      member.id,
+      member.guild.id
+    );
+    expect(getVerificationActionFailures(owner?.metadata)).toEqual([
+      expect.objectContaining({ action: 'thread', message: code }),
+    ]);
+    const embed = new NotificationPresentationBuilder().createSuspiciousUserEmbed(
+      member,
+      detection,
+      owner!,
+      [],
+      undefined
+    );
+    expect(JSON.stringify(embed.toJSON())).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+    expect(JSON.stringify(owner?.metadata)).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+    threadManager.repairVerificationThread.mockRejectedValueOnce(
+      Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), { code })
+    );
+    const repair = await buildService().repairActiveCase(member);
+    expect(repair.repaired).toBe(false);
+    expect(repair.message).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+    expect(
+      getVerificationActionFailures(
+        (await verificationEventRepository.findById(owner!.id))?.metadata
+      )
+    ).toEqual([expect.objectContaining({ action: 'thread', message: code })]);
+  });
+
+  it.each(['captcha_read', 'notification_link', 'case_reload'] as const)(
+    'records %s as persistence failure while retaining delivered notification and evidence',
+    async (operation) => {
+      const member = buildMember('persistence-guild', 'persistence-user');
+      const detection: DetectionResult = {
+        label: 'SUSPICIOUS',
+        confidence: 0.9,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent: '',
+      };
+      const service = buildService();
+      const error = new Error('PRIVATE_PROVIDER_SENTINEL');
+      const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const delivered = { id: 'delivered-notification', channelId: 'delivered-channel' } as Message;
+      notificationManager.upsertSuspiciousUserNotification.mockResolvedValue(delivered);
+      if (operation === 'captcha_read') {
+        Object.assign(service, {
+          captchaChallengeService: { findByCaseId: jest.fn().mockRejectedValue(error) },
+        });
+      } else if (operation === 'notification_link') {
+        const update = verificationEventRepository.update.bind(verificationEventRepository);
+        let failed = false;
+        jest.spyOn(verificationEventRepository, 'update').mockImplementation(async (id, data) => {
+          if (!failed && data.notification_message_id) {
+            failed = true;
+            throw error;
+          }
+          return update(id, data);
+        });
+      } else {
+        const find = verificationEventRepository.findById.bind(verificationEventRepository);
+        let failed = false;
+        jest.spyOn(verificationEventRepository, 'findById').mockImplementation(async (id) => {
+          if (
+            !failed &&
+            notificationManager.upsertSuspiciousUserNotification.mock.calls.length > 0
+          ) {
+            failed = true;
+            throw error;
+          }
+          return find(id);
+        });
+      }
+      try {
+        await expect(service.handleSuspiciousMessage(member, detection)).resolves.toBe(true);
+        const owner = await verificationEventRepository.findActiveByUserAndServer(
+          member.id,
+          member.guild.id
+        );
+        expect(owner?.notification_message_id).toBe(
+          operation === 'captcha_read' ? null : delivered.id
+        );
+        expect(getVerificationActionFailures(owner?.metadata)).toEqual([
+          expect.objectContaining({ action: 'persistence', message: 'persistence_failed' }),
+        ]);
+        expect(
+          (await detectionEventsRepository.findById(detection.detectionEventId!))?.metadata
+        ).toMatchObject({
+          automatic_moderation_response: {
+            action: 'restrict',
+            outcome: 'case_opened',
+            failures: [{ step: 'persistence', code: 'persistence_failed' }],
+          },
+        });
+        expect(threadManager.createPrivateEvidenceThread).toHaveBeenCalledTimes(
+          operation === 'captcha_read' ? 0 : 1
+        );
+        if (operation !== 'captcha_read') {
+          const secondEvent = notificationManager.upsertSuspiciousUserNotification.mock.calls[1][2];
+          expect(secondEvent.notification_message_id).toBe(delivered.id);
+        } else {
+          expect(notificationManager.upsertSuspiciousUserNotification).not.toHaveBeenCalled();
+        }
+        expect(JSON.stringify(owner?.metadata)).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+        expect(diagnostics).toHaveBeenCalledWith(
+          'Case action failed',
+          expect.objectContaining({
+            operation,
+            code: 'persistence_failed',
+            case_id: owner?.id,
+          })
+        );
+        expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+      } finally {
+        diagnostics.mockRestore();
+      }
+    }
+  );
+
+  it.each(['repair', 'reload'] as const)(
+    'retains safe diagnostics when delayed repair fails during %s',
+    async (stage) => {
+      jest.useFakeTimers();
+      const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const member = buildMember('delayed-diagnostics-guild', 'delayed-diagnostics-user');
+        const detection: DetectionResult = {
+          label: 'SUSPICIOUS',
+          confidence: 0.9,
+          reasons: [],
+          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+          triggerContent: '',
+        };
+        threadManager.createVerificationThread.mockRejectedValueOnce(new Error('Initial failure'));
+        await buildService().handleSuspiciousMessage(member, detection);
+        const error = Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), {
+          code: 'membership_screening_pending',
+        });
+        if (stage === 'repair') {
+          threadManager.repairVerificationThread.mockRejectedValueOnce(error);
+        } else {
+          threadManager.repairVerificationThread.mockImplementationOnce(async () => {
+            jest.spyOn(verificationEventRepository, 'findById').mockRejectedValueOnce(error);
+            return {
+              threadId: 'thread-1',
+              threadCreated: false,
+              userAdded: true,
+              promptSent: true,
+              promptAlreadyPresent: false,
+            };
+          });
+        }
+        await jest.advanceTimersByTimeAsync(70_000);
+        const owner = await verificationEventRepository.findActiveByUserAndServer(
+          member.id,
+          member.guild.id
+        );
+        expect(getVerificationActionFailures(owner?.metadata)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining(
+              stage === 'repair'
+                ? { action: 'thread', message: 'membership_screening_pending' }
+                : { action: 'persistence', message: 'persistence_failed' }
+            ),
+          ])
+        );
+        expect(JSON.stringify(owner?.metadata)).not.toContain('PRIVATE_PROVIDER_SENTINEL');
+      } finally {
+        diagnostics.mockRestore();
+        jest.useRealTimers();
+      }
+    }
+  );
+
   it('retries failed verification thread setup after Discord propagation delay', async () => {
     jest.useFakeTimers();
     const guildId = 'guild-thread-delayed-repair';
@@ -1964,7 +2161,7 @@ describe('SecurityActionService (unit)', () => {
         threadId: null,
         userAdded: false,
       });
-      expect(result.message).toContain('Missing Access');
+      expect(result.message).toContain('Check case warnings');
       expect(getVerificationActionFailures(updatedCase?.metadata)).toEqual([
         expect.objectContaining({
           action: 'thread',

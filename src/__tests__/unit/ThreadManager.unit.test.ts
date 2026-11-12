@@ -539,9 +539,12 @@ describe('ThreadManager (unit)', () => {
     );
 
     try {
-      await expect(manager.createVerificationThread(member, event)).rejects.toThrow(
-        'cannot currently view parent channel verification-channel'
-      );
+      await expect(manager.createVerificationThread(member, event)).rejects.toMatchObject({
+        code: 'parent_channel_access_denied',
+        message: expect.stringContaining(
+          'cannot currently view parent channel verification-channel'
+        ),
+      });
       expect(thread.members.add).toHaveBeenCalledTimes(4);
     } finally {
       errorSpy.mockRestore();
@@ -576,9 +579,10 @@ describe('ThreadManager (unit)', () => {
     );
 
     try {
-      await expect(manager.createVerificationThread(member, event)).rejects.toThrow(
-        'not that the bot lost access'
-      );
+      await expect(manager.createVerificationThread(member, event)).rejects.toMatchObject({
+        code: 'parent_channel_access_pending',
+        message: expect.stringContaining('not that the bot lost access'),
+      });
     } finally {
       errorSpy.mockRestore();
       warnSpy.mockRestore();
@@ -612,9 +616,10 @@ describe('ThreadManager (unit)', () => {
     );
 
     try {
-      await expect(manager.createVerificationThread(member, event)).rejects.toThrow(
-        'membership screening/onboarding'
-      );
+      await expect(manager.createVerificationThread(member, event)).rejects.toMatchObject({
+        code: 'membership_screening_pending',
+        message: expect.stringContaining('membership screening/onboarding'),
+      });
       expect(fetch).toHaveBeenCalledWith(true);
       expect(thread.members.add).toHaveBeenCalledTimes(1);
     } finally {
@@ -647,9 +652,10 @@ describe('ThreadManager (unit)', () => {
     );
 
     try {
-      await expect(manager.createVerificationThread(member, event)).rejects.toThrow(
-        'parent-channel access could not be verified'
-      );
+      await expect(manager.createVerificationThread(member, event)).rejects.toMatchObject({
+        code: 'parent_channel_access_unverified',
+        message: expect.stringContaining('parent-channel access could not be verified'),
+      });
     } finally {
       errorSpy.mockRestore();
       warnSpy.mockRestore();

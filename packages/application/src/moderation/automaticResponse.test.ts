@@ -76,3 +76,16 @@ test('keeps confirmed kick separate from case follow-up failure', () => {
     })
   ).toBe('Member kicked. Notification delivery failed.');
 });
+
+test('shows a case persistence failure without an automatic response snapshot', () => {
+  expect(
+    formatCaseActionFailures({
+      action_failures: [
+        { action: 'persistence', message: 'persistence_failed', at: '2026-11-11T00:00:00.000Z' },
+        { action: 'thread', message: 'thread_creation_failed', at: '2026-11-11T00:00:00.000Z' },
+      ],
+    })
+  ).toBe(
+    'Case saved. Case thread could not be created. Moderator action required. Case update failed. Check the case state and bot logs.'
+  );
+});

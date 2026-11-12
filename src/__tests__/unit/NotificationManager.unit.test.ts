@@ -251,6 +251,37 @@ describe('NotificationManager (unit)', () => {
     );
   });
 
+  it.each(['notification_config', 'notification_history'] as const)(
+    'keeps %s persistence failure separate from Discord delivery',
+    async (operation) => {
+      const error = new Error('PRIVATE_PROVIDER_SENTINEL');
+      if (operation === 'notification_config') {
+        jest.spyOn(configService, 'getServerConfig').mockRejectedValueOnce(error);
+      } else {
+        jest.spyOn(detectionRepository, 'findByServerAndUser').mockRejectedValueOnce(error);
+      }
+      const manager = new NotificationManager({} as any, configService, detectionRepository);
+      await expect(
+        manager.upsertSuspiciousUserNotification(
+          buildMember('guild-1', 'user-1'),
+          {
+            label: 'SUSPICIOUS',
+            confidence: 0.9,
+            reasons: [],
+            triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+            triggerContent: '',
+          },
+          buildVerificationEvent()
+        )
+      ).rejects.toMatchObject({
+        name: 'NotificationPreparationError',
+        operation,
+        message: 'Case notification data could not be loaded.',
+      });
+      expect(adminChannel.send).not.toHaveBeenCalled();
+    }
+  );
+
   it('sends a new notification when no existing message is set', async () => {
     const member = buildMember('guild-1', 'user-1');
     const detectionResult: DetectionResult = {

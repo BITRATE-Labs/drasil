@@ -117,6 +117,7 @@ export function formatCaseActionFailures(metadata: unknown, roleApplied = false)
             'private_evidence_thread',
             'role_quarantine',
             'notification',
+            'persistence',
           ]),
           message: z.string(),
           at: z.string(),
@@ -143,5 +144,7 @@ export function formatCaseActionFailures(metadata: unknown, roleApplied = false)
   if (actions.has('role_quarantine'))
     lines.push('Role quarantine incomplete. Moderator action required.');
   if (actions.has('notification')) lines.push('Notification delivery failed.');
+  if (actions.has('persistence'))
+    lines.push('Case update failed. Check the case state and bot logs.');
   return lines.join(' ');
 }

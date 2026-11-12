@@ -241,6 +241,13 @@ interface ObservedDetectionMetadata {
   observed_action?: string;
 }
 
+export class NotificationPreparationError extends Error {
+  constructor(readonly operation: 'captcha_read' | 'notification_config' | 'notification_history') {
+    super('Case notification data could not be loaded.');
+    this.name = 'NotificationPreparationError';
+  }
+}
+
 /**
  * Service for managing notifications to admin/summary channels
  * It is NOT intended to perform any action secondary actions
@@ -281,7 +288,9 @@ export class NotificationManager implements INotificationManager {
     sourceMessage?: Message,
     captchaChallenge?: CaptchaChallenge | null
   ): Promise<Message | null> {
-    const serverConfig = await this.configService.getServerConfig(member.guild.id);
+    const serverConfig = await this.configService.getServerConfig(member.guild.id).catch(() => {
+      throw new NotificationPreparationError('notification_config');
+    });
     const responseSettings = getDetectionResponseSettings(serverConfig.settings);
     const notificationChannel = await this.getModerationNotificationChannel(
       member.guild.id,
@@ -292,11 +301,12 @@ export class NotificationManager implements INotificationManager {
       return null;
     }
 
+    const detectionEvents = await this.detectionEventsRepository
+      .findByServerAndUser(member.guild.id, member.id)
+      .catch(() => {
+        throw new NotificationPreparationError('notification_history');
+      });
     try {
-      const detectionEvents = await this.detectionEventsRepository.findByServerAndUser(
-        member.guild.id,
-        member.id
-      );
       const embed = this.presentationBuilder.createSuspiciousUserEmbed(
         member,
         detectionResult,

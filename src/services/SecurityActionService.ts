@@ -49,7 +49,7 @@ import {
   escapeMarkdown,
 } from 'discord.js';
 import { TYPES } from '../di/symbols';
-import { INotificationManager } from './NotificationManager';
+import { INotificationManager, NotificationPreparationError } from './NotificationManager';
 import { DetectionResult } from './DetectionOrchestrator';
 import { IDetectionEventsRepository } from '../repositories/DetectionEventsRepository';
 import { IMessageContextRepository } from '../repositories/MessageContextRepository';
@@ -106,6 +106,7 @@ import {
   appendVerificationActionFailure,
   clearVerificationActionFailures,
   getVerificationActionFailures,
+  getVerificationActionFailureCode,
   type VerificationActionFailureKind,
 } from '../utils/verificationActionFailures';
 import {
@@ -657,36 +658,59 @@ export class SecurityActionService implements ISecurityActionService {
     member: GuildMember,
     detectionResult: DetectionResult,
     verificationEvent: VerificationEvent,
-    sourceMessage?: Message
-  ): Promise<Message> {
-    const captchaChallenge = this.captchaChallengeService
-      ? await this.captchaChallengeService.findByCaseId(verificationEvent.id)
-      : null;
+    sourceMessage?: Message,
+    knownNotification?: Message
+  ): Promise<{ message: Message; event: VerificationEvent }> {
+    let updatedEvent = verificationEvent;
+    let captchaChallenge: Awaited<ReturnType<ICaptchaChallengeService['findByCaseId']>> = null;
+    try {
+      captchaChallenge = this.captchaChallengeService
+        ? await this.captchaChallengeService.findByCaseId(verificationEvent.id)
+        : null;
+    } catch {
+      throw new NotificationPreparationError('captcha_read');
+    }
     const notificationMessage = await this.notificationManager.upsertSuspiciousUserNotification(
       member,
       detectionResult,
-      verificationEvent,
+      knownNotification
+        ? {
+            ...updatedEvent,
+            notification_message_id: knownNotification.id,
+            notification_channel_id: knownNotification.channelId,
+          }
+        : updatedEvent,
       sourceMessage,
       captchaChallenge
     );
-
     if (!notificationMessage) {
       throw new Error('Failed to send or update suspicious user notification');
     }
-
     if (
-      verificationEvent.notification_message_id !== notificationMessage.id ||
-      verificationEvent.notification_channel_id !== notificationMessage.channelId
+      updatedEvent.notification_message_id !== notificationMessage.id ||
+      updatedEvent.notification_channel_id !== notificationMessage.channelId
     ) {
-      await this.verificationEventRepository.update(verificationEvent.id, {
-        notification_channel_id: notificationMessage.channelId,
-        notification_message_id: notificationMessage.id,
-      });
-      verificationEvent.notification_channel_id = notificationMessage.channelId;
-      verificationEvent.notification_message_id = notificationMessage.id;
+      try {
+        await this.verificationEventRepository.update(updatedEvent.id, {
+          notification_channel_id: notificationMessage.channelId,
+          notification_message_id: notificationMessage.id,
+        });
+      } catch (error) {
+        updatedEvent = await this.recordVerificationActionFailure(
+          updatedEvent,
+          'persistence',
+          error,
+          'notification_link'
+        );
+      }
     }
-
-    return notificationMessage;
+    // Keep the acknowledged receipt even when its linkage write failed.
+    updatedEvent = {
+      ...updatedEvent,
+      notification_channel_id: notificationMessage.channelId,
+      notification_message_id: notificationMessage.id,
+    };
+    return { message: notificationMessage, event: updatedEvent };
   }
 
   private createDetectionResultFromEvent(detectionEvent: DetectionEvent): DetectionResult {
@@ -1072,11 +1096,11 @@ export class SecurityActionService implements ISecurityActionService {
       }
       return await this.sendCaseEvidenceBundle(thread, member, verificationEvent, detectionResult);
     } catch (error) {
-      console.error(
-        `Failed to create admin evidence thread for ${member.user.tag}; continuing case flow:`,
+      return this.recordVerificationActionFailure(
+        verificationEvent,
+        'private_evidence_thread',
         error
       );
-      return this.recordVerificationActionFailure(verificationEvent, 'private_evidence_thread');
     }
   }
 
@@ -1304,80 +1328,121 @@ export class SecurityActionService implements ISecurityActionService {
     verificationEvent: VerificationEvent,
     sourceMessage?: Message
   ): Promise<VerificationEvent> {
+    let notificationMessage: Message;
     let accumulatedEvent = verificationEvent;
     try {
-      const notificationMessage = await this.upsertNotification(
+      const delivered = await this.upsertNotification(
         member,
         detectionResult,
-        verificationEvent,
+        accumulatedEvent,
         sourceMessage
       );
-      accumulatedEvent = await this.ensurePrivateEvidenceThread(
-        member,
-        verificationEvent,
-        detectionResult,
-        notificationMessage,
-        sourceMessage
+      notificationMessage = delivered.message;
+      accumulatedEvent = delivered.event;
+    } catch (error) {
+      return this.recordVerificationActionFailure(
+        accumulatedEvent,
+        error instanceof NotificationPreparationError ? 'persistence' : 'notification',
+        error,
+        error instanceof NotificationPreparationError ? error.operation : 'notification'
       );
-      let updatedEvent =
+    }
+    accumulatedEvent = await this.ensurePrivateEvidenceThread(
+      member,
+      accumulatedEvent,
+      detectionResult,
+      notificationMessage,
+      sourceMessage
+    );
+    let updatedEvent = accumulatedEvent;
+    try {
+      updatedEvent =
         (await this.verificationEventRepository.findById(verificationEvent.id)) ?? accumulatedEvent;
-      // Retain in-memory failure evidence if an earlier write failed while independent delivery continued.
-      const failures = [
-        ...new Map(
-          [
-            ...getVerificationActionFailures(verificationEvent.metadata),
-            ...getVerificationActionFailures(accumulatedEvent.metadata),
-          ].map((failure) => [failure.action, failure])
-        ).values(),
-      ];
-      if (failures.length) {
-        const current = getVerificationActionFailures(updatedEvent.metadata);
-        updatedEvent = {
-          ...updatedEvent,
-          metadata: this.mergeVerificationMetadata(updatedEvent.metadata, {
-            action_failures: [
-              ...current,
-              ...failures.filter(
-                (failure) =>
-                  !current.some(
-                    (existing) => existing.action === failure.action && existing.at === failure.at
-                  )
-              ),
-            ].map((failure) => ({ ...failure })),
-          }),
-        };
-      }
-      accumulatedEvent = updatedEvent;
-      await this.upsertNotification(member, detectionResult, accumulatedEvent, sourceMessage);
-      return updatedEvent;
-    } catch {
-      recordWorkflowOutcome({ level: 'ERROR', statusMessage: 'notification_delivery_failed' });
-      return this.recordVerificationActionFailure(accumulatedEvent, 'notification');
+    } catch (error) {
+      updatedEvent = await this.recordVerificationActionFailure(
+        accumulatedEvent,
+        'persistence',
+        error,
+        'case_reload'
+      );
     }
-  }
-
-  private formatActionFailureMessage(error: unknown): string {
-    if (error instanceof Error && error.message) {
-      return error.message;
+    // Retain in-memory failure evidence if an earlier write failed while independent delivery continued.
+    const failures = [
+      ...new Map(
+        [
+          ...getVerificationActionFailures(verificationEvent.metadata),
+          ...getVerificationActionFailures(accumulatedEvent.metadata),
+        ].map((failure) => [failure.action, failure])
+      ).values(),
+    ];
+    if (failures.length) {
+      const current = getVerificationActionFailures(updatedEvent.metadata);
+      updatedEvent = {
+        ...updatedEvent,
+        metadata: this.mergeVerificationMetadata(updatedEvent.metadata, {
+          action_failures: [
+            ...current,
+            ...failures.filter(
+              (failure) =>
+                !current.some(
+                  (existing) => existing.action === failure.action && existing.at === failure.at
+                )
+            ),
+          ].map((failure) => ({ ...failure })),
+        }),
+      };
     }
-
-    return String(error || 'Unknown error');
+    try {
+      // Reuse the receipt for delivery while retaining reloaded linkage state for persistence.
+      return (
+        await this.upsertNotification(
+          member,
+          detectionResult,
+          updatedEvent,
+          sourceMessage,
+          notificationMessage
+        )
+      ).event;
+    } catch (error) {
+      const failedEvent = await this.recordVerificationActionFailure(
+        updatedEvent,
+        error instanceof NotificationPreparationError ? 'persistence' : 'notification',
+        error,
+        error instanceof NotificationPreparationError ? error.operation : 'notification'
+      );
+      return {
+        ...failedEvent,
+        notification_message_id: notificationMessage.id,
+        notification_channel_id: notificationMessage.channelId,
+      };
+    }
   }
 
   private async recordVerificationActionFailure(
     verificationEvent: VerificationEvent,
-    action: VerificationActionFailureKind
+    action: VerificationActionFailureKind,
+    error?: unknown,
+    operation: string = action
   ): Promise<VerificationEvent> {
+    const code = getVerificationActionFailureCode(action, error);
+    const diagnostics = {
+      operation,
+      code,
+      case_id: verificationEvent.id,
+      detection_event_id: verificationEvent.detection_event_id,
+      error_kind: error instanceof Error ? 'error' : 'non_error',
+    };
+    console.error('Case action failed', diagnostics);
+    recordWorkflowOutcome({
+      level: action === 'persistence' || action === 'notification' ? 'ERROR' : 'WARNING',
+      statusMessage: code,
+      output: { failed_step: action, ...diagnostics },
+    });
     const updatedMetadata = appendVerificationActionFailure(
       clearVerificationActionFailures(verificationEvent.metadata, [action]),
       {
         action,
-        message:
-          action === 'case_role' || action === 'restrict'
-            ? 'role_assignment_failed'
-            : action === 'notification'
-              ? 'notification_delivery_failed'
-              : 'thread_creation_failed',
+        message: code,
         at: new Date().toISOString(),
       }
     );
@@ -1395,10 +1460,12 @@ export class SecurityActionService implements ISecurityActionService {
 
       return updatedEvent ?? fallbackEvent;
     } catch (recordError) {
-      console.error(
-        `Failed to record ${action} failure for verification event ${verificationEvent.id}; continuing notification:`,
-        recordError
-      );
+      console.error('Case failure persistence failed', {
+        operation: 'record_action_failure',
+        code: 'persistence_failed',
+        case_id: verificationEvent.id,
+        error_kind: recordError instanceof Error ? 'error' : 'non_error',
+      });
       return fallbackEvent;
     }
   }
@@ -1497,12 +1564,14 @@ export class SecurityActionService implements ISecurityActionService {
       return;
     }
 
+    let failedAction: VerificationActionFailureKind = 'thread';
     try {
       const repair = await this.threadManager.repairVerificationThread(member, verificationEvent);
       if (!repair.threadId || !repair.userAdded) {
         throw new Error('Delayed verification thread repair did not complete thread setup');
       }
 
+      failedAction = 'persistence';
       const repairedEvent =
         (await this.verificationEventRepository.findById(verificationEventId)) ?? verificationEvent;
       const clearedEvent = await this.clearResolvedVerificationActionFailures(repairedEvent, [
@@ -1515,9 +1584,11 @@ export class SecurityActionService implements ISecurityActionService {
         sourceMessage
       );
     } catch (error) {
-      console.error(
-        `Delayed verification thread repair failed for verification event ${verificationEventId}:`,
-        error
+      await this.recordVerificationActionFailure(
+        verificationEvent,
+        failedAction,
+        error,
+        'delayed_thread_repair'
       );
     }
   }
@@ -1538,11 +1609,7 @@ export class SecurityActionService implements ISecurityActionService {
         (await this.verificationEventRepository.findById(verificationEvent.id)) ?? verificationEvent
       );
     } catch (error) {
-      console.error(
-        `Failed to apply case role to ${member.user.tag}; continuing case flow:`,
-        error
-      );
-      return this.recordVerificationActionFailure(verificationEvent, 'case_role');
+      return this.recordVerificationActionFailure(verificationEvent, 'case_role', error);
     }
   }
 
@@ -1569,11 +1636,7 @@ export class SecurityActionService implements ISecurityActionService {
       );
       return updatedEvent;
     } catch (error) {
-      console.error(
-        `Failed to create case thread for ${member.user.tag}; continuing notification:`,
-        error
-      );
-      return this.recordVerificationActionFailure(verificationEvent, 'thread');
+      return this.recordVerificationActionFailure(verificationEvent, 'thread', error);
     }
   }
 
@@ -1585,7 +1648,7 @@ export class SecurityActionService implements ISecurityActionService {
     caseRoutingAttempt = 0
   ): Promise<void> {
     return withObservation('apply-outcome', 'tool', async (): Promise<void> => {
-      const activeVerificationEvent =
+      let activeVerificationEvent =
         await this.verificationEventRepository.findActiveByUserAndServer(
           member.id,
           member.guild.id
@@ -1641,7 +1704,9 @@ export class SecurityActionService implements ISecurityActionService {
         return;
       }
 
-      await this.upsertNotification(member, detectionResult, activeVerificationEvent);
+      activeVerificationEvent = (
+        await this.upsertNotification(member, detectionResult, activeVerificationEvent)
+      ).event;
       await this.runModerationQueueTask(
         `mirror case ${activeVerificationEvent.id} to the live moderation queue`,
         (moderationQueueService) => moderationQueueService.upsertCaseMirror(activeVerificationEvent)
@@ -1956,7 +2021,9 @@ export class SecurityActionService implements ISecurityActionService {
         detectionResult,
         shouldUseReviewThread
       );
-      await this.upsertNotification(member, detectionResult, notificationVerificationEvent);
+      notificationVerificationEvent = (
+        await this.upsertNotification(member, detectionResult, notificationVerificationEvent)
+      ).event;
       if (!shouldUseReviewThread) {
         this.scheduleDelayedThreadRepair(member, notificationVerificationEvent, detectionResult);
       }
@@ -2521,6 +2588,8 @@ export class SecurityActionService implements ISecurityActionService {
           failure.action === 'role_quarantine'
         )
           return { step: 'role', code: 'role_assignment_failed' };
+        if (failure.action === 'persistence')
+          return { step: 'persistence', code: 'persistence_failed' };
         if (failure.action === 'notification')
           return { step: 'notification', code: 'notification_delivery_failed' };
         return { step: 'thread', code: 'thread_creation_failed' };
@@ -3389,8 +3458,7 @@ export class SecurityActionService implements ISecurityActionService {
     try {
       threadRepair = await this.threadManager.repairVerificationThread(member, repairCase);
     } catch (error) {
-      console.error(`Failed to repair active case thread for ${member.user.tag}:`, error);
-      repairCase = await this.recordVerificationActionFailure(repairCase, 'thread');
+      repairCase = await this.recordVerificationActionFailure(repairCase, 'thread', error);
 
       try {
         await this.notificationManager.updateNotificationButtons(
@@ -3406,7 +3474,8 @@ export class SecurityActionService implements ISecurityActionService {
 
       return {
         repaired: false,
-        message: `Could not create or repair the verification thread for ${member.user.tag}: ${this.formatActionFailureMessage(error)}`,
+        message:
+          'Could not create or repair the verification thread. Check case warnings for next steps.',
         notificationReady: false,
         verificationEventId: repairCase.id,
         threadId: null,
@@ -3420,7 +3489,7 @@ export class SecurityActionService implements ISecurityActionService {
       const error = new Error(
         `Could not create or repair the verification thread for ${member.user.tag}.`
       );
-      repairCase = await this.recordVerificationActionFailure(repairCase, 'thread');
+      repairCase = await this.recordVerificationActionFailure(repairCase, 'thread', error);
 
       try {
         await this.notificationManager.updateNotificationButtons(
@@ -3549,11 +3618,7 @@ export class SecurityActionService implements ISecurityActionService {
       }
       return await this.clearResolvedVerificationActionFailures(activeCase, ['thread']);
     } catch (error) {
-      console.error(
-        `Failed to ensure user-facing case thread for ${member.user.tag}; continuing case-role flow:`,
-        error
-      );
-      return this.recordVerificationActionFailure(activeCase, 'thread');
+      return this.recordVerificationActionFailure(activeCase, 'thread', error);
     }
   }
 
