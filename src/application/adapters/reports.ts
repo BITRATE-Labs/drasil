@@ -318,27 +318,31 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
         return {
           finish: async (result): Promise<{ archived: boolean; message: string }> => {
             let archived = loadedThread.archived ?? false;
+            let initialArchiveSucceeded = archived;
             const closed = await deps.reportIntakeService.findIntakeById(intake.id);
             try {
               if (result.shouldArchiveThread && !archived) {
                 await loadedThread.setArchived(true, 'Report intake closed');
                 archived = true;
+                initialArchiveSucceeded = true;
               }
               if (archived) await deps.reportIntakeService.refreshPresentation?.(intake.id);
             } catch (error) {
               console.warn('Report thread close pending:', error);
               const verified = await loadedThread.fetch(true).catch(() => null);
               archived = verified?.archived === true;
-              if (verified && !verified.archived && closed)
+              if (verified && !verified.archived && closed && !initialArchiveSucceeded)
                 await deps.reportIntakeService.restoreFailedThreadClose?.(
                   current,
                   closed,
                   result.closeVersion
                 );
-              if (archived)
+              if (archived) {
                 await deps.reportIntakeService
                   .refreshPresentation?.(intake.id)
                   .catch(() => undefined);
+                archived = (await loadedThread.fetch(true).catch(() => null))?.archived === true;
+              }
             }
             if (!archived) throw new Error("Couldn't close the thread. Try again.");
             return { archived, message: result.message };

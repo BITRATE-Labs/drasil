@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { ReportIntake } from '../repositories/types';
 
 export const reporterPresentationSchema = z.object({
+  restoreArchive: z.boolean().optional(),
+  closedCardView: z.string().optional(),
   openingMessageId: z.string().optional(),
   confirmationMentionReserved: z.boolean().optional(),
   followupMessageId: z.string().optional(),

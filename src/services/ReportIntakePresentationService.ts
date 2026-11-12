@@ -1,9 +1,12 @@
+import { IConfigService } from '../config/ConfigService';
+import { getReportIntakeSettings } from '../utils/reportIntakeSettings';
 import { findAuthoredReportMessage } from '../utils/reportPresentationDiscord';
 import { inject, injectable } from 'inversify';
 import {
   Client,
   ComponentType,
   type Message,
+  type ThreadChannel,
   type EmbedBuilder,
   type MessageEditOptions,
 } from 'discord.js';
@@ -25,6 +28,7 @@ import {
 import {
   readReporterPresentation,
   reportRoot,
+  reporterViewKey,
   type ReporterPresentation,
 } from '../utils/reportIntakePresentationMetadata';
 import {
@@ -40,7 +44,8 @@ export interface IReportIntakePresentationService {
 export class ReportIntakePresentationService implements IReportIntakePresentationService {
   constructor(
     @inject(TYPES.ReportIntakeRepository) private repository: IReportIntakeRepository,
-    @inject(TYPES.DiscordClient) private client: Client
+    @inject(TYPES.DiscordClient) private client: Client,
+    @inject(TYPES.ConfigService) private configService: IConfigService
   ) {}
   async reconcile(intakeId: string): Promise<boolean> {
     const intake = await this.repository.findById(intakeId);
@@ -155,7 +160,84 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       return { kind: 'updating', actions: [] };
     return { kind: intake.evidence_revision ? 'checking' : 'start', actions };
   }
+  private async checkRollout(
+    state: ReportIntakePresentationState,
+    intake: ReportIntake
+  ): Promise<void> {
+    if (state.kind !== 'confirm') return;
+    const config = await this.configService.getServerConfig(intake.server_id, {
+      forceRefresh: true,
+      failOnReadError: true,
+    });
+    if (!getReportIntakeSettings(config.settings).stagedEnabled)
+      throw new Error('Staged report confirmation disabled');
+  }
   async presentClaim(claim: ReportPresentationClaim): Promise<void> {
+    let intake = await this.current(claim);
+    const closed = Boolean(
+      reportRoot(intake).thread_closed_at || intake.status === ReportIntakeStatus.CLOSED_BY_REPORTER
+    );
+    if (!closed) return this.presentActiveClaim(claim);
+    const channel = intake.thread_id ? await this.client.channels.fetch(intake.thread_id) : null;
+    if (!channel?.isThread() || channel.guildId !== intake.server_id)
+      throw new Error('Report thread mismatch');
+    let reporter = readReporterPresentation(intake);
+    if (!channel.archived && !reporter?.restoreArchive) throw new Error('Thread closure pending');
+    const view = reporterViewKey(intake);
+    if (reporter?.closedCardView === view && channel.archived && !reporter.restoreArchive) return;
+    if (
+      !(await this.repository.updateIfCurrent(intake, {
+        metadata: {
+          ...reportRoot(intake),
+          reporter_presentation: { ...reporter, restoreArchive: true },
+        },
+      }))
+    )
+      throw new Error('Report closure changed');
+    try {
+      if (reporter?.closedCardView !== view) {
+        if (channel.archived) await channel.setArchived(false, 'Update closed report card');
+        await this.presentActiveClaim(claim);
+        intake = await this.current(claim);
+        reporter = readReporterPresentation(intake);
+        if (
+          !(await this.repository.updateIfCurrent(intake, {
+            metadata: {
+              ...reportRoot(intake),
+              reporter_presentation: { ...reporter, closedCardView: view },
+            },
+          }))
+        )
+          throw new Error('Report closure changed');
+      }
+    } finally {
+      await this.restoreClosedThread(claim, channel);
+    }
+  }
+  private async restoreClosedThread(
+    claim: ReportPresentationClaim,
+    channel: ThreadChannel
+  ): Promise<void> {
+    // The durable obligation survives uncertain unarchive responses and process restarts.
+    try {
+      await channel.setArchived(true, 'Report intake closed');
+    } catch (error) {
+      const verified = await channel.fetch(true).catch(() => null);
+      if (!verified?.archived) throw error;
+    }
+    const intake = await this.current(claim);
+    const reporter = readReporterPresentation(intake);
+    if (
+      !(await this.repository.updateIfCurrent(intake, {
+        metadata: {
+          ...reportRoot(intake),
+          reporter_presentation: { ...reporter, restoreArchive: false },
+        },
+      }))
+    )
+      throw new Error('Report closure changed');
+  }
+  private async presentActiveClaim(claim: ReportPresentationClaim): Promise<void> {
     let intake = await this.current(claim);
     if (!intake.thread_id || !this.client.user) throw new Error('Report thread unavailable');
     const channel = await this.client.channels.fetch(intake.thread_id);
@@ -168,15 +250,9 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       channel.id !== intake.thread_id
     )
       throw new Error('Report thread mismatch');
-    if (
-      (reportRoot(intake).thread_closed_at ||
-        intake.status === ReportIntakeStatus.CLOSED_BY_REPORTER) &&
-      'archived' in channel &&
-      !channel.archived
-    )
-      throw new Error('Thread closure pending');
     const token = randomBytes(5).toString('hex');
     let state = this.project(intake, token);
+    await this.checkRollout(state, intake);
     let reporter = readReporterPresentation(intake) ?? { nextDueAt: new Date().toISOString() };
     // Account for an uncertain send before choosing the card for the latest state.
     if (reporter.pendingSend) {
@@ -294,6 +370,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       });
       if (!saved) throw new Error('Report reservation changed');
       await this.current(claim);
+      await this.checkRollout(state, intake);
       message = await channel.send({
         ...payload,
         components: state.kind === 'confirm' ? [] : payload.components,
@@ -333,6 +410,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     if (!saved) throw new Error('Report message changed');
     intake = await this.current(claim);
     state = this.project(intake, token);
+    await this.checkRollout(state, intake);
     const edited = buildReportIntakePresentation(state);
     await message.edit({
       content: edited.content,
@@ -341,7 +419,8 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       allowedMentions: { parse: [] },
     } as MessageEditOptions);
     try {
-      await this.current(claim);
+      const current = await this.current(claim);
+      await this.checkRollout(this.project(current, token), current);
     } catch (error) {
       await message.edit({ components: [] }).catch(() => undefined);
       const latest = await this.repository.findById(intake.id);

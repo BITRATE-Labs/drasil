@@ -1,3 +1,5 @@
+import { mock } from 'jest-mock-extended';
+import type { IConfigService } from '../../config/ConfigService';
 import { ReportIntakePresentationService } from '../../services/ReportIntakePresentationService';
 import { reportHandoffReasonSchema, type ReportAnalysisOutcome } from '@drasil/application';
 import {
@@ -285,7 +287,8 @@ it('delivers staff review before one shared receipt and persists receipt complet
   });
   const presenter = new ReportIntakePresentationService(
     f.repository,
-    f.client as unknown as Client
+    f.client as unknown as Client,
+    mock<IConfigService>()
   );
   const service = new ReportIntakeHandoffService(
     f.repository,
@@ -319,7 +322,8 @@ it('does not claim moderators have the report when staff delivery fails', async 
   f.queue.upsertReportIdentityReview.mockRejectedValue(new Error('Forbidden'));
   const presenter = new ReportIntakePresentationService(
     f.repository,
-    f.client as unknown as Client
+    f.client as unknown as Client,
+    mock<IConfigService>()
   );
   const service = new ReportIntakeHandoffService(
     f.repository,
@@ -358,7 +362,8 @@ it.each(['not_dispatched', 'unknown'])(
     f.queue.upsertReportIdentityReview.mockRejectedValue(new Error('Forbidden'));
     const presenter = new ReportIntakePresentationService(
       f.repository,
-      f.client as unknown as Client
+      f.client as unknown as Client,
+      mock<IConfigService>()
     );
     const service = new ReportIntakeHandoffService(
       f.repository,

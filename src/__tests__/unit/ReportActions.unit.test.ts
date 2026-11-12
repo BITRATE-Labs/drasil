@@ -224,3 +224,34 @@ it.each([true, false])(
     else expect(f.intakes.restoreFailedThreadClose).not.toHaveBeenCalled();
   }
 );
+
+it('does not report closure from an archive proof that predates a failed card repair', async () => {
+  const f = fixture();
+  f.intake.metadata = { workflow: 'staged', reporter_presentation: { nextDueAt: null } };
+  f.intakes.findIntakeById.mockResolvedValue(f.intake);
+  f.intakes.closeIntakeForThread.mockResolvedValue({
+    closed: true,
+    shouldArchiveThread: true,
+    message: 'Closed',
+  });
+  let archived = false;
+  const thread = {
+    guildId: 'guild',
+    isThread: () => true,
+    archived: false,
+    setArchived: jest.fn(async () => {
+      archived = true;
+      throw new Error('response lost');
+    }),
+    fetch: jest.fn(async () => ({ archived })),
+  };
+  f.intakes.refreshPresentation = jest.fn(async () => {
+    archived = false;
+    throw new Error('rearchive failed');
+  });
+  jest.spyOn(f.client.channels, 'fetch').mockResolvedValue(thread as never);
+  await expect(
+    f.actions.execute(context, { kind: 'close_report_intake', intakeId: 'intake' })
+  ).rejects.toThrow("Couldn't close");
+  expect(f.intakes.restoreFailedThreadClose).not.toHaveBeenCalled();
+});

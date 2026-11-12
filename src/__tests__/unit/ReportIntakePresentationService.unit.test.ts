@@ -1,3 +1,4 @@
+import type { IConfigService } from '../../config/ConfigService';
 import type { IThreadManager } from '../../services/ThreadManager';
 import { mock } from 'jest-mock-extended';
 import { ReportIntakeService } from '../../services/ReportIntakeService';
@@ -38,6 +39,11 @@ async function fixture() {
     id: 'thread',
     guildId: 'guild',
     archived: false,
+    isThread: () => true,
+    setArchived: jest.fn(async (archived: boolean): Promise<void> => {
+      channel.archived = archived;
+    }),
+    fetch: jest.fn(async (): Promise<{ archived: boolean }> => ({ archived: channel.archived })),
     messages: {
       fetch: jest.fn(async (input: unknown) => {
         if (typeof input !== 'string') return new Collection(messages);
@@ -58,6 +64,7 @@ async function fixture() {
         edit: jest.fn(),
       };
       message.edit.mockImplementation(async (next: MessageCreateOptions) => {
+        if (channel.archived) throw new Error('Cannot edit archived thread');
         if (next.embeds) message.embeds = next.embeds.map((x) => (x as EmbedBuilder).toJSON());
         message.components = next.components || [];
         return message;
@@ -70,8 +77,12 @@ async function fixture() {
     user: { id: 'bot' },
     channels: { fetch: jest.fn().mockResolvedValue(channel) },
   } as unknown as Client;
-  const service = new ReportIntakePresentationService(repository, client);
-  return { repository, intake, channel, messages, service, client };
+  const config = mock<IConfigService>();
+  config.getServerConfig.mockResolvedValue({
+    settings: { report_intake_staged_enabled: true },
+  } as never);
+  const service = new ReportIntakePresentationService(repository, client, config);
+  return { repository, intake, channel, messages, service, client, config };
 }
 async function suggest(f: Awaited<ReturnType<typeof fixture>>): Promise<void> {
   const candidate = {
@@ -353,4 +364,98 @@ it('does not ping again when an uncertain first confirmation was deleted before 
   expect(
     f.channel.send.mock.calls.filter(([payload]) => payload.allowedMentions?.users?.length)
   ).toHaveLength(1);
+});
+
+it('does not publish a saved confirmation when the rollout is disabled', async () => {
+  const f = await fixture();
+  await suggest(f);
+  f.config.getServerConfig.mockResolvedValue({
+    settings: { report_intake_staged_enabled: false },
+  } as never);
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow(
+    'Staged report confirmation disabled'
+  );
+  expect(f.config.getServerConfig).toHaveBeenCalledWith('guild', {
+    forceRefresh: true,
+    failOnReadError: true,
+  });
+  expect(f.channel.send).not.toHaveBeenCalled();
+});
+it('rechecks the rollout before enabling a newly sent confirmation', async () => {
+  const f = await fixture();
+  await suggest(f);
+  const send = f.channel.send.getMockImplementation()!;
+  f.channel.send.mockImplementation(async (payload) => {
+    const message = await send(payload);
+    f.config.getServerConfig.mockResolvedValue({
+      settings: { report_intake_staged_enabled: false },
+    } as never);
+    return message;
+  });
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow(
+    'Staged report confirmation disabled'
+  );
+  expect(f.messages.get('1')!.components).toEqual([]);
+});
+
+it('updates a closed card while active and restores archival without reopening it on later reconciliation', async () => {
+  const f = await fixture();
+  await f.service.reconcile(f.intake.id);
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.CLOSED_BY_REPORTER,
+    closedAt: new Date(),
+  });
+  f.channel.archived = true;
+  await f.service.reconcile(f.intake.id);
+  expect(f.channel.setArchived.mock.calls.map(([archived]) => archived)).toEqual([false, true]);
+  expect(f.channel.archived).toBe(true);
+  expect(JSON.stringify([...f.messages.values()].map((m) => m.embeds))).toContain('Thread closed');
+  f.channel.setArchived.mockClear();
+  await f.service.reconcile(f.intake.id);
+  expect(f.channel.setArchived).not.toHaveBeenCalled();
+});
+it('recovers a failed rearchive without editing or reopening the finished card again', async () => {
+  const f = await fixture();
+  await f.service.reconcile(f.intake.id);
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.CLOSED_BY_REPORTER,
+    closedAt: new Date(),
+  });
+  f.channel.archived = true;
+  f.channel.setArchived.mockImplementation(async (archived) => {
+    if (archived) throw new Error('archive failed');
+    f.channel.archived = false;
+  });
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('archive failed');
+  expect(f.channel.archived).toBe(false);
+  const metadata = (await f.repository.findById(f.intake.id))!.metadata;
+  expect(metadata).toMatchObject({ reporter_presentation: { restoreArchive: true } });
+  f.channel.setArchived.mockImplementation(async (archived) => {
+    f.channel.archived = archived;
+  });
+  f.channel.setArchived.mockClear();
+  await f.service.reconcile(f.intake.id);
+  expect(f.channel.setArchived.mock.calls.map(([archived]) => archived)).toEqual([true]);
+  expect(f.channel.archived).toBe(true);
+});
+it('retires confirmation controls if the rollout is disabled during their edit', async () => {
+  const f = await fixture();
+  await suggest(f);
+  const send = f.channel.send.getMockImplementation()!;
+  f.channel.send.mockImplementation(async (payload) => {
+    const message = await send(payload);
+    const edit = message.edit.getMockImplementation()!;
+    message.edit.mockImplementation(async (next: MessageCreateOptions) => {
+      const result = await edit(next);
+      f.config.getServerConfig.mockResolvedValue({
+        settings: { report_intake_staged_enabled: false },
+      } as never);
+      return result;
+    });
+    return message;
+  });
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow(
+    'Staged report confirmation disabled'
+  );
+  expect(f.messages.get('1')!.components).toEqual([]);
 });
