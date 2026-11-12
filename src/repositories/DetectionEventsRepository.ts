@@ -1,3 +1,7 @@
+import {
+  hasAutomaticResponseAttention,
+  readAutomaticModerationResponse,
+} from '@drasil/application';
 import { injectable, inject } from 'inversify';
 import { Prisma, PrismaClient, admin_action_type, detection_type } from '../db/prisma';
 import { DetectionEvent, VerificationStatus } from './types'; // Keep existing domain types
@@ -219,11 +223,21 @@ export class DetectionEventsRepository implements IDetectionEventsRepository {
         SELECT *
         FROM detection_events
         WHERE server_id = ${serverId}
-          AND COALESCE(metadata, '{}'::jsonb) ? 'observed_notification_message_id'
-          AND NOT (COALESCE(metadata, '{}'::jsonb) ? 'observed_action')
+          AND ((COALESCE(metadata, '{}'::jsonb) ? 'observed_notification_message_id'
+          AND NOT (COALESCE(metadata, '{}'::jsonb) ? 'observed_action'))
+          OR COALESCE(metadata, '{}'::jsonb) ? 'automatic_moderation_response')
         ORDER BY detected_at ASC
       `;
-      return events as DetectionEvent[];
+      return events.filter((event) => {
+        const response = readAutomaticModerationResponse(event.metadata);
+        return response
+          ? hasAutomaticResponseAttention(event.metadata)
+          : Boolean(
+              event.metadata &&
+              'observed_notification_message_id' in event.metadata &&
+              !('observed_action' in event.metadata)
+            );
+      });
     } catch (error) {
       this.handleError(error, 'findUnresolvedObservedNotificationsByServer');
     }

@@ -1,5 +1,7 @@
 import {
   acknowledgeIdentityReviewMetadata,
+  acknowledgeAutomaticResponseMetadata,
+  isAutomaticResponseItem,
   projectReportIntakeState,
   isIdentityReviewItem,
   type QueueAttentionItemRecord,
@@ -20,7 +22,9 @@ import {
 
 export interface IModerationQueueRepository extends Pick<
   QueueAttentionRepository,
-  'reserveOrdinaryAcknowledgement' | 'completeOrdinaryAcknowledgement'
+  | 'reserveOrdinaryAcknowledgement'
+  | 'completeOrdinaryAcknowledgement'
+  | 'acknowledgeAutomaticResponse'
 > {
   findById(id: string): Promise<ModerationQueueItem | null>;
   findByCase(verificationEventId: string): Promise<ModerationQueueItem | null>;
@@ -416,6 +420,47 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
       },
     });
     return deleted.count > 0;
+  }
+
+  async acknowledgeAutomaticResponse(input: {
+    itemId: string;
+    guildId: string;
+    actorId: string;
+    acknowledgedAt: Date;
+  }): Promise<'acknowledged' | 'already_handled'> {
+    return this.prisma.$transaction(async (transaction) => {
+      const snapshot = await transaction.moderation_queue_items.findUnique({
+        where: { id: input.itemId },
+      });
+      if (
+        !snapshot ||
+        snapshot.server_id !== input.guildId ||
+        !snapshot.detection_event_id ||
+        !isAutomaticResponseItem(snapshot)
+      )
+        return 'already_handled';
+      const rows = await transaction.$queryRaw<Array<{ id: string; metadata: Prisma.JsonValue }>>`
+        SELECT id, metadata FROM detection_events WHERE id=${snapshot.detection_event_id}::uuid AND server_id=${input.guildId} FOR UPDATE`;
+      const event = rows.at(0);
+      if (!event) return 'already_handled';
+      const metadata = acknowledgeAutomaticResponseMetadata(event.metadata);
+      if (!metadata) return 'already_handled';
+      const updated = await transaction.moderation_queue_items.updateMany({
+        where: {
+          id: input.itemId,
+          server_id: input.guildId,
+          detection_event_id: event.id,
+          item_type: 'observed_alert_mirror',
+        },
+        data: { metadata: metadata as Prisma.InputJsonValue, updated_at: input.acknowledgedAt },
+      });
+      if (!updated.count) return 'already_handled';
+      await transaction.detection_events.update({
+        where: { id: event.id },
+        data: { metadata: metadata as Prisma.InputJsonValue },
+      });
+      return 'acknowledged';
+    });
   }
 
   async acknowledgeIdentityReview(input: {

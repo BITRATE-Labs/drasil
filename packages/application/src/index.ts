@@ -95,3 +95,5 @@ export * from './setup/captchaReadiness';
 export * from './reports/analysis';
 
 export * from './reports/intakeState';
+
+export * from './moderation/automaticResponse';

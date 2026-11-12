@@ -1,5 +1,6 @@
 import {
   createAttentionActions,
+  acknowledgeAutomaticResponseMetadata,
   isIdentityReviewItem,
   getAttentionCleanupSource,
   type AttentionActions,
@@ -66,6 +67,13 @@ function arrange(): {
   const actions = createAttentionActions({
     authority: { loadFresh: async () => facts },
     repository: {
+      acknowledgeAutomaticResponse: async ({ itemId }) => {
+        const item = items.get(itemId);
+        const metadata = item && acknowledgeAutomaticResponseMetadata(item.metadata);
+        if (!item || !metadata) return 'already_handled';
+        items.set(itemId, { ...item, metadata });
+        return 'acknowledged';
+      },
       acknowledgeIdentityReview: async () => 'acknowledged',
       findById: async (id) => items.get(id) ?? null,
       reserveOrdinaryAcknowledgement: async (id) => {
@@ -262,6 +270,7 @@ it('acknowledges a review promoted after the initial read without deleting its r
         current = { ...original, metadata: { identity_review: { revision: 1 } } };
         return snapshot;
       },
+      acknowledgeAutomaticResponse: async () => 'already_handled',
       acknowledgeIdentityReview,
       reserveOrdinaryAcknowledgement: async () => current,
       completeOrdinaryAcknowledgement: async () => {
@@ -299,4 +308,44 @@ it('restores only validated source metadata for a reserved cleanup row', () => {
       },
     })
   ).toBeNull();
+});
+
+it('routes only validated automatic response attention to acknowledgement', async () => {
+  const { actions, items, messageIds, deletedItemIds } = arrange();
+  const response = {
+    action: 'kick',
+    outcome: 'kicked',
+    updatedAt: '2026-11-11T00:00:00.000Z',
+    failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+    attention: 'required',
+    caseId: null,
+  };
+  items.set('response', {
+    id: 'response',
+    server_id: 'guild-1',
+    item_type: 'observed_alert_mirror',
+    detection_event_id: 'detection',
+    queue_channel_id: null,
+    queue_message_id: null,
+    metadata: { automatic_moderation_response: response },
+  });
+  expect(await actions.acknowledge(context, { itemId: 'response' })).toMatchObject({
+    kind: 'outcome',
+    outcome: { status: 'acknowledged' },
+  });
+  expect(items.get('response')?.metadata).toEqual({
+    automatic_moderation_response: { ...response, attention: 'acknowledged' },
+  });
+  expect(messageIds).toEqual([]);
+  expect(deletedItemIds).toEqual([]);
+  items.set('invalid', {
+    ...items.get('response')!,
+    id: 'invalid',
+    metadata: { automatic_moderation_response: { ...response, outcome: 'notified' } },
+  });
+  expect(await actions.acknowledge(context, { itemId: 'invalid' })).toMatchObject({
+    kind: 'outcome',
+    outcome: { status: 'already_handled' },
+  });
+  expect(items.has('invalid')).toBe(true);
 });

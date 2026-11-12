@@ -1,3 +1,7 @@
+import {
+  hasAutomaticResponseAttention,
+  readAutomaticModerationResponse,
+} from '@drasil/application';
 import { getReportIntakeSettings } from '../../utils/reportIntakeSettings';
 import {
   analysisClaimChange,
@@ -270,8 +274,10 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
         const metadata = event.metadata ?? {};
         return (
           event.server_id === serverId &&
-          typeof metadata.observed_notification_message_id === 'string' &&
-          typeof metadata.observed_action !== 'string'
+          (readAutomaticModerationResponse(metadata)
+            ? hasAutomaticResponseAttention(metadata)
+            : typeof metadata.observed_notification_message_id === 'string' &&
+              typeof metadata.observed_action !== 'string')
         );
       })
       .sort((a, b) => toTimestamp(a.detected_at) - toTimestamp(b.detected_at))

@@ -159,6 +159,10 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
     return row ? Boolean(await this.deleteById(row.id)) : false;
   }
 
+  async acknowledgeAutomaticResponse(): Promise<'already_handled'> {
+    return 'already_handled';
+  }
+
   async acknowledgeIdentityReview(input: {
     itemId: string;
     guildId: string;
@@ -1576,5 +1580,76 @@ describe('ModerationQueueService', () => {
 
     service.stop();
     jest.useRealTimers();
+  });
+});
+
+describe('automatic response attention', () => {
+  const response = {
+    action: 'kick',
+    outcome: 'kicked',
+    updatedAt: '2026-11-11T00:00:00.000Z',
+    failures: [{ step: 'notification', code: 'notification_delivery_failed' }],
+    attention: 'required',
+    caseId: null,
+  };
+  it('persists response attention without Discord delivery', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { observed_action: 'kick', automatic_moderation_response: response },
+    };
+    const { service, queueRepository } = buildService({
+      channelFetchError: new Error('unavailable'),
+    });
+    const upsert = jest.spyOn(queueRepository, 'upsert');
+    await service.upsertObservedAlertMirror(event);
+    await service.upsertObservedAlertMirror(event);
+    expect(upsert).toHaveBeenCalled();
+    expect(queueRepository.items).toHaveLength(1);
+  });
+  it('retains unresolved attention through reconciliation', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { observed_action: 'kick', automatic_moderation_response: response },
+    };
+    const { service, queueRepository } = buildService({ observedAlerts: [event] });
+    await service.syncServerQueue(event.server_id!);
+    expect(queueRepository.items).toHaveLength(1);
+  });
+  it('keeps persisted attention after a failed send', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    };
+    const { service, queueRepository, channel } = buildService();
+    channel.send.mockRejectedValueOnce(new Error('delivery failed'));
+    const upsert = jest.spyOn(queueRepository, 'upsert');
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await service.upsertObservedAlertMirror(event);
+    expect(upsert).toHaveBeenCalled();
+    expect(queueRepository.items).toHaveLength(1);
+    expect(queueRepository.items[0].queue_message_id).toBeNull();
+    warn.mockRestore();
+  });
+  it('propagates persistence failure before attempting delivery', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    };
+    const { service, queueRepository, channel } = buildService();
+    jest.spyOn(queueRepository, 'upsert').mockRejectedValueOnce(new Error('write failed'));
+    await expect(service.upsertObservedAlertMirror(event)).rejects.toThrow('write failed');
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+  it('keeps acknowledged attention visible without repeated pings', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: { ...response, attention: 'acknowledged' } },
+    };
+    const { service, queueRepository, channel } = buildService();
+    await service.upsertObservedAlertMirror(event);
+    await service.upsertObservedAlertMirror(event);
+    expect(queueRepository.items).toHaveLength(1);
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    expect(channel.sentMessages[0].payload.allowedMentions).toEqual({ parse: [] });
   });
 });

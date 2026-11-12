@@ -1,3 +1,7 @@
+import {
+  readAutomaticModerationResponse,
+  hasAutomaticResponseAttention,
+} from '../moderation/automaticResponse';
 import { z } from 'zod';
 import { reportHandoffSchema } from '../reports/analysis';
 import { authorizeAttention, type AuthorityPort } from '../authorization';
@@ -22,11 +26,18 @@ export interface QueueAttentionItemRecord {
   readonly queue_channel_id: string | null;
   readonly queue_message_id: string | null;
   readonly report_intake_id?: string | null;
+  readonly detection_event_id?: string | null;
   readonly metadata?: unknown;
   readonly attention_cleanup_pending?: boolean;
 }
 export interface QueueAttentionRepository {
   findById(id: string): Promise<QueueAttentionItemRecord | null>;
+  acknowledgeAutomaticResponse(input: {
+    itemId: string;
+    guildId: string;
+    actorId: string;
+    acknowledgedAt: Date;
+  }): Promise<QueueAttentionAcknowledgeStatus>;
   acknowledgeIdentityReview(input: {
     itemId: string;
     guildId: string;
@@ -79,8 +90,21 @@ export function createAttentionActions(deps: AttentionDependencies): AttentionAc
     if (context.actor.kind !== 'user') return { kind: 'denied', code: 'permission_denied' };
     const actor = { id: context.actor.userId, surface: context.source };
     let item = await deps.repository.findById(itemId);
-    if (!item || item.server_id !== context.guildId || !isQueueAttentionItemType(item.item_type)) {
+    if (
+      !item ||
+      item.server_id !== context.guildId ||
+      (!isQueueAttentionItemType(item.item_type) && !isAutomaticResponseItem(item))
+    ) {
       return { kind: 'outcome', outcome: { actor, itemId, status: 'already_handled' } };
+    }
+    if (isAutomaticResponseItem(item)) {
+      const status = await deps.repository.acknowledgeAutomaticResponse({
+        itemId,
+        guildId: context.guildId,
+        actorId: actor.id,
+        acknowledgedAt: new Date(),
+      });
+      return { kind: 'outcome', outcome: { actor, itemId, status } };
     }
     if (!isIdentityReviewItem(item)) {
       item = await deps.repository.reserveOrdinaryAcknowledgement(itemId, context.guildId);
@@ -171,4 +195,20 @@ export function getAttentionCleanupSource(
     .object({ attention_cleanup: attentionCleanupSourceSchema })
     .safeParse(item.metadata);
   return result.success ? result.data.attention_cleanup : null;
+}
+
+export function isAutomaticResponseItem(item: QueueAttentionItemRecord): boolean {
+  return (
+    item.item_type === 'observed_alert_mirror' &&
+    Boolean(item.detection_event_id) &&
+    hasAutomaticResponseAttention(item.metadata)
+  );
+}
+export function acknowledgeAutomaticResponseMetadata(
+  metadata: unknown
+): Record<string, unknown> | null {
+  const response = readAutomaticModerationResponse(metadata);
+  if (!response || response.caseId || response.attention !== 'required') return null;
+  const record = z.record(z.string(), z.unknown()).parse(metadata);
+  return { ...record, automatic_moderation_response: { ...response, attention: 'acknowledged' } };
 }

@@ -41,6 +41,8 @@ import { getModerationQueueSettings } from '../utils/moderationQueueSettings';
 import { NotificationPresentationBuilder } from './NotificationPresentationBuilder';
 import {
   projectReportIntakeState,
+  readAutomaticModerationResponse,
+  hasAutomaticResponseAttention,
   type ReportAnalysisOutcome,
   type QueueAttentionItemRecord,
 } from '@drasil/application';
@@ -176,11 +178,6 @@ export class ModerationQueueService implements IModerationQueueService {
   }
 
   public async syncServerQueue(serverId: string): Promise<void> {
-    const serverConfig = await this.configService.getServerConfig(serverId);
-    if (!getModerationQueueSettings(serverConfig.settings).channelId) {
-      return;
-    }
-
     const pendingCases =
       await this.verificationEventRepository.findReviewablePendingByServer(serverId);
     const observedAlerts =
@@ -267,34 +264,46 @@ export class ModerationQueueService implements IModerationQueueService {
   }
 
   public async upsertObservedAlertMirror(detectionEvent: DetectionEvent): Promise<void> {
+    const response = readAutomaticModerationResponse(detectionEvent.metadata);
+    const attention = hasAutomaticResponseAttention(detectionEvent.metadata);
     if (
       !detectionEvent.server_id ||
-      this.hasObservedAction(detectionEvent) ||
-      !this.hasObservedNotification(detectionEvent)
+      (response !== null
+        ? !attention
+        : this.hasObservedAction(detectionEvent) || !this.hasObservedNotification(detectionEvent))
     ) {
       await this.deleteObservedAlertMirror(detectionEvent.id);
       return;
     }
 
+    const serverId = detectionEvent.server_id;
+    const persist = (): Promise<ModerationQueueItem> =>
+      this.moderationQueueRepository.upsert({
+        serverId,
+        userId: detectionEvent.user_id,
+        itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
+        detectionEventId: detectionEvent.id,
+        metadata: this.toJson(
+          response
+            ? { automatic_moderation_response: response }
+            : { refreshed_at: new Date().toISOString() }
+        ),
+      });
+    const durableItem = attention ? await persist() : null;
     const serverConfig = await this.configService.getServerConfig(detectionEvent.server_id);
     const queueChannel = await this.getQueueChannel(serverConfig.settings);
-    if (!queueChannel) {
-      return;
-    }
-
-    const item = await this.moderationQueueRepository.upsert({
-      serverId: detectionEvent.server_id,
-      userId: detectionEvent.user_id,
-      itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
-      detectionEventId: detectionEvent.id,
-      metadata: this.toJson({ refreshed_at: new Date().toISOString() }),
-    });
+    if (!queueChannel) return;
+    const item = durableItem ?? (await persist());
 
     const responseSettings = getDetectionResponseSettings(serverConfig.settings);
     const message = await this.sendOrEditQueueMessage(
       item,
       queueChannel,
-      this.buildObservedAlertPayload(detectionEvent, responseSettings.moderatorBanActionEnabled)
+      this.buildObservedAlertPayload(
+        detectionEvent,
+        responseSettings.moderatorBanActionEnabled,
+        item.id
+      )
     );
     if (message) {
       await this.moderationQueueRepository.updateDiscordMessage(
@@ -1011,8 +1020,40 @@ export class ModerationQueueService implements IModerationQueueService {
 
   private buildObservedAlertPayload(
     detectionEvent: DetectionEvent,
-    includeBanAction: boolean
+    includeBanAction: boolean,
+    itemId: string
   ): QueueMessagePayload {
+    const response = readAutomaticModerationResponse(detectionEvent.metadata);
+    if (response && hasAutomaticResponseAttention(detectionEvent.metadata)) {
+      return {
+        allowedMentions: { parse: [] },
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0xffc107)
+            .setTitle('Automatic Response Needs Review')
+            .setDescription(
+              `<@${detectionEvent.user_id}>: ${response.action}, ${response.outcome}.`
+            )
+            .addFields({
+              name: 'Failures',
+              value:
+                response.failures.map((failure) => failure.code).join('\n') ||
+                'Response pending confirmation.',
+            }),
+        ],
+        components:
+          response.attention === 'required'
+            ? [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(ModerationQueueService.buildAcknowledgeCustomId(itemId))
+                    .setLabel('Acknowledge')
+                    .setStyle(ButtonStyle.Secondary)
+                ),
+              ]
+            : [],
+      };
+    }
     const detectedAt = new Date(detectionEvent.detected_at);
     const embed = new EmbedBuilder()
       .setColor(0xffc107)
