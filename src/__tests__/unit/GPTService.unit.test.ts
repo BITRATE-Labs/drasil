@@ -81,6 +81,49 @@ describe('GPTService (unit)', () => {
       expect(JSON.parse(parse.mock.calls[0][0].input[0].content[0].text).text).toBe(hostileText);
     });
 
+    it('uses bounded provider link strings while accepting valid Discord links locally', async () => {
+      const output = associatedOutput();
+      const link =
+        'https://discord.com/channels/123456789012345678/234567890123456789/345678901234567890';
+      output.subjects[0].messageLinks = [link];
+      const { openai, parse } = buildOpenAiMock(output);
+      const extraction = await new GPTService(openai).extractReportIdentity({
+        sources: [textSource],
+        signal,
+      });
+      expect(extraction).toMatchObject({
+        kind: 'extracted',
+        subjects: [
+          expect.objectContaining({ messageLinks: [link] }),
+          expect.anything(),
+          expect.anything(),
+        ],
+      });
+      const item =
+        parse.mock.calls[0][0].text.format.schema.properties.subjects.items.properties.messageLinks
+          .items;
+      expect(item).toMatchObject({ type: 'string', minLength: 1, maxLength: 200 });
+      expect(item).not.toHaveProperty('pattern');
+    });
+
+    it.each([
+      { label: 'empty', link: '' },
+      { label: 'malformed', link: 'not-a-message-link' },
+      { label: 'non-Discord', link: 'https://example.test/message/123' },
+      {
+        label: 'overlength',
+        link: `https://discord.com/channels/123456789012345678/234567890123456789/345678901234567890?text=${'x'.repeat(200)}`,
+      },
+    ])('rejects $label message links after provider parsing', async ({ link }) => {
+      const output = associatedOutput();
+      output.subjects[0].messageLinks = [link];
+      const { openai, parse } = buildOpenAiMock(output);
+      await expect(
+        new GPTService(openai).extractReportIdentity({ sources: [textSource], signal })
+      ).resolves.toMatchObject({ kind: 'failed', reason: 'invalid_output', retryable: false });
+      expect(parse).toHaveBeenCalledTimes(1);
+    });
+
     it('does not promote an uncertain reading through numeric confidence', async () => {
       const output = associatedOutput();
       output.subjects[0].readability = 'uncertain';
@@ -335,7 +378,7 @@ describe('GPTService (unit)', () => {
       expect(options).toMatchObject({ signal, maxRetries: 0 });
       expect(payload).toMatchObject({
         model: 'gpt-5.4-mini',
-        max_output_tokens: 4096,
+        max_output_tokens: 16_384,
         store: false,
       });
       expect(
@@ -982,34 +1025,74 @@ describe('GPTService (unit)', () => {
     expect(inputTextPart.text).not.toContain('user-1');
   });
 
-  it('uses OPENAI_MODERATION_MODEL for runtime model selection', async () => {
+  it('defaults report identities to Terra without changing other moderation defaults', async () => {
     const originalValue = process.env[OPENAI_MODERATION_MODEL_ENV];
-    process.env[OPENAI_MODERATION_MODEL_ENV] = 'gpt-5.4';
-    const { openai, parse } = buildOpenAiMock({
-      result: 'OK',
-      confidence: 0.82,
-      summary: 'Context looks normal for the server.',
-      reason_codes: ['normal_context'],
-      primary_signal: 'none',
-    });
-
+    delete process.env[OPENAI_MODERATION_MODEL_ENV];
     try {
-      const service = new GPTService(openai);
-      const result = await service.analyzeProfile(makeProfile());
-
-      expect(result.model).toBe('gpt-5.4');
-      expect(parse.mock.calls[0][0].model).toBe('gpt-5.4');
-      expect(parse.mock.calls[0][0].temperature).toBeUndefined();
+      const identity = buildOpenAiMock(associatedOutput());
+      await new GPTService(identity.openai).extractReportIdentity({
+        sources: [{ ref: sourceRef, content: { kind: 'text', text: hostileText } }],
+        signal: new AbortController().signal,
+      });
+      expect(identity.parse.mock.calls[0][0]).toMatchObject({
+        model: 'gpt-6.1-terra',
+        max_output_tokens: 16_384,
+        reasoning: { effort: 'low' },
+      });
+      expect(identity.parse.mock.calls[0][0].temperature).toBeUndefined();
+      const profile = buildOpenAiMock({
+        result: 'OK',
+        confidence: 0.8,
+        summary: 'Normal context.',
+        reason_codes: [],
+        primary_signal: 'none',
+      });
+      await new GPTService(profile.openai).analyzeProfile(makeProfile());
+      expect(profile.parse.mock.calls[0][0].model).toBe('gpt-5.4-mini');
     } finally {
-      if (originalValue === undefined) {
-        delete process.env[OPENAI_MODERATION_MODEL_ENV];
-      } else {
-        process.env[OPENAI_MODERATION_MODEL_ENV] = originalValue;
-      }
+      if (originalValue === undefined) delete process.env[OPENAI_MODERATION_MODEL_ENV];
+      else process.env[OPENAI_MODERATION_MODEL_ENV] = originalValue;
     }
   });
 
-  it('keeps temperature for non-gpt-5 model overrides', async () => {
+  it.each(['gpt-5.4', 'gpt-6.1-terra', 'gpt-6-luna'])(
+    'uses %s overrides with compatible reasoning parameters',
+    async (model) => {
+      const originalValue = process.env[OPENAI_MODERATION_MODEL_ENV];
+      process.env[OPENAI_MODERATION_MODEL_ENV] = model;
+      const { openai, parse } = buildOpenAiMock({
+        result: 'OK',
+        confidence: 0.82,
+        summary: 'Context looks normal for the server.',
+        reason_codes: ['normal_context'],
+        primary_signal: 'none',
+      });
+
+      try {
+        const service = new GPTService(openai);
+        const result = await service.analyzeProfile(makeProfile());
+
+        expect(result.model).toBe(model);
+        expect(parse.mock.calls[0][0].model).toBe(model);
+        expect(parse.mock.calls[0][0].temperature).toBeUndefined();
+        expect(parse.mock.calls[0][0].reasoning).toEqual({ effort: 'low' });
+        const identity = buildOpenAiMock(associatedOutput());
+        await new GPTService(identity.openai).extractReportIdentity({
+          sources: [{ ref: sourceRef, content: { kind: 'text', text: hostileText } }],
+          signal: new AbortController().signal,
+        });
+        expect(identity.parse.mock.calls[0][0].model).toBe(model);
+      } finally {
+        if (originalValue === undefined) {
+          delete process.env[OPENAI_MODERATION_MODEL_ENV];
+        } else {
+          process.env[OPENAI_MODERATION_MODEL_ENV] = originalValue;
+        }
+      }
+    }
+  );
+
+  it('keeps temperature for non-reasoning model overrides', async () => {
     const originalValue = process.env[OPENAI_MODERATION_MODEL_ENV];
     process.env[OPENAI_MODERATION_MODEL_ENV] = 'gpt-4.1-mini';
     const { openai, parse } = buildOpenAiMock({
