@@ -83,12 +83,13 @@ const buildMessage = (guildId: string, channelId: string): Message =>
     url: `https://discord.com/channels/${guildId}/${channelId}/message-1`,
   }) as Message;
 
-const buildDetection = (confidence = 0.8): DetectionResult => ({
+const buildDetection = (overrides: Partial<DetectionResult> = {}): DetectionResult => ({
   label: 'SUSPICIOUS',
-  confidence,
+  confidence: 0.8,
   reasons: [],
   triggerSource: DetectionType.SUSPICIOUS_CONTENT,
   triggerContent: '',
+  ...overrides,
 });
 
 describe('SecurityActionService (unit)', () => {
@@ -239,7 +240,18 @@ describe('SecurityActionService (unit)', () => {
     fetchSpy.mockRestore();
   });
 
-  const buildService = (client: Client = {} as Client): SecurityActionService =>
+  const buildService = (
+    client: Client = {} as Client,
+    {
+      moderationQueueService,
+      reportIntakeRepository,
+      captchaChallengeService,
+    }: {
+      moderationQueueService?: IModerationQueueService;
+      reportIntakeRepository?: InMemoryReportIntakeRepository;
+      captchaChallengeService?: ICaptchaChallengeService;
+    } = {}
+  ): SecurityActionService =>
     new SecurityActionService(
       notificationManager,
       detectionEventsRepository,
@@ -251,7 +263,38 @@ describe('SecurityActionService (unit)', () => {
       threadManager,
       userModerationService,
       client,
-      gptService as any
+      gptService as unknown as ConstructorParameters<typeof SecurityActionService>[10],
+      undefined,
+      moderationQueueService,
+      undefined,
+      undefined,
+      reportIntakeRepository,
+      captchaChallengeService
+    );
+
+  const createSuspiciousDetection = (
+    guildId: string,
+    userId: string,
+    overrides: Partial<
+      Pick<Parameters<InMemoryDetectionEventsRepository['create']>[0], 'confidence' | 'metadata'>
+    > = {}
+  ) =>
+    detectionEventsRepository.create({
+      server_id: guildId,
+      user_id: userId,
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.9,
+      reasons: ['Suspicious content'],
+      detected_at: new Date(),
+      ...overrides,
+    });
+
+  const createPendingCase = (guildId: string, userId: string, detectionId: string | null = null) =>
+    verificationEventRepository.createFromDetection(
+      detectionId,
+      guildId,
+      userId,
+      VerificationStatus.PENDING
     );
 
   it.each(['pending', 'failed', 'unknown', 'kicked'] as const)(
@@ -518,13 +561,11 @@ describe('SecurityActionService (unit)', () => {
     const member = buildMember(guildId, userId);
     const message = buildMessage(guildId, channelId);
 
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     const service = new SecurityActionService(
       notificationManager,
@@ -595,13 +636,10 @@ describe('SecurityActionService (unit)', () => {
       Object.assign(service, { moderationQueueService: queue, captchaChallengeService: captcha });
       const recordFailure = jest.spyOn(service, 'recordAutomaticResponseFailure');
       const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
+      const detection: DetectionResult = buildDetection({
         confidence: 0.9,
-        reasons: [],
         triggerSource: DetectionType.NEW_ACCOUNT,
-        triggerContent: '',
-      };
+      });
       try {
         await expect(service.handleSuspiciousJoin(member, detection)).resolves.toBe(true);
         const owner = await verificationEventRepository.findActiveByUserAndServer(
@@ -696,13 +734,10 @@ describe('SecurityActionService (unit)', () => {
       };
       const service = buildService();
       Object.assign(service, { moderationQueueService: queue, captchaChallengeService: captcha });
-      const detection: DetectionResult = {
-        label: 'SUSPICIOUS',
+      const detection: DetectionResult = buildDetection({
         confidence: 0.9,
-        reasons: [],
         triggerSource: DetectionType.NEW_ACCOUNT,
-        triggerContent: '',
-      };
+      });
       const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
         await expect(service.handleSuspiciousJoin(member, detection)).rejects.toBe(failure);
@@ -730,14 +765,11 @@ describe('SecurityActionService (unit)', () => {
         });
         const service = buildService({ user: { id: 'bot' } } as Client);
         const recordFailure = jest.spyOn(service, 'recordAutomaticResponseFailure');
-        const detection: DetectionResult = {
+        const detection: DetectionResult = buildDetection({
           detectionEventId: '11111111-1111-4111-8111-111111111111',
-          label: 'SUSPICIOUS',
           confidence: 0.99,
-          reasons: [],
-          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
           triggerContent: 'PRIVATE_CONTENT_SENTINEL',
-        };
+        });
         await expect(
           withObservation('missing-detection-test', 'chain', () =>
             source === 'message'
@@ -776,36 +808,17 @@ describe('SecurityActionService (unit)', () => {
       settings: { captcha_mode: 'suspicious_join' },
     });
     const member = buildMember(guildId, userId);
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.92,
       reasons: ['New account requires review'],
       triggerSource: DetectionType.NEW_ACCOUNT,
       triggerContent: 'Suspicious new join',
-    };
+    });
     const captchaChallengeService = {
       findByCaseId: jest.fn().mockResolvedValue(null),
       requestChallenge: jest.fn().mockRejectedValue(new Error('Database unavailable')),
     } as unknown as jest.Mocked<ICaptchaChallengeService>;
-    const service = new SecurityActionService(
-      notificationManager,
-      detectionEventsRepository,
-      serverMemberRepository,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      adminActionService,
-      threadManager,
-      userModerationService,
-      {} as Client,
-      gptService as any,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      captchaChallengeService
-    );
+    const service = buildService({} as Client, { captchaChallengeService });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await expect(service.handleSuspiciousJoin(member, detectionResult)).rejects.toThrow(
@@ -831,33 +844,14 @@ describe('SecurityActionService (unit)', () => {
     const captchaChallengeService = {
       findByCaseId: jest.fn().mockRejectedValue(new Error('CAPTCHA lookup unavailable')),
     } as unknown as jest.Mocked<ICaptchaChallengeService>;
-    const service = new SecurityActionService(
-      notificationManager,
-      detectionEventsRepository,
-      serverMemberRepository,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      adminActionService,
-      threadManager,
-      userModerationService,
-      {} as Client,
-      gptService as any,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      captchaChallengeService
-    );
+    const service = buildService({} as Client, { captchaChallengeService });
     const verificationEvent = { id: 'verification-captcha-lookup' } as VerificationEvent;
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious join'],
       triggerSource: DetectionType.NEW_ACCOUNT,
       triggerContent: 'New join',
-    };
+    });
 
     await expect(
       (service as any).upsertNotification(member, detectionResult, verificationEvent)
@@ -882,13 +876,11 @@ describe('SecurityActionService (unit)', () => {
       },
     });
     const botUser = { id: 'bot-1' } as User;
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.99,
       reasons: ['High-confidence scam content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     userModerationService.kickUser.mockImplementationOnce(
       async (_member, _reason, _moderator, _id, lifecycle) => {
@@ -951,13 +943,11 @@ describe('SecurityActionService (unit)', () => {
           auto_kick_min_confidence_threshold: 95,
         },
       });
-      const result: DetectionResult = {
-        label: 'SUSPICIOUS',
+      const result: DetectionResult = buildDetection({
         confidence: 0.99,
         reasons: ['Suspicious content'],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
         triggerContent: message.content,
-      };
+      });
       userModerationService.kickUser.mockRejectedValueOnce(
         new KickExecutionError(
           outcome,
@@ -991,7 +981,7 @@ describe('SecurityActionService (unit)', () => {
         auto_kick_min_confidence_threshold: 95,
       },
     });
-    const result: DetectionResult = buildDetection(0.99);
+    const result: DetectionResult = buildDetection({ confidence: 0.99 });
     userModerationService.kickUser.mockImplementationOnce(
       async (_member, _reason, _actor, _id, lifecycle) => {
         await lifecycle?.beforeSend();
@@ -1033,13 +1023,11 @@ describe('SecurityActionService (unit)', () => {
         auto_kick_min_confidence_threshold: 99,
       },
     });
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.98,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     await buildService({ user: { id: 'bot-1' } } as Client).handleSuspiciousMessage(
       member,
@@ -1062,13 +1050,12 @@ describe('SecurityActionService (unit)', () => {
         auto_kick_min_confidence_threshold: 95,
       },
     });
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 1,
       reasons: ['Previously kicked from this server; review required on rejoin.'],
       triggerSource: DetectionType.REJOIN_AFTER_KICK,
       triggerContent: 'Rejoined after prior kick',
-    };
+    });
 
     await buildService({ user: { id: 'bot-1' } } as Client).handleSuspiciousJoin(
       member,
@@ -1084,33 +1071,17 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-queue-fails';
     const member = buildMember(guildId, userId);
     const message = buildMessage(guildId, 'channel-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
     const moderationQueueService = {
       upsertCaseMirror: jest.fn().mockRejectedValue(new Error('queue unavailable')),
     } as unknown as IModerationQueueService;
     const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    const service = new SecurityActionService(
-      notificationManager,
-      detectionEventsRepository,
-      serverMemberRepository,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      adminActionService,
-      threadManager,
-      userModerationService,
-      {} as Client,
-      gptService as any,
-      undefined,
-      moderationQueueService
-    );
+    const service = buildService({} as Client, { moderationQueueService });
 
     try {
       await expect(service.handleSuspiciousMessage(member, detectionResult, message)).resolves.toBe(
@@ -1176,21 +1147,7 @@ describe('SecurityActionService (unit)', () => {
         await collected;
         return null;
       });
-      const service = new SecurityActionService(
-        notificationManager,
-        detectionEventsRepository,
-        serverMemberRepository,
-        verificationEventRepository,
-        userRepository,
-        serverRepository,
-        adminActionService,
-        threadManager,
-        userModerationService,
-        {} as Client,
-        gptService as any,
-        undefined,
-        queue
-      );
+      const service = buildService({} as Client, { moderationQueueService: queue });
       const opening = service.handleSuspiciousMessage(member, {
         label: 'SUSPICIOUS',
         confidence: 0.9,
@@ -1273,12 +1230,7 @@ describe('SecurityActionService (unit)', () => {
       detection_type: DetectionType.USER_REPORT,
       confidence: 1,
     });
-    const event = await verificationEventRepository.createFromDetection(
-      detection.id,
-      member.guild.id,
-      member.id,
-      VerificationStatus.PENDING
-    );
+    const event = await createPendingCase(member.guild.id, member.id, detection.id);
     await verificationEventRepository.patchMetadata(event.id, {
       profile_assets: { avatar_url: 'https://example.test/previous.png' },
       profile_image_description: {
@@ -1316,13 +1268,11 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-avatar-evidence';
     const member = buildMember(guildId, userId);
     const message = buildMessage(guildId, 'channel-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
     const arrayBuffer = jest.fn().mockResolvedValue(new Uint8Array([1, 2, 3, 4]).buffer);
     const evidenceThread = {
       id: 'evidence-avatar',
@@ -1432,24 +1382,12 @@ describe('SecurityActionService (unit)', () => {
     );
     const mirror = jest.fn().mockResolvedValue(undefined);
     const observed = jest.fn().mockResolvedValue(undefined);
-    const service = new SecurityActionService(
-      notificationManager,
-      detectionEventsRepository,
-      serverMemberRepository,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      adminActionService,
-      threadManager,
-      userModerationService,
-      {} as Client,
-      gptService as any,
-      undefined,
-      {
+    const service = buildService({} as Client, {
+      moderationQueueService: {
         upsertCaseMirror: mirror,
         upsertObservedAlertMirrorById: observed,
-      } as unknown as IModerationQueueService
-    );
+      } as unknown as IModerationQueueService,
+    });
     await expect(service.handleSuspiciousMessage(member, detection)).resolves.toBe(true);
     const event = await detectionEventsRepository.findById(detection.detectionEventId!);
     const owner = await verificationEventRepository.findById(event!.latest_verification_event_id!);
@@ -1591,7 +1529,7 @@ describe('SecurityActionService (unit)', () => {
           ],
         }
       );
-      const detection: DetectionResult = buildDetection(0.9);
+      const detection: DetectionResult = buildDetection({ confidence: 0.9 });
       const failures: AutomaticModerationResponse['failures'] =
         kind === 'kick'
           ? [{ step: 'kick', code: 'kick_rejected' }]
@@ -1651,7 +1589,7 @@ describe('SecurityActionService (unit)', () => {
         .spyOn(service, 'recordAutomaticResponseFailure')
         .mockRejectedValueOnce(new Error('PRIVATE_SECONDARY_SENTINEL'));
       const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      const detection: DetectionResult = buildDetection(0.99);
+      const detection: DetectionResult = buildDetection({ confidence: 0.99 });
       try {
         await expect(
           source === 'message'
@@ -1843,13 +1781,9 @@ describe('SecurityActionService (unit)', () => {
   it('propagates an unavailable staff observed failure write without retrying delivery', async () => {
     const service = buildService();
     const member = buildMember('observed-failure-guild', 'observed-failure-user');
-    const detection: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.8,
-      reasons: [],
+    const detection: DetectionResult = buildDetection({
       triggerSource: DetectionType.PATTERN_MATCH,
-      triggerContent: '',
-    };
+    });
     notificationManager.upsertObservedDetectionNotification.mockResolvedValue(null);
     jest.spyOn(detectionEventsRepository, 'patchMetadata').mockResolvedValue(null);
     await expect(service.observeSuspiciousMessage(member, detection)).rejects.toThrow(
@@ -1894,13 +1828,11 @@ describe('SecurityActionService (unit)', () => {
     });
     userModerationService.applyCaseRole.mockRejectedValueOnce(new Error('Missing Permissions'));
 
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
@@ -1942,13 +1874,11 @@ describe('SecurityActionService (unit)', () => {
         return patchMetadata(id, patch, options);
       });
 
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
@@ -1976,13 +1906,11 @@ describe('SecurityActionService (unit)', () => {
     const message = buildMessage(guildId, 'channel-1');
     threadManager.createVerificationThread.mockRejectedValueOnce(new Error('Missing Access'));
 
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
@@ -2012,7 +1940,7 @@ describe('SecurityActionService (unit)', () => {
     'missing_access',
   ])('preserves the safe thread repair code %s through case creation', async (code) => {
     const member = buildMember('safe-thread-guild', 'safe-thread-user');
-    const detection: DetectionResult = buildDetection(0.9);
+    const detection: DetectionResult = buildDetection({ confidence: 0.9 });
     threadManager.createVerificationThread.mockRejectedValueOnce(
       Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), { code })
     );
@@ -2050,7 +1978,7 @@ describe('SecurityActionService (unit)', () => {
     'records %s as persistence failure while retaining delivered notification and evidence',
     async (operation) => {
       const member = buildMember('persistence-guild', 'persistence-user');
-      const detection: DetectionResult = buildDetection(0.9);
+      const detection: DetectionResult = buildDetection({ confidence: 0.9 });
       const service = buildService();
       const error = new Error('PRIVATE_PROVIDER_SENTINEL');
       const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -2137,7 +2065,7 @@ describe('SecurityActionService (unit)', () => {
       const diagnostics = jest.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
         const member = buildMember('delayed-diagnostics-guild', 'delayed-diagnostics-user');
-        const detection: DetectionResult = buildDetection(0.9);
+        const detection: DetectionResult = buildDetection({ confidence: 0.9 });
         threadManager.createVerificationThread.mockRejectedValueOnce(new Error('Initial failure'));
         await buildService().handleSuspiciousMessage(member, detection);
         const error = Object.assign(new Error('PRIVATE_PROVIDER_SENTINEL'), {
@@ -2187,13 +2115,11 @@ describe('SecurityActionService (unit)', () => {
     const message = buildMessage(guildId, 'channel-1');
     threadManager.createVerificationThread.mockRejectedValueOnce(new Error('Missing Access'));
 
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
@@ -2239,24 +2165,17 @@ describe('SecurityActionService (unit)', () => {
       detected_at: new Date(),
     });
 
-    const activeCase = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const activeCase = await createPendingCase(guildId, userId, detectionEvent.id);
     await serverMemberRepository.upsertMember(guildId, userId, {
       case_role_active: true,
       verification_status: VerificationStatus.PENDING,
     });
 
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.85,
       reasons: ['Follow-up detection'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: 'suspicious follow-up',
-    };
+    });
 
     const service = new SecurityActionService(
       notificationManager,
@@ -2293,13 +2212,11 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-open-case';
     const userId = 'user-open-case';
     const member = buildMember(guildId, userId);
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.9,
       reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: 'free discord nitro',
-    };
+    });
 
     const service = new SecurityActionService(
       notificationManager,
@@ -2397,12 +2314,7 @@ describe('SecurityActionService (unit)', () => {
       reasons: ['Admin case opened by admin-open-case. No reason provided.'],
       detected_at: new Date(),
     });
-    await verificationEventRepository.createFromDetection(
-      existingDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    await createPendingCase(guildId, userId, existingDetection.id);
 
     await buildService().openAdminCase(member, moderator, {
       action: 'open_case',
@@ -2435,12 +2347,7 @@ describe('SecurityActionService (unit)', () => {
       Object.defineProperty(verificationEventRepository, 'nextId', {
         value: () => 'c339ae64-cf09-4874-8174-0b0fb2490f4b',
       });
-      const owner = await verificationEventRepository.createFromDetection(
-        detection.id,
-        member.guild.id,
-        member.id,
-        VerificationStatus.PENDING
-      );
+      const owner = await createPendingCase(member.guild.id, member.id, detection.id);
       const response = {
         action,
         outcome: action === 'kick' ? 'unknown' : 'case_opened',
@@ -2501,12 +2408,7 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-case-repair';
     const userId = 'user-case-repair';
     const member = buildMember(guildId, userId);
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     verificationEvent.thread_id = 'thread-1';
     await verificationEventRepository.update(verificationEvent.id, verificationEvent);
     await serverMemberRepository.upsertMember(guildId, userId, {
@@ -2547,12 +2449,7 @@ describe('SecurityActionService (unit)', () => {
       reasons: ['New Discord account'],
       detected_at: new Date(),
     });
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
     verificationEvent.thread_id = 'thread-1';
     verificationEvent.notification_message_id = 'notif-1';
     verificationEvent.metadata = {
@@ -2597,12 +2494,7 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-case-repair-notification-fails';
     const userId = 'user-case-repair-notification-fails';
     const member = buildMember(guildId, userId);
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     verificationEvent.thread_id = 'thread-1';
     await verificationEventRepository.update(verificationEvent.id, verificationEvent);
     notificationManager.updateNotificationButtons.mockRejectedValueOnce(
@@ -2643,12 +2535,7 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-case-repair-still-fails';
     const userId = 'user-case-repair-still-fails';
     const member = buildMember(guildId, userId);
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     verificationEvent.thread_id = 'thread-1';
     await verificationEventRepository.update(verificationEvent.id, verificationEvent);
     threadManager.repairVerificationThread.mockRejectedValueOnce(
@@ -2690,23 +2577,13 @@ describe('SecurityActionService (unit)', () => {
 
   it('refreshes the latest resolved case notification from stored state', async () => {
     const member = buildMember('guild-1', 'user-refresh');
-    const pendingEvent = await verificationEventRepository.createFromDetection(
-      null,
-      member.guild.id,
-      member.id,
-      VerificationStatus.PENDING
-    );
+    const pendingEvent = await createPendingCase(member.guild.id, member.id);
     await verificationEventRepository.update(pendingEvent.id, {
       ...pendingEvent,
       notification_channel_id: 'channel-old',
       notification_message_id: 'message-old',
     });
-    const latestEvent = await verificationEventRepository.createFromDetection(
-      null,
-      member.guild.id,
-      member.id,
-      VerificationStatus.PENDING
-    );
+    const latestEvent = await createPendingCase(member.guild.id, member.id);
     const verifiedEvent = await verificationEventRepository.update(latestEvent.id, {
       ...latestEvent,
       status: VerificationStatus.VERIFIED,
@@ -2733,12 +2610,7 @@ describe('SecurityActionService (unit)', () => {
 
   it('does not refresh a case without a stored notification message', async () => {
     const member = buildMember('guild-1', 'user-no-notification');
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      member.guild.id,
-      member.id,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(member.guild.id, member.id);
 
     const result = await buildService().refreshCaseNotification(
       member.guild.id,
@@ -2760,12 +2632,7 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-case-repair-report-review';
     const userId = 'user-case-repair-report-review';
     const member = buildMember(guildId, userId);
-    const verificationEvent = await verificationEventRepository.createFromDetection(
-      null,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const verificationEvent = await createPendingCase(guildId, userId);
     verificationEvent.thread_id = 'thread-1';
     verificationEvent.metadata = {
       [VERIFICATION_THREAD_TYPE_METADATA_KEY]: REPORT_REVIEW_THREAD_TYPE,
@@ -3989,12 +3856,7 @@ describe('SecurityActionService (unit)', () => {
       reasons: ['Initial detection'],
       detected_at: new Date(),
     });
-    const activeCase = await verificationEventRepository.createFromDetection(
-      initialDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
 
     await buildService().handleUserReport(member, { id: reporterId } as User, 'follow-up report');
 
@@ -4028,12 +3890,7 @@ describe('SecurityActionService (unit)', () => {
       reasons: ['Initial detection'],
       detected_at: new Date(),
     });
-    const activeCase = await verificationEventRepository.createFromDetection(
-      initialDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
     const originalLink =
       detectionEventsRepository.linkToVerificationEvent.bind(detectionEventsRepository);
     jest
@@ -4080,12 +3937,7 @@ describe('SecurityActionService (unit)', () => {
       reasons: ['Initial report'],
       detected_at: new Date(),
     });
-    const activeCase = await verificationEventRepository.createFromDetection(
-      initialDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
 
     await buildService().handleManualFlag(member, { id: moderatorId } as User, 'admin follow-up');
 
@@ -4126,19 +3978,12 @@ describe('SecurityActionService (unit)', () => {
       reasons: ['Initial report'],
       detected_at: new Date(),
     });
-    const activeCase = await verificationEventRepository.createFromDetection(
-      initialDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.88,
       reasons: ['Suspicious content after report'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     await buildService().handleSuspiciousMessage(member, detectionResult, message);
 
@@ -4173,12 +4018,7 @@ describe('SecurityActionService (unit)', () => {
       reasons: ['Initial report'],
       detected_at: new Date(),
     });
-    const activeCase = await verificationEventRepository.createFromDetection(
-      initialDetection.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
     const originalLink =
       detectionEventsRepository.linkToVerificationEvent.bind(detectionEventsRepository);
     jest
@@ -4194,13 +4034,11 @@ describe('SecurityActionService (unit)', () => {
         originalLink(detectionEventId, verificationEventId)
       );
     const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildDetection({
       confidence: 0.88,
       reasons: ['Suspicious content after report'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
       triggerContent: message.content,
-    };
+    });
 
     try {
       await expect(
@@ -4315,13 +4153,8 @@ describe('SecurityActionService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await serverRepository.updateSettings(guildId, { observed_action_kick_enabled: true });
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.88,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: { content: 'free discord nitro' },
     });
 
@@ -4354,13 +4187,8 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-observed-adopt';
     const moderator = { id: 'admin-observed' } as User;
     const member = buildMember(guildId, userId);
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.88,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: {
         content: 'free discord nitro',
         gpt: {
@@ -4441,12 +4269,7 @@ describe('SecurityActionService (unit)', () => {
       detected_at: new Date(),
       metadata: { type: 'user_report', reporterId: 'reporter-observed', content: 'suspicious DM' },
     });
-    const existingCase = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const existingCase = await createPendingCase(guildId, userId, detectionEvent.id);
 
     await buildService().openObservedDetectionCase(member, detectionEvent.id, moderator);
 
@@ -4462,13 +4285,8 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-observed-actioned';
     const moderator = { id: 'admin-observed' } as User;
     const member = buildMember(guildId, userId);
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.88,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: { observed_action: AdminActionType.DISMISS },
     });
 
@@ -4488,14 +4306,7 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-observed-dismiss';
     const userId = 'user-observed-dismiss';
     const moderator = { id: 'admin-observed' } as User;
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.82,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, { confidence: 0.82 });
 
     await buildService().dismissObservedDetection(
       guildId,
@@ -4538,14 +4349,7 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-audit-ignore';
     const userId = 'user-audit-ignore';
     const moderator = { id: 'admin-audit' } as User;
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.92,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, { confidence: 0.92 });
 
     const updatedDetection = await buildService().excludeDetectionFromAccounting(
       guildId,
@@ -4576,14 +4380,7 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-audit-ignore-write-fails';
     const userId = 'user-audit-ignore-write-fails';
     const moderator = { id: 'admin-audit' } as User;
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.92,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, { confidence: 0.92 });
     const metadataWrite = jest
       .spyOn(detectionEventsRepository, 'markExcludedFromAccounting')
       .mockRejectedValueOnce(new Error('Metadata write failed'));
@@ -4605,13 +4402,8 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-audit-ignore-audit-fails';
     const userId = 'user-audit-ignore-audit-fails';
     const moderator = { id: 'admin-audit' } as User;
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.92,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: { preserved: 'value' },
     });
     adminActionService.recordAction.mockRejectedValueOnce(new Error('Audit write failed'));
@@ -4679,13 +4471,8 @@ describe('SecurityActionService (unit)', () => {
     const originalGlobalAdmins = process.env.DRASIL_GLOBAL_ADMIN_IDS;
     process.env.DRASIL_GLOBAL_ADMIN_IDS = 'admin-global';
     const moderator = { id: 'admin-global' } as User;
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: 'owning-guild',
-      user_id: 'user-cross-server',
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection('owning-guild', 'user-cross-server', {
       confidence: 0.95,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
     });
 
     try {
@@ -4714,13 +4501,8 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-audit-restore';
     const userId = 'user-audit-restore';
     const moderator = { id: 'admin-audit' } as User;
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.92,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: {
         excluded_from_accounting: true,
         accounting_exclusion_scope: 'server',
@@ -4755,13 +4537,8 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-audit-restore-observed';
     const userId = 'user-audit-restore-observed';
     const moderator = { id: 'admin-audit' } as User;
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.92,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: {
         observed_action: AdminActionType.FALSE_POSITIVE,
         observed_action_by: 'previous-admin',
@@ -4796,13 +4573,8 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-audit-restore-audit-fails';
     const moderator = { id: 'admin-audit' } as User;
     const excludedAt = new Date().toISOString();
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.92,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: {
         excluded_from_accounting: true,
         accounting_exclusion_scope: 'server',
@@ -4840,13 +4612,8 @@ describe('SecurityActionService (unit)', () => {
     const guildId = 'guild-observed-undo';
     const userId = 'user-observed-undo';
     const moderator = { id: 'admin-observed' } as User;
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.82,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: {
         observed_action: AdminActionType.FALSE_POSITIVE,
         observed_action_by: 'previous-admin',
@@ -4927,27 +4694,13 @@ describe('SecurityActionService (unit)', () => {
       send: jest.fn().mockResolvedValue(undefined),
       setArchived: jest.fn().mockResolvedValue(undefined),
     };
-    const service = new SecurityActionService(
-      notificationManager,
-      detectionEventsRepository,
-      serverMemberRepository,
-      verificationEventRepository,
-      userRepository,
-      serverRepository,
-      adminActionService,
-      threadManager,
-      userModerationService,
+    const service = buildService(
       {
         channels: {
           fetch: jest.fn().mockResolvedValue(reportThread),
         },
       } as unknown as Client,
-      gptService as any,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      reportIntakeRepository
+      { reportIntakeRepository }
     );
 
     const readIntake = reportIntakeRepository.findById.bind(reportIntakeRepository);
@@ -4993,13 +4746,8 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-observed-undo-fails';
     const moderator = { id: 'admin-observed' } as User;
     const observedActionAt = new Date().toISOString();
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, {
       confidence: 0.82,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
       metadata: {
         observed_action: AdminActionType.DISMISS,
         observed_action_by: 'previous-admin',
@@ -5028,14 +4776,7 @@ describe('SecurityActionService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await serverRepository.updateSettings(guildId, { observed_action_kick_enabled: true });
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.82,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, { confidence: 0.82 });
 
     await expect(
       buildService().kickObservedDetection(
@@ -5081,14 +4822,7 @@ describe('SecurityActionService (unit)', () => {
     const member = buildMember(guildId, userId);
     await serverRepository.getOrCreateServer(guildId);
     await serverRepository.updateSettings(guildId, { observed_action_kick_enabled: true });
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.82,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, { confidence: 0.82 });
     userModerationService.kickUser.mockResolvedValueOnce(false);
 
     await expect(
@@ -5110,13 +4844,8 @@ describe('SecurityActionService (unit)', () => {
       await serverRepository.updateSettings(member.guild.id, {
         observed_action_kick_enabled: true,
       });
-      const detection = await detectionEventsRepository.create({
-        server_id: member.guild.id,
-        user_id: member.id,
-        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      const detection = await createSuspiciousDetection(member.guild.id, member.id, {
         confidence: 0.99,
-        reasons: ['Suspicious content'],
-        detected_at: new Date(),
       });
       userModerationService.kickUser.mockRejectedValueOnce(
         new KickExecutionError(
@@ -5144,14 +4873,7 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-observed-kick-disabled';
     const moderator = { id: 'admin-observed' } as User;
     const member = buildMember(guildId, userId);
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.82,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, { confidence: 0.82 });
 
     await expect(
       buildService().kickObservedDetection(member, detectionEvent.id, moderator, 'Compromised')
@@ -5196,14 +4918,7 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-observed-restrict-false';
     const moderator = { id: 'admin-observed' } as User;
     const member = buildMember(guildId, userId);
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.82,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, { confidence: 0.82 });
     userModerationService.applyCaseRole.mockResolvedValueOnce(false);
 
     await expect(
@@ -5239,12 +4954,7 @@ describe('SecurityActionService (unit)', () => {
     const reportDetection = detectionEvents.find(
       (event) => event.detection_type === DetectionType.USER_REPORT
     );
-    const reviewEvent = await verificationEventRepository.createFromDetection(
-      reportDetection!.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const reviewEvent = await createPendingCase(guildId, userId, reportDetection!.id);
     await verificationEventRepository.update(reviewEvent.id, {
       thread_id: 'review-thread-1',
       metadata: {
@@ -5275,12 +4985,7 @@ describe('SecurityActionService (unit)', () => {
       detected_at: new Date(),
       metadata: { type: 'user_report', reporterId: 'reporter-observed', content: 'suspicious DM' },
     });
-    const existingCase = await verificationEventRepository.createFromDetection(
-      detectionEvent.id,
-      guildId,
-      userId,
-      VerificationStatus.PENDING
-    );
+    const existingCase = await createPendingCase(guildId, userId, detectionEvent.id);
     threadManager.createVerificationThread.mockResolvedValue(null);
 
     try {
@@ -5326,14 +5031,7 @@ describe('SecurityActionService (unit)', () => {
     const userId = 'user-observed-restrict-audit-fails';
     const moderator = { id: 'admin-observed' } as User;
     const member = buildMember(guildId, userId);
-    const detectionEvent = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.82,
-      reasons: ['Suspicious content'],
-      detected_at: new Date(),
-    });
+    const detectionEvent = await createSuspiciousDetection(guildId, userId, { confidence: 0.82 });
     adminActionService.recordAction.mockRejectedValueOnce(new Error('DB unavailable'));
 
     await expect(

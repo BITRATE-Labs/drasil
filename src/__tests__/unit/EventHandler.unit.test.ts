@@ -96,10 +96,9 @@ describe('EventHandler (unit)', () => {
       }),
     };
 
-    const configService = overrides?.configService ?? {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
+    const configService =
+      overrides?.configService ??
+      buildConfigService({
         case_role_id: null,
         admin_channel_id: null,
         verification_channel_id: null,
@@ -107,10 +106,7 @@ describe('EventHandler (unit)', () => {
           detection_response_mode: 'notify_only',
           min_confidence_threshold: 70,
         },
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+      });
     const notificationManager = {
       upsertObservedDetectionNotification: jest.fn(),
       setupVerificationChannel: jest.fn(),
@@ -199,6 +195,32 @@ describe('EventHandler (unit)', () => {
     );
   }
 
+  function buildConfigService(
+    serverConfig: Record<string, unknown>,
+    cachedConfig: Record<string, unknown> = {}
+  ) {
+    return {
+      initialize: jest.fn().mockResolvedValue(undefined),
+      getCachedServerConfig: jest.fn().mockReturnValue(cachedConfig),
+      getServerConfig: jest.fn().mockResolvedValue(serverConfig),
+      updateServerConfig: jest.fn().mockResolvedValue({}),
+      updateServerSettings: jest.fn().mockResolvedValue({}),
+    };
+  }
+
+  function buildCleanMessageDetection(triggerContent = 'free nitro') {
+    return {
+      detectMessage: jest.fn().mockResolvedValue({
+        label: 'OK',
+        confidence: 0,
+        reasons: [],
+        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+        triggerContent,
+      }),
+      detectNewJoin: jest.fn(),
+    };
+  }
+
   function buildMember(permissions: PermissionsBitField, pending = false): GuildMember {
     return {
       id: 'user-1',
@@ -255,13 +277,7 @@ describe('EventHandler (unit)', () => {
         ...settings,
       },
     };
-    return {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue(serverConfig),
-      getServerConfig: jest.fn().mockResolvedValue(serverConfig),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    return buildConfigService(serverConfig, serverConfig);
   }
 
   function buildMessage(permissions: PermissionsBitField): Message {
@@ -724,20 +740,14 @@ describe('EventHandler (unit)', () => {
       };
       const currentMember = buildManualIntakeMember(guild, [role.id]);
       (guild.members.fetch as jest.Mock).mockResolvedValue(currentMember);
-      const configService = {
-        initialize: jest.fn().mockResolvedValue(undefined),
-        getCachedServerConfig: jest.fn().mockReturnValue({}),
-        getServerConfig: jest.fn().mockResolvedValue({
-          case_role_id: 'case-role',
-          settings: {
-            manual_intake_enabled: true,
-            manual_intake_role_id: role.id,
-            manual_intake_grace_period_seconds: 0,
-          },
-        }),
-        updateServerConfig: jest.fn().mockResolvedValue({}),
-        updateServerSettings: jest.fn().mockResolvedValue({}),
-      };
+      const configService = buildConfigService({
+        case_role_id: 'case-role',
+        settings: {
+          manual_intake_enabled: true,
+          manual_intake_role_id: role.id,
+          manual_intake_grace_period_seconds: 0,
+        },
+      });
       const handler = buildHandler({
         client,
         configService,
@@ -815,20 +825,14 @@ describe('EventHandler (unit)', () => {
       };
       const currentMember = buildManualIntakeMember(guild, [role.id]);
       (guild.members.fetch as jest.Mock).mockResolvedValue(currentMember);
-      const configService = {
-        initialize: jest.fn().mockResolvedValue(undefined),
-        getCachedServerConfig: jest.fn().mockReturnValue({}),
-        getServerConfig: jest.fn().mockResolvedValue({
-          case_role_id: 'case-role',
-          settings: {
-            manual_intake_enabled: true,
-            manual_intake_role_id: role.id,
-            manual_intake_grace_period_seconds: 120,
-          },
-        }),
-        updateServerConfig: jest.fn().mockResolvedValue({}),
-        updateServerSettings: jest.fn().mockResolvedValue({}),
-      };
+      const configService = buildConfigService({
+        case_role_id: 'case-role',
+        settings: {
+          manual_intake_enabled: true,
+          manual_intake_role_id: role.id,
+          manual_intake_grace_period_seconds: 120,
+        },
+      });
       const handler = buildHandler({
         client,
         configService,
@@ -891,20 +895,14 @@ describe('EventHandler (unit)', () => {
       };
       const currentMember = buildManualIntakeMember(guild, [role.id]);
       (guild.members.fetch as jest.Mock).mockResolvedValue(currentMember);
-      const configService = {
-        initialize: jest.fn().mockResolvedValue(undefined),
-        getCachedServerConfig: jest.fn().mockReturnValue({}),
-        getServerConfig: jest.fn().mockResolvedValue({
-          case_role_id: 'case-role',
-          settings: {
-            manual_intake_enabled: true,
-            manual_intake_role_id: role.id,
-            manual_intake_grace_period_seconds: 0,
-          },
-        }),
-        updateServerConfig: jest.fn().mockResolvedValue({}),
-        updateServerSettings: jest.fn().mockResolvedValue({}),
-      };
+      const configService = buildConfigService({
+        case_role_id: 'case-role',
+        settings: {
+          manual_intake_enabled: true,
+          manual_intake_role_id: role.id,
+          manual_intake_grace_period_seconds: 0,
+        },
+      });
       const handler = buildHandler({
         client,
         configService,
@@ -952,20 +950,14 @@ describe('EventHandler (unit)', () => {
         members: { fetch: jest.fn() },
         fetchAuditLogs: jest.fn(),
       };
-      const configService = {
-        initialize: jest.fn().mockResolvedValue(undefined),
-        getCachedServerConfig: jest.fn().mockReturnValue({}),
-        getServerConfig: jest.fn().mockResolvedValue({
-          case_role_id: 'case-role',
-          settings: {
-            manual_intake_enabled: true,
-            manual_intake_role_id: role.id,
-            manual_intake_grace_period_seconds: 30,
-          },
-        }),
-        updateServerConfig: jest.fn().mockResolvedValue({}),
-        updateServerSettings: jest.fn().mockResolvedValue({}),
-      };
+      const configService = buildConfigService({
+        case_role_id: 'case-role',
+        settings: {
+          manual_intake_enabled: true,
+          manual_intake_role_id: role.id,
+          manual_intake_grace_period_seconds: 30,
+        },
+      });
       const handler = buildHandler({
         client,
         configService,
@@ -1017,20 +1009,14 @@ describe('EventHandler (unit)', () => {
       };
       const currentMember = buildManualIntakeMember(guild, [role.id]);
       (guild.members.fetch as jest.Mock).mockResolvedValue(currentMember);
-      const configService = {
-        initialize: jest.fn().mockResolvedValue(undefined),
-        getCachedServerConfig: jest.fn().mockReturnValue({}),
-        getServerConfig: jest.fn().mockResolvedValue({
-          case_role_id: 'case-role',
-          settings: {
-            manual_intake_enabled: true,
-            manual_intake_role_id: role.id,
-            manual_intake_grace_period_seconds: 30,
-          },
-        }),
-        updateServerConfig: jest.fn().mockResolvedValue({}),
-        updateServerSettings: jest.fn().mockResolvedValue({}),
-      };
+      const configService = buildConfigService({
+        case_role_id: 'case-role',
+        settings: {
+          manual_intake_enabled: true,
+          manual_intake_role_id: role.id,
+          manual_intake_grace_period_seconds: 30,
+        },
+      });
       const handler = buildHandler({
         client,
         configService,
@@ -1093,20 +1079,14 @@ describe('EventHandler (unit)', () => {
         },
       },
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        settings: {
-          role_gate_enabled: true,
-          honeypot_role_id: honeypotRole.id,
-          honeypot_role_response_mode: 'restrict',
-        },
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      settings: {
+        role_gate_enabled: true,
+        honeypot_role_id: honeypotRole.id,
+        honeypot_role_response_mode: 'restrict',
+      },
+    });
     const securityActionService = {
       handleSuspiciousMessage: jest.fn(),
       handleSuspiciousJoin: jest.fn(),
@@ -1165,21 +1145,15 @@ describe('EventHandler (unit)', () => {
         },
       },
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: caseRole.id,
-        settings: {
-          role_gate_enabled: true,
-          honeypot_role_id: honeypotRole.id,
-          honeypot_role_response_mode: 'restrict',
-        },
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: caseRole.id,
+      settings: {
+        role_gate_enabled: true,
+        honeypot_role_id: honeypotRole.id,
+        honeypot_role_response_mode: 'restrict',
+      },
+    });
     const securityActionService = {
       handleSuspiciousMessage: jest.fn(),
       handleSuspiciousJoin: jest.fn(),
@@ -1257,17 +1231,11 @@ describe('EventHandler (unit)', () => {
       ...oldMember,
       roles: { cache: new Map([[gainedRole.id, gainedRole]]) },
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: 'case-role',
-        settings: {},
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: 'case-role',
+      settings: {},
+    });
     const roleQuarantineService = {
       enforceActiveCaseRoleUpdate: jest.fn(),
     };
@@ -1341,7 +1309,20 @@ describe('EventHandler (unit)', () => {
     );
   });
 
-  it('enforces gained roles for an incomplete compromised case without its case role', async () => {
+  it.each([
+    {
+      name: 'enforces gained roles for an incomplete compromised case without its case role',
+      caseId: 'verification-incomplete',
+      persistedCaseRoleId: 'persisted-case-role',
+      configuredCaseRoleId: 'current-case-role',
+    },
+    {
+      name: 'enforces gained roles when an incomplete compromised case has no case-role identity',
+      caseId: 'verification-no-case-role',
+      persistedCaseRoleId: null,
+      configuredCaseRoleId: null,
+    },
+  ])('$name', async ({ caseId, persistedCaseRoleId, configuredCaseRoleId }) => {
     const gainedRole = { id: 'privileged-role' };
     const oldMember = {
       id: 'user-1',
@@ -1354,12 +1335,12 @@ describe('EventHandler (unit)', () => {
       roles: { cache: new Map([[gainedRole.id, gainedRole]]) },
     };
     const activeCase = {
-      id: 'verification-incomplete',
+      id: caseId,
       status: VerificationStatus.PENDING,
       case_kind: CaseKind.COMPROMISED_ACCOUNT,
       attention_state: CaseAttentionState.REVIEW_REQUIRED,
       containment_status: CaseContainmentStatus.INCOMPLETE,
-      quarantine_case_role_id: 'persisted-case-role',
+      quarantine_case_role_id: persistedCaseRoleId,
     };
     const roleQuarantineService = {
       enforceActiveCaseRoleUpdate: jest.fn().mockResolvedValue({
@@ -1377,53 +1358,7 @@ describe('EventHandler (unit)', () => {
     });
 
     await (handler as any).enforceActiveCaseRoleQuarantine(oldMember, newMember, {
-      case_role_id: 'current-case-role',
-    });
-
-    expect(roleQuarantineService.enforceActiveCaseRoleUpdate).toHaveBeenCalledWith(
-      oldMember,
-      newMember,
-      activeCase
-    );
-  });
-
-  it('enforces gained roles when an incomplete compromised case has no case-role identity', async () => {
-    const gainedRole = { id: 'privileged-role' };
-    const oldMember = {
-      id: 'user-1',
-      user: { tag: 'test-user#0001' },
-      guild: { id: 'guild-1' },
-      roles: { cache: new Map() },
-    };
-    const newMember = {
-      ...oldMember,
-      roles: { cache: new Map([[gainedRole.id, gainedRole]]) },
-    };
-    const activeCase = {
-      id: 'verification-no-case-role',
-      status: VerificationStatus.PENDING,
-      case_kind: CaseKind.COMPROMISED_ACCOUNT,
-      attention_state: CaseAttentionState.REVIEW_REQUIRED,
-      containment_status: CaseContainmentStatus.INCOMPLETE,
-      quarantine_case_role_id: null,
-    };
-    const roleQuarantineService = {
-      enforceActiveCaseRoleUpdate: jest.fn().mockResolvedValue({
-        addedRoleIds: [gainedRole.id],
-        removedRoleIds: [gainedRole.id],
-        skippedRoles: [],
-        failedRemovals: [],
-      }),
-    };
-    const handler = buildHandler({
-      roleQuarantineService,
-      verificationEventRepository: {
-        findActiveByUserAndServer: jest.fn().mockResolvedValue(activeCase),
-      },
-    });
-
-    await (handler as any).enforceActiveCaseRoleQuarantine(oldMember, newMember, {
-      case_role_id: null,
+      case_role_id: configuredCaseRoleId,
     });
 
     expect(roleQuarantineService.enforceActiveCaseRoleUpdate).toHaveBeenCalledWith(
@@ -1782,16 +1717,7 @@ describe('EventHandler (unit)', () => {
   it('schedules report intake agent analysis after intake thread evidence is recorded', async () => {
     const reportIntakeService = { handleThreadMessage: jest.fn().mockResolvedValue(true) };
     const reportIntakeAgentService = { scheduleAnalysisForThreadMessage: jest.fn() };
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection();
     const handler = buildHandler({
       reportIntakeService,
       reportIntakeAgentService,
@@ -2474,22 +2400,21 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({
-        settings: {
-          automatic_detection_exempt_moderators: true,
-          detection_response_mode: 'notify_only',
-        },
-      }),
-      getServerConfig: jest.fn().mockResolvedValue({
+    const configService = buildConfigService(
+      {
         settings: {
           automatic_detection_exempt_moderators: true,
           detection_response_mode: 'notify_only',
           min_confidence_threshold: 70,
         },
-      }),
-    };
+      },
+      {
+        settings: {
+          automatic_detection_exempt_moderators: true,
+          detection_response_mode: 'notify_only',
+        },
+      }
+    );
     const handler = buildHandler({ detectionOrchestrator, configService });
 
     await (handler as any).handleMessage(
@@ -2501,32 +2426,22 @@ describe('EventHandler (unit)', () => {
   });
 
   it('runs automatic message detection for moderation members when exemption is disabled', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({
-        settings: {
-          automatic_detection_exempt_moderators: false,
-          detection_response_mode: 'notify_only',
-        },
-      }),
-      getServerConfig: jest.fn().mockResolvedValue({
+    const detectionOrchestrator = buildCleanMessageDetection();
+    const configService = buildConfigService(
+      {
         settings: {
           automatic_detection_exempt_moderators: false,
           detection_response_mode: 'notify_only',
           min_confidence_threshold: 70,
         },
-      }),
-    };
+      },
+      {
+        settings: {
+          automatic_detection_exempt_moderators: false,
+          detection_response_mode: 'notify_only',
+        },
+      }
+    );
     const handler = buildHandler({ detectionOrchestrator, configService });
 
     await (handler as any).handleMessage(
@@ -2545,16 +2460,7 @@ describe('EventHandler (unit)', () => {
   });
 
   it('runs automatic message detection for regular members', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection();
     const handler = buildHandler({ detectionOrchestrator });
 
     await (handler as any).handleMessage(buildMessage(new PermissionsBitField()));
@@ -2586,16 +2492,7 @@ describe('EventHandler (unit)', () => {
     const verificationEventRepository = {
       findActiveByUserAndServer: jest.fn().mockResolvedValue(activeCase),
     };
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection();
     const handler = buildHandler({
       configService: buildQuarantineConfigService(),
       moderationQueueService,
@@ -2618,16 +2515,7 @@ describe('EventHandler (unit)', () => {
   });
 
   it('uses normal detection when no global watchlist rows are loaded', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: GLOBAL_WATCHLIST_MESSAGE,
-      }),
-      detectNewJoin: jest.fn(),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection(GLOBAL_WATCHLIST_MESSAGE);
     const handler = buildHandler({ detectionOrchestrator });
     const message = buildMessage(new PermissionsBitField()) as any;
     message.content = GLOBAL_WATCHLIST_MESSAGE;
@@ -2646,27 +2534,14 @@ describe('EventHandler (unit)', () => {
     ['message deletion is disabled', { message_deletion_enabled: false }],
     ['message watchlist is disabled', { message_deletion_watchlist_enabled: false }],
   ])('does not load global watchlist rows when %s', async (_label, settings) => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: GLOBAL_WATCHLIST_MESSAGE,
-      }),
-      detectNewJoin: jest.fn(),
-    };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        settings: {
-          detection_response_mode: 'notify_only',
-          min_confidence_threshold: 70,
-          ...settings,
-        },
-      }),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection(GLOBAL_WATCHLIST_MESSAGE);
+    const configService = buildConfigService({
+      settings: {
+        detection_response_mode: 'notify_only',
+        min_confidence_threshold: 70,
+        ...settings,
+      },
+    });
     const globalMessageWatchlistRepository = buildGlobalWatchlistRepository();
     const handler = buildHandler({
       detectionOrchestrator,
@@ -2692,29 +2567,16 @@ describe('EventHandler (unit)', () => {
     jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const detectionOrchestrator = {
-        detectMessage: jest.fn().mockResolvedValue({
-          label: 'OK',
-          confidence: 0,
-          reasons: [],
-          triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-          triggerContent: GLOBAL_WATCHLIST_MESSAGE,
-        }),
-        detectNewJoin: jest.fn(),
-      };
-      const configService = {
-        initialize: jest.fn().mockResolvedValue(undefined),
-        getCachedServerConfig: jest.fn().mockReturnValue({}),
-        getServerConfig: jest.fn().mockResolvedValue({
-          case_role_id: 'case-role-1',
-          admin_channel_id: 'admin-channel-1',
-          verification_channel_id: 'verification-channel-1',
-          settings: {
-            detection_response_mode: 'restrict',
-            min_confidence_threshold: 70,
-          },
-        }),
-      };
+      const detectionOrchestrator = buildCleanMessageDetection(GLOBAL_WATCHLIST_MESSAGE);
+      const configService = buildConfigService({
+        case_role_id: 'case-role-1',
+        admin_channel_id: 'admin-channel-1',
+        verification_channel_id: 'verification-channel-1',
+        settings: {
+          detection_response_mode: 'restrict',
+          min_confidence_threshold: 70,
+        },
+      });
       const securityActionService = {
         handleSuspiciousMessage: jest.fn().mockResolvedValue(true),
         observeSuspiciousMessage: jest.fn().mockResolvedValue(true),
@@ -2763,19 +2625,15 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        case_role_id: 'case-role-1',
-        admin_channel_id: 'admin-channel-1',
-        verification_channel_id: 'verification-channel-1',
-        settings: {
-          detection_response_mode: 'restrict',
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const configService = buildConfigService({
+      case_role_id: 'case-role-1',
+      admin_channel_id: 'admin-channel-1',
+      verification_channel_id: 'verification-channel-1',
+      settings: {
+        detection_response_mode: 'restrict',
+        min_confidence_threshold: 70,
+      },
+    });
     const securityActionService = {
       handleSuspiciousMessage: jest.fn().mockResolvedValue(true),
       observeSuspiciousMessage: jest.fn().mockResolvedValue(true),
@@ -2824,16 +2682,12 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        settings: {
-          detection_response_mode: 'record_only',
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const configService = buildConfigService({
+      settings: {
+        detection_response_mode: 'record_only',
+        min_confidence_threshold: 70,
+      },
+    });
     const securityActionService = {
       handleSuspiciousMessage: jest.fn().mockResolvedValue(true),
       observeSuspiciousMessage: jest.fn().mockResolvedValue(true),
@@ -2868,19 +2722,15 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        case_role_id: 'case-role-1',
-        admin_channel_id: 'admin-channel-1',
-        verification_channel_id: 'verification-channel-1',
-        settings: {
-          detection_response_mode: 'notify_only',
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const configService = buildConfigService({
+      case_role_id: 'case-role-1',
+      admin_channel_id: 'admin-channel-1',
+      verification_channel_id: 'verification-channel-1',
+      settings: {
+        detection_response_mode: 'notify_only',
+        min_confidence_threshold: 70,
+      },
+    });
     const notificationManager = {
       upsertObservedDetectionNotification: jest.fn().mockResolvedValue(null),
       setupVerificationChannel: jest.fn(),
@@ -2921,21 +2771,17 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: 'case-role-1',
-        admin_channel_id: 'admin-channel-1',
-        verification_channel_id: 'verification-channel-1',
-        is_active: true,
-        settings: {
-          detection_response_mode: 'restrict',
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: 'case-role-1',
+      admin_channel_id: 'admin-channel-1',
+      verification_channel_id: 'verification-channel-1',
+      is_active: true,
+      settings: {
+        detection_response_mode: 'restrict',
+        min_confidence_threshold: 70,
+      },
+    });
     const securityActionService = {
       handleSuspiciousMessage: jest.fn().mockResolvedValue(true),
       observeSuspiciousMessage: jest.fn().mockResolvedValue(true),
@@ -2980,22 +2826,18 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: 'case-role-1',
-        admin_channel_id: 'admin-channel-1',
-        verification_channel_id: 'verification-channel-1',
-        is_active: true,
-        settings: {
-          automatic_detection_exempt_moderators: false,
-          detection_response_mode: 'restrict',
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: 'case-role-1',
+      admin_channel_id: 'admin-channel-1',
+      verification_channel_id: 'verification-channel-1',
+      is_active: true,
+      settings: {
+        automatic_detection_exempt_moderators: false,
+        detection_response_mode: 'restrict',
+        min_confidence_threshold: 70,
+      },
+    });
     const securityActionService = {
       handleSuspiciousMessage: jest.fn().mockResolvedValue(true),
       observeSuspiciousMessage: jest.fn().mockResolvedValue(true),
@@ -3028,21 +2870,17 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: null,
-        verification_channel_id: null,
-        is_active: false,
-        settings: {
-          detection_response_mode: 'restrict',
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: null,
+      verification_channel_id: null,
+      is_active: false,
+      settings: {
+        detection_response_mode: 'restrict',
+        min_confidence_threshold: 70,
+      },
+    });
     const securityActionService = {
       handleSuspiciousMessage: jest.fn().mockResolvedValue(true),
       observeSuspiciousMessage: jest.fn().mockResolvedValue(true),
@@ -3086,16 +2924,7 @@ describe('EventHandler (unit)', () => {
   });
 
   it('runs automatic message detection for Discord reply messages', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection();
     const handler = buildHandler({ detectionOrchestrator });
     const message = buildMessage(new PermissionsBitField()) as any;
     message.type = MessageType.Reply;
@@ -3160,16 +2989,7 @@ describe('EventHandler (unit)', () => {
   });
 
   it('continues automatic detection when report intake handling fails', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection();
     const reportIntakeService = {
       handleThreadMessage: jest.fn().mockRejectedValue(new Error('database unavailable')),
     };
@@ -3224,16 +3044,7 @@ describe('EventHandler (unit)', () => {
   });
 
   it('passes recent user messages and same-channel context into message detection', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection();
     const messageContextRepository = {
       findRecentByServerAndUser: jest.fn().mockResolvedValue([
         {
@@ -3324,17 +3135,13 @@ describe('EventHandler (unit)', () => {
       captureUserEvent: jest.fn().mockResolvedValue(undefined),
       shutdown: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        settings: {
-          detection_response_mode: 'notify_only',
-          gpt_message_check_count: 3,
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const configService = buildConfigService({
+      settings: {
+        detection_response_mode: 'notify_only',
+        gpt_message_check_count: 3,
+        min_confidence_threshold: 70,
+      },
+    });
     const messageContextRepository = {
       findRecentByServerAndUser: jest.fn().mockResolvedValue([]),
       recordMessage: jest.fn().mockResolvedValue(undefined),
@@ -3386,33 +3193,20 @@ describe('EventHandler (unit)', () => {
   });
 
   it('does not force GPT after the configured first-message window is full', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection();
     const productAnalyticsService = {
       getStatus: jest.fn(),
       captureGuildEvent: jest.fn(),
       captureUserEvent: jest.fn().mockResolvedValue(undefined),
       shutdown: jest.fn(),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        settings: {
-          detection_response_mode: 'notify_only',
-          gpt_message_check_count: 3,
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const configService = buildConfigService({
+      settings: {
+        detection_response_mode: 'notify_only',
+        gpt_message_check_count: 3,
+        min_confidence_threshold: 70,
+      },
+    });
     const messageContextRepository = {
       findRecentByServerAndUser: jest
         .fn()
@@ -3445,27 +3239,14 @@ describe('EventHandler (unit)', () => {
   });
 
   it('clamps the forced GPT message window to retained context capacity', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        settings: {
-          detection_response_mode: 'notify_only',
-          gpt_message_check_count: 25,
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+    const detectionOrchestrator = buildCleanMessageDetection();
+    const configService = buildConfigService({
+      settings: {
+        detection_response_mode: 'notify_only',
+        gpt_message_check_count: 25,
+        min_confidence_threshold: 70,
+      },
+    });
     const messageContextRepository = {
       findRecentByServerAndUser: jest.fn().mockResolvedValue(
         Array.from({ length: 20 }, (_, index) => ({
@@ -3494,70 +3275,50 @@ describe('EventHandler (unit)', () => {
     expect(detectionOrchestrator.detectMessage.mock.calls[0]).toHaveLength(4);
   });
 
-  it('loads config before exempting moderators when no cached config exists', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free nitro',
-      }),
-      detectNewJoin: jest.fn(),
-    };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue(undefined),
-      getServerConfig: jest.fn().mockResolvedValue({
-        settings: {
-          automatic_detection_exempt_moderators: false,
-          detection_response_mode: 'notify_only',
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
+  it.each([
+    {
+      name: 'loads config before exempting moderators when no cached config exists',
+      source: 'message',
+      method: 'detectMessage',
+      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+      triggerContent: 'free nitro',
+    },
+    {
+      name: 'loads config before exempting moderator joins when no cached config exists',
+      source: 'join',
+      method: 'detectNewJoin',
+      triggerSource: DetectionType.NEW_ACCOUNT,
+      triggerContent: 'Server Join',
+    },
+  ] as const)('$name', async ({ source, method, triggerSource, triggerContent }) => {
+    const detectionOrchestrator = { detectMessage: jest.fn(), detectNewJoin: jest.fn() };
+    detectionOrchestrator[method].mockResolvedValue({
+      label: 'OK',
+      confidence: 0,
+      reasons: [],
+      triggerSource,
+      triggerContent,
+    });
+    const configService = buildConfigService({
+      settings: {
+        automatic_detection_exempt_moderators: false,
+        detection_response_mode: 'notify_only',
+        min_confidence_threshold: 70,
+      },
+    });
+    configService.getCachedServerConfig.mockReturnValue(undefined);
     const handler = buildHandler({ detectionOrchestrator, configService });
+    const permissions = new PermissionsBitField(PermissionFlagsBits.KickMembers);
 
-    await (handler as any).handleMessage(
-      buildMessage(new PermissionsBitField(PermissionFlagsBits.KickMembers))
-    );
+    if (source === 'message') {
+      await handler['handleMessage'](buildMessage(permissions));
+    } else {
+      await handler['handleGuildMemberAdd'](buildMember(permissions));
+    }
 
     expect(configService.initialize).toHaveBeenCalled();
     expect(configService.getServerConfig).toHaveBeenCalledWith('guild-1');
-    expect(detectionOrchestrator.detectMessage).toHaveBeenCalled();
-  });
-
-  it('loads config before exempting moderator joins when no cached config exists', async () => {
-    const detectionOrchestrator = {
-      detectMessage: jest.fn(),
-      detectNewJoin: jest.fn().mockResolvedValue({
-        label: 'OK',
-        confidence: 0,
-        reasons: [],
-        triggerSource: DetectionType.NEW_ACCOUNT,
-        triggerContent: 'Server Join',
-      }),
-    };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue(undefined),
-      getServerConfig: jest.fn().mockResolvedValue({
-        settings: {
-          automatic_detection_exempt_moderators: false,
-          detection_response_mode: 'notify_only',
-          min_confidence_threshold: 70,
-        },
-      }),
-    };
-    const handler = buildHandler({ detectionOrchestrator, configService });
-
-    await (handler as any).handleGuildMemberAdd(
-      buildMember(new PermissionsBitField(PermissionFlagsBits.KickMembers))
-    );
-
-    expect(configService.initialize).toHaveBeenCalled();
-    expect(configService.getServerConfig).toHaveBeenCalledWith('guild-1');
-    expect(detectionOrchestrator.detectNewJoin).toHaveBeenCalled();
+    expect(detectionOrchestrator[method]).toHaveBeenCalled();
   });
 
   it('skips automatic join detection for moderation members before config lookup', async () => {
@@ -3745,13 +3506,7 @@ describe('EventHandler (unit)', () => {
       verification_channel_id: 'verification-channel-1',
       settings: { detection_response_mode: 'notify_only' },
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue(serverConfig),
-      getServerConfig: jest.fn().mockResolvedValue(serverConfig),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService(serverConfig, serverConfig);
     const handler = buildHandler({
       configService,
       detectionOrchestrator,
@@ -3784,19 +3539,13 @@ describe('EventHandler (unit)', () => {
       bot: false,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: 'admin-channel-1',
-        verification_channel_id: null,
-        settings: {},
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: 'admin-channel-1',
+      verification_channel_id: null,
+      settings: {},
+    });
     const notificationManager = {
       upsertObservedDetectionNotification: jest.fn(),
       setupVerificationChannel: jest.fn(),
@@ -3862,13 +3611,7 @@ describe('EventHandler (unit)', () => {
       verification_channel_id: 'verification-channel-1',
       settings: {},
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue(serverConfig),
-      getServerConfig: jest.fn().mockResolvedValue(serverConfig),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService(serverConfig, serverConfig);
     const notificationManager = {
       upsertObservedDetectionNotification: jest.fn(),
       setupVerificationChannel: jest.fn().mockResolvedValue('verification-channel-1'),
@@ -3975,19 +3718,13 @@ describe('EventHandler (unit)', () => {
       id: 'owner-1',
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: null,
-        verification_channel_id: null,
-        settings: {},
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: null,
+      verification_channel_id: null,
+      settings: {},
+    });
     const handler = buildHandler({ configService });
     const guild = {
       id: 'guild-1',
@@ -4020,19 +3757,13 @@ describe('EventHandler (unit)', () => {
       bot: true,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: null,
-        verification_channel_id: null,
-        settings: {},
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: null,
+      verification_channel_id: null,
+      settings: {},
+    });
     const handler = buildHandler({ configService });
     const guild = {
       id: 'guild-1',
@@ -4115,21 +3846,15 @@ describe('EventHandler (unit)', () => {
   });
 
   it('suppresses repeated setup nudges after a recent attempt', async () => {
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: null,
-        verification_channel_id: null,
-        settings: {
-          setup_nudge_last_attempt_at: new Date().toISOString(),
-        },
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: null,
+      verification_channel_id: null,
+      settings: {
+        setup_nudge_last_attempt_at: new Date().toISOString(),
+      },
+    });
     const handler = buildHandler({ configService });
     const guild = {
       id: 'guild-1',
@@ -4151,18 +3876,13 @@ describe('EventHandler (unit)', () => {
       bot: false,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: null,
-        verification_channel_id: null,
-        settings: {},
-      }),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: null,
+      verification_channel_id: null,
+      settings: {},
+    });
     const setupDiagnosticsService = {
       validateGuildSetup: jest.fn().mockResolvedValue({
         guildId: 'guild-1',
@@ -4370,21 +4090,16 @@ describe('EventHandler (unit)', () => {
   );
 
   it('skips detection-time setup validation immediately after a warning attempt', async () => {
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: null,
-        verification_channel_id: null,
-        settings: {
-          setup_nudge_last_attempt_at: new Date().toISOString(),
-          setup_warning_last_fingerprint: 'case-role-missing',
-        },
-      }),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: null,
+      verification_channel_id: null,
+      settings: {
+        setup_nudge_last_attempt_at: new Date().toISOString(),
+        setup_warning_last_fingerprint: 'case-role-missing',
+      },
+    });
     const setupDiagnosticsService = {
       validateGuildSetup: jest.fn(),
     };
@@ -4410,22 +4125,17 @@ describe('EventHandler (unit)', () => {
       bot: false,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: null,
-        verification_channel_id: null,
-        settings: {
-          setup_nudge_last_attempt_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-          setup_nudge_last_recipient_id: 'installer-1',
-          setup_warning_last_fingerprint: 'admin-channel-missing|case-role-missing',
-        },
-      }),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: null,
+      verification_channel_id: null,
+      settings: {
+        setup_nudge_last_attempt_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        setup_nudge_last_recipient_id: 'installer-1',
+        setup_warning_last_fingerprint: 'admin-channel-missing|case-role-missing',
+      },
+    });
     const setupDiagnosticsService = {
       validateGuildSetup: jest.fn().mockResolvedValue({
         guildId: 'guild-1',
@@ -4471,22 +4181,16 @@ describe('EventHandler (unit)', () => {
       bot: false,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      getCachedServerConfig: jest.fn().mockReturnValue({}),
-      getServerConfig: jest.fn().mockResolvedValue({
-        guild_id: 'guild-1',
-        case_role_id: null,
-        admin_channel_id: null,
-        verification_channel_id: null,
-        settings: {
-          setup_nudge_last_attempt_at: new Date().toISOString(),
-          setup_nudge_last_recipient_id: 'installer-1',
-        },
-      }),
-      updateServerConfig: jest.fn().mockResolvedValue({}),
-      updateServerSettings: jest.fn().mockResolvedValue({}),
-    };
+    const configService = buildConfigService({
+      guild_id: 'guild-1',
+      case_role_id: null,
+      admin_channel_id: null,
+      verification_channel_id: null,
+      settings: {
+        setup_nudge_last_attempt_at: new Date().toISOString(),
+        setup_nudge_last_recipient_id: 'installer-1',
+      },
+    });
     const handler = buildHandler({ configService });
     const guild = {
       id: 'guild-1',

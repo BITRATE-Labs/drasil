@@ -8,11 +8,19 @@ and the guarded disposable database for SQL atomicity and concurrency tests.
 
 When setup repeats within one suite, start with a local factory. Return fresh mutable objects
 and arrays on each call. Keep behavior-relevant differences explicit at the call site, such as
-the confidence argument in `SecurityActionService.unit.test.ts`'s `buildDetection`.
-Keep evidence-bearing detections inline when their content or source explains the scenario.
+the confidence override in `SecurityActionService.unit.test.ts`'s `buildDetection`.
+Keep evidence and source fields explicit when they explain the scenario.
 
 For repeated service wiring, expose only the collaborators the tests actually vary. Pass the
 same repository instance that a race test spies on, as `buildSecurity` does in
 `AutomaticModerationAttention.integration.test.ts`. Keep distinct wiring explicit rather than
 adding options for every constructor argument. Move a helper into `fakes/` when another suite
 needs the same contract, and keep assertions at the call site.
+
+Use named table rows to preserve each scenario's test name and decision-driving inputs.
+Share assertions only when every row promises the same result. Keep recovery, race and
+failure-order tests separate when their guarantees differ, even if their setup looks similar.
+
+Named dependency overrides should follow the constructor's types and preserve omitted or
+undefined dependencies. A fixture must not silently add working behavior to an intentionally
+missing collaborator. Keep application adapters and session binding in the existing harness.
