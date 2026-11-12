@@ -310,7 +310,8 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
     return current && ownsPresentation(current, claim, new Date()) ? this.upsert(data) : null;
   }
   async upsertAutomaticResponseAttention(
-    data: Parameters<IModerationQueueRepository['upsert']>[0]
+    data: Parameters<IModerationQueueRepository['upsert']>[0],
+    _deleteMessage: Parameters<IModerationQueueRepository['upsertAutomaticResponseAttention']>[1]
   ): Promise<ModerationQueueItem | null> {
     return this.upsert(data);
   }
@@ -1688,4 +1689,32 @@ describe('automatic response attention', () => {
     expect(queueRepository.items).toHaveLength(0);
     expect(channel.send).not.toHaveBeenCalled();
   });
+  it.each([true, false])(
+    'cleans only the obsolete projection and retains it if Discord cleanup fails (%s)',
+    async (deleted) => {
+      const event = {
+        ...buildDetectionEvent(),
+        metadata: { automatic_moderation_response: response },
+      };
+      const { service, queueRepository, channel } = buildService();
+      const retired = await queueRepository.upsert({
+        serverId: event.server_id!,
+        userId: event.user_id,
+        itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
+        detectionEventId: event.id,
+        metadata: { automatic_moderation_response: { ...response, attention: 'resolved' } },
+      });
+      jest
+        .spyOn(queueRepository, 'upsertAutomaticResponseAttention')
+        .mockImplementation(async (_data, deleteMessage) => {
+          if (await deleteMessage(retired)) await queueRepository.deleteById(retired.id);
+          return null;
+        });
+      const cleanup = jest.spyOn(service, 'deleteQueueMessage').mockResolvedValue(deleted);
+      await service.upsertObservedAlertMirror(event);
+      expect(cleanup).toHaveBeenCalledWith(retired);
+      expect(await queueRepository.findById(retired.id)).toEqual(deleted ? null : retired);
+      expect(channel.send).not.toHaveBeenCalled();
+    }
+  );
 });

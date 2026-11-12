@@ -207,4 +207,81 @@ suite('automatic moderation attention', () => {
       readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)?.caseId
     ).toBe('11111111-1111-4111-8111-111111111111');
   });
+  it.each(['resolved', 'case_owned'])(
+    'immediately cleans an existing mirror when current response becomes %s',
+    async (state) => {
+      const f = await fixture();
+      await f.service.upsertObservedAlertMirrorById(f.event.id);
+      const item = (await f.queue.findByObservedAlert(f.event.id))!;
+      await f.queue.updateDiscordMessage(item.id, 'saved-channel', 'saved-message');
+      const cleanup = jest.spyOn(f.service, 'deleteQueueMessage').mockResolvedValue(true);
+      await f.detections.patchMetadata(f.event.id, {
+        automatic_moderation_response: {
+          ...response,
+          ...(state === 'resolved'
+            ? { attention: 'resolved' }
+            : { caseId: '11111111-1111-4111-8111-111111111111' }),
+        },
+      });
+      await f.service.upsertObservedAlertMirrorById(f.event.id);
+      expect(await f.queue.findById(item.id)).toBeNull();
+      expect(cleanup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: item.id,
+          queue_channel_id: 'saved-channel',
+          queue_message_id: 'saved-message',
+        })
+      );
+    }
+  );
+  it('stale cleanup cannot delete newer required attention', async () => {
+    const f = await fixture();
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    const obsolete = (await f.queue.findByObservedAlert(f.event.id))!;
+    await f.detections.patchMetadata(f.event.id, {
+      automatic_moderation_response: { ...response, attention: 'resolved' },
+    });
+    let renewal: Promise<void> | undefined;
+    const cleanup = jest.spyOn(f.service, 'deleteQueueMessage').mockImplementationOnce(async () => {
+      renewal = f.detections
+        .patchMetadata(f.event.id, { automatic_moderation_response: response })
+        .then(async () => f.service.upsertObservedAlertMirrorById(f.event.id));
+      return true;
+    });
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    await renewal;
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(await f.queue.findById(obsolete.id)).toBeNull();
+    const current = await f.queue.findByObservedAlert(f.event.id);
+    expect(current?.id).not.toBe(obsolete.id);
+    expect(readAutomaticModerationResponse(current?.metadata)?.attention).toBe('required');
+  });
+  it('retains an obsolete mirror when Discord cleanup fails', async () => {
+    const f = await fixture();
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    const item = (await f.queue.findByObservedAlert(f.event.id))!;
+    await f.detections.patchMetadata(f.event.id, {
+      automatic_moderation_response: { ...response, attention: 'resolved' },
+    });
+    jest.spyOn(f.service, 'deleteQueueMessage').mockResolvedValue(false);
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    expect((await f.queue.findByObservedAlert(f.event.id))?.id).toBe(item.id);
+    expect(
+      readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)
+        ?.attention
+    ).toBe('resolved');
+  });
+  it('propagates cleanup exceptions and rolls back without losing the mirror', async () => {
+    const f = await fixture();
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    const item = (await f.queue.findByObservedAlert(f.event.id))!;
+    await f.detections.patchMetadata(f.event.id, {
+      automatic_moderation_response: { ...response, attention: 'resolved' },
+    });
+    jest.spyOn(f.service, 'deleteQueueMessage').mockRejectedValue(new Error('cleanup failed'));
+    await expect(f.service.upsertObservedAlertMirrorById(f.event.id)).rejects.toThrow(
+      'cleanup failed'
+    );
+    expect((await f.queue.findByObservedAlert(f.event.id))?.id).toBe(item.id);
+  });
 });

@@ -287,7 +287,9 @@ export class ModerationQueueService implements IModerationQueueService {
       ),
     };
     const durableItem = response
-      ? await this.moderationQueueRepository.upsertAutomaticResponseAttention(data)
+      ? await this.moderationQueueRepository.upsertAutomaticResponseAttention(data, (item) =>
+          this.deleteQueueMessage(item)
+        )
       : null;
     if (response && !durableItem) return;
     if (durableItem) {

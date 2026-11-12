@@ -29,7 +29,8 @@ export interface IModerationQueueRepository extends Pick<
   | 'acknowledgeAutomaticResponse'
 > {
   upsertAutomaticResponseAttention(
-    data: ModerationQueueItemUpsert
+    data: ModerationQueueItemUpsert,
+    deleteMessage: (item: ModerationQueueItem) => Promise<boolean>
   ): Promise<ModerationQueueItem | null>;
   findById(id: string): Promise<ModerationQueueItem | null>;
   findByCase(verificationEventId: string): Promise<ModerationQueueItem | null>;
@@ -316,7 +317,8 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
   }
 
   async upsertAutomaticResponseAttention(
-    data: ModerationQueueItemUpsert
+    data: ModerationQueueItemUpsert,
+    deleteMessage: (item: ModerationQueueItem) => Promise<boolean>
   ): Promise<ModerationQueueItem | null> {
     if (!data.detectionEventId || data.itemType !== ModerationQueueItemType.OBSERVED_ALERT_MIRROR)
       return null;
@@ -327,8 +329,9 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
       >`
         SELECT id, user_id, metadata FROM detection_events WHERE id=${data.detectionEventId}::uuid AND server_id=${data.serverId} FOR UPDATE`;
       const event = rows.at(0);
-      if (!event?.user_id || !hasAutomaticResponseAttention(event.metadata)) return null;
+      if (!event?.user_id) return null;
       const response = readAutomaticModerationResponse(event.metadata);
+      if (!response) return null;
       const writeData = this.toPrismaWriteData({
         ...data,
         userId: event.user_id,
@@ -342,6 +345,13 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
           attention_cleanup_pending: false,
         },
       });
+      if (!hasAutomaticResponseAttention(event.metadata)) {
+        // Keep renewal serialized until the obsolete Discord message and exact row are removed.
+        if (existing && (await deleteMessage(existing as ModerationQueueItem))) {
+          await transaction.moderation_queue_items.delete({ where: { id: existing.id } });
+        }
+        return null;
+      }
       return (
         existing
           ? await transaction.moderation_queue_items.update({
