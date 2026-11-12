@@ -265,35 +265,41 @@ export class ModerationQueueService implements IModerationQueueService {
 
   public async upsertObservedAlertMirror(detectionEvent: DetectionEvent): Promise<void> {
     const response = readAutomaticModerationResponse(detectionEvent.metadata);
-    const attention = hasAutomaticResponseAttention(detectionEvent.metadata);
     if (
       !detectionEvent.server_id ||
-      (response !== null
-        ? !attention
-        : this.hasObservedAction(detectionEvent) || !this.hasObservedNotification(detectionEvent))
+      (response === null &&
+        (this.hasObservedAction(detectionEvent) || !this.hasObservedNotification(detectionEvent)))
     ) {
       await this.deleteObservedAlertMirror(detectionEvent.id);
       return;
     }
 
     const serverId = detectionEvent.server_id;
-    const persist = (): Promise<ModerationQueueItem> =>
-      this.moderationQueueRepository.upsert({
-        serverId,
-        userId: detectionEvent.user_id,
-        itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
-        detectionEventId: detectionEvent.id,
-        metadata: this.toJson(
-          response
-            ? { automatic_moderation_response: response }
-            : { refreshed_at: new Date().toISOString() }
-        ),
-      });
-    const durableItem = attention ? await persist() : null;
-    const serverConfig = await this.configService.getServerConfig(detectionEvent.server_id);
+    const data = {
+      serverId,
+      userId: detectionEvent.user_id,
+      itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
+      detectionEventId: detectionEvent.id,
+      metadata: this.toJson(
+        response
+          ? { automatic_moderation_response: response }
+          : { refreshed_at: new Date().toISOString() }
+      ),
+    };
+    const durableItem = response
+      ? await this.moderationQueueRepository.upsertAutomaticResponseAttention(data)
+      : null;
+    if (response && !durableItem) return;
+    if (durableItem) {
+      detectionEvent = {
+        ...detectionEvent,
+        metadata: { ...detectionEvent.metadata, ...this.toRecord(durableItem.metadata) },
+      };
+    }
+    const serverConfig = await this.configService.getServerConfig(serverId);
     const queueChannel = await this.getQueueChannel(serverConfig.settings);
     if (!queueChannel) return;
-    const item = durableItem ?? (await persist());
+    const item = durableItem ?? (await this.moderationQueueRepository.upsert(data));
 
     const responseSettings = getDetectionResponseSettings(serverConfig.settings);
     const message = await this.sendOrEditQueueMessage(

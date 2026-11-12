@@ -157,4 +157,54 @@ suite('automatic moderation attention', () => {
       await f.detections.findUnresolvedObservedNotificationsByServer(f.server.guild_id)
     ).toHaveLength(1);
   });
+  it('does not reverse acknowledgement when a captured required refresh resumes', async () => {
+    const f = await fixture();
+    await f.service.upsertObservedAlertMirrorById(f.event.id);
+    const stale = (await f.detections.findById(f.event.id))!;
+    const item = (await f.queue.findByObservedAlert(f.event.id))!;
+    await f.queue.acknowledgeAutomaticResponse({
+      itemId: item.id,
+      guildId: f.server.guild_id,
+      actorId: 'staff',
+      acknowledgedAt: new Date(),
+    });
+    await f.service.upsertObservedAlertMirror(stale);
+    expect(
+      readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)
+        ?.attention
+    ).toBe('acknowledged');
+    expect(
+      readAutomaticModerationResponse((await f.queue.findByObservedAlert(f.event.id))?.metadata)
+        ?.attention
+    ).toBe('acknowledged');
+  });
+  it('does not recreate resolved attention when a captured required refresh resumes', async () => {
+    const f = await fixture();
+    const stale = (await f.detections.findById(f.event.id))!;
+    await f.detections.patchMetadata(f.event.id, {
+      automatic_moderation_response: { ...response, attention: 'resolved' },
+    });
+    await f.service.syncServerQueue(f.server.guild_id);
+    await f.service.upsertObservedAlertMirror(stale);
+    expect(await f.queue.findByObservedAlert(f.event.id)).toBeNull();
+    expect(
+      readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)
+        ?.attention
+    ).toBe('resolved');
+  });
+  it('does not recreate newly case-owned attention when a captured required refresh resumes', async () => {
+    const f = await fixture();
+    const stale = (await f.detections.findById(f.event.id))!;
+    await f.detections.patchMetadata(f.event.id, {
+      automatic_moderation_response: {
+        ...response,
+        caseId: '11111111-1111-4111-8111-111111111111',
+      },
+    });
+    await f.service.upsertObservedAlertMirror(stale);
+    expect(await f.queue.findByObservedAlert(f.event.id)).toBeNull();
+    expect(
+      readAutomaticModerationResponse((await f.detections.findById(f.event.id))?.metadata)?.caseId
+    ).toBe('11111111-1111-4111-8111-111111111111');
+  });
 });

@@ -309,6 +309,12 @@ class FakeModerationQueueRepository implements IModerationQueueRepository {
     const current = await this.intakeRepository?.findById(claim.intake.id);
     return current && ownsPresentation(current, claim, new Date()) ? this.upsert(data) : null;
   }
+  async upsertAutomaticResponseAttention(
+    data: Parameters<IModerationQueueRepository['upsert']>[0]
+  ): Promise<ModerationQueueItem | null> {
+    return this.upsert(data);
+  }
+
   async upsert(
     data: Parameters<IModerationQueueRepository['upsert']>[0]
   ): Promise<ModerationQueueItem> {
@@ -1651,5 +1657,35 @@ describe('automatic response attention', () => {
     expect(queueRepository.items).toHaveLength(1);
     expect(channel.send).toHaveBeenCalledTimes(1);
     expect(channel.sentMessages[0].payload.allowedMentions).toEqual({ parse: [] });
+  });
+  it('uses authoritative projected attention for the acknowledgement control', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    };
+    const { service, queueRepository, channel } = buildService();
+    const item = await queueRepository.upsert({
+      serverId: event.server_id!,
+      userId: event.user_id,
+      itemType: ModerationQueueItemType.OBSERVED_ALERT_MIRROR,
+      detectionEventId: event.id,
+      metadata: { automatic_moderation_response: { ...response, attention: 'acknowledged' } },
+    });
+    jest.spyOn(queueRepository, 'upsertAutomaticResponseAttention').mockResolvedValue(item);
+    const upsert = jest.spyOn(queueRepository, 'upsert');
+    await service.upsertObservedAlertMirror(event);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(channel.sentMessages[0].payload.components).toEqual([]);
+  });
+  it('does not deliver stale attention rejected by authoritative projection', async () => {
+    const event = {
+      ...buildDetectionEvent(),
+      metadata: { automatic_moderation_response: response },
+    };
+    const { service, queueRepository, channel } = buildService();
+    jest.spyOn(queueRepository, 'upsertAutomaticResponseAttention').mockResolvedValue(null);
+    await service.upsertObservedAlertMirror(event);
+    expect(queueRepository.items).toHaveLength(0);
+    expect(channel.send).not.toHaveBeenCalled();
   });
 });

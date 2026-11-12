@@ -1,6 +1,8 @@
 import {
   acknowledgeIdentityReviewMetadata,
   acknowledgeAutomaticResponseMetadata,
+  readAutomaticModerationResponse,
+  hasAutomaticResponseAttention,
   isAutomaticResponseItem,
   projectReportIntakeState,
   isIdentityReviewItem,
@@ -26,6 +28,9 @@ export interface IModerationQueueRepository extends Pick<
   | 'completeOrdinaryAcknowledgement'
   | 'acknowledgeAutomaticResponse'
 > {
+  upsertAutomaticResponseAttention(
+    data: ModerationQueueItemUpsert
+  ): Promise<ModerationQueueItem | null>;
   findById(id: string): Promise<ModerationQueueItem | null>;
   findByCase(verificationEventId: string): Promise<ModerationQueueItem | null>;
   listByCase(verificationEventId: string): Promise<ModerationQueueItem[]>;
@@ -308,6 +313,44 @@ export class ModerationQueueRepository implements IModerationQueueRepository {
     } catch (error) {
       this.handleError(error, 'upsertReportIdentityReview');
     }
+  }
+
+  async upsertAutomaticResponseAttention(
+    data: ModerationQueueItemUpsert
+  ): Promise<ModerationQueueItem | null> {
+    if (!data.detectionEventId || data.itemType !== ModerationQueueItemType.OBSERVED_ALERT_MIRROR)
+      return null;
+    return this.prisma.$transaction(async (transaction) => {
+      // Detection-first locking matches acknowledgement; supplied response snapshots can be stale.
+      const rows = await transaction.$queryRaw<
+        Array<{ id: string; user_id: string | null; metadata: Prisma.JsonValue }>
+      >`
+        SELECT id, user_id, metadata FROM detection_events WHERE id=${data.detectionEventId}::uuid AND server_id=${data.serverId} FOR UPDATE`;
+      const event = rows.at(0);
+      if (!event?.user_id || !hasAutomaticResponseAttention(event.metadata)) return null;
+      const response = readAutomaticModerationResponse(event.metadata);
+      const writeData = this.toPrismaWriteData({
+        ...data,
+        userId: event.user_id,
+        metadata: { automatic_moderation_response: response },
+      });
+      const existing = await transaction.moderation_queue_items.findFirst({
+        where: {
+          server_id: data.serverId,
+          detection_event_id: event.id,
+          item_type: 'observed_alert_mirror',
+          attention_cleanup_pending: false,
+        },
+      });
+      return (
+        existing
+          ? await transaction.moderation_queue_items.update({
+              where: { id: existing.id },
+              data: { ...writeData, updated_at: new Date() },
+            })
+          : await transaction.moderation_queue_items.create({ data: writeData })
+      ) as ModerationQueueItem;
+    });
   }
 
   async upsert(data: ModerationQueueItemUpsert): Promise<ModerationQueueItem> {
