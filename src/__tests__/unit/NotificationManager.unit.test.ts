@@ -1,5 +1,7 @@
+import { buildVerificationEvent } from '../fakes/verificationEvents';
 import {
   ChannelType,
+  type Client,
   Collection,
   EmbedBuilder,
   Guild,
@@ -79,25 +81,6 @@ const buildMember = (guildId: string, userId: string): GuildMember =>
     } as unknown as User,
   }) as unknown as GuildMember;
 
-const buildVerificationEvent = (overrides: Partial<VerificationEvent> = {}): VerificationEvent => ({
-  id: overrides.id ?? 'ver-1',
-  server_id: overrides.server_id ?? 'guild-1',
-  user_id: overrides.user_id ?? 'user-1',
-  detection_event_id: overrides.detection_event_id ?? null,
-  thread_id: overrides.thread_id ?? null,
-  private_evidence_thread_id: overrides.private_evidence_thread_id ?? null,
-  notification_channel_id: overrides.notification_channel_id ?? null,
-  notification_message_id: overrides.notification_message_id ?? null,
-  status: overrides.status ?? VerificationStatus.PENDING,
-  case_revision: overrides.case_revision ?? 0,
-  created_at: overrides.created_at ?? new Date(),
-  updated_at: overrides.updated_at ?? new Date(),
-  resolved_at: overrides.resolved_at ?? null,
-  resolved_by: overrides.resolved_by ?? null,
-  notes: overrides.notes ?? null,
-  metadata: overrides.metadata ?? null,
-});
-
 const buildCaptchaChallenge = (overrides: Partial<CaptchaChallenge> = {}): CaptchaChallenge => ({
   id: overrides.id ?? 'challenge-1',
   verification_event_id: overrides.verification_event_id ?? 'ver-1',
@@ -124,6 +107,15 @@ const buildCaptchaChallenge = (overrides: Partial<CaptchaChallenge> = {}): Captc
   cancelled_at: overrides.cancelled_at ?? null,
   created_at: overrides.created_at ?? new Date('2026-09-02T00:00:00Z'),
   updated_at: overrides.updated_at ?? new Date('2026-09-02T00:00:00Z'),
+});
+
+const buildSuspiciousDetection = (overrides: Partial<DetectionResult> = {}): DetectionResult => ({
+  label: 'SUSPICIOUS',
+  confidence: 0.9,
+  reasons: ['Suspicious content'],
+  triggerSource: DetectionType.SUSPICIOUS_CONTENT,
+  triggerContent: 'free discord nitro',
+  ...overrides,
 });
 
 const buildClientWithBotBanPermission = (): unknown => ({
@@ -207,8 +199,11 @@ describe('NotificationManager (unit)', () => {
     }
   });
 
+  const createManager = (client: Client = {} as Client): NotificationManager =>
+    new NotificationManager(client, configService, detectionRepository);
+
   it('notifies moderators about member assistance with method-specific copy', async () => {
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     await expect(
       manager.notifyCaptchaAttention(buildVerificationEvent(), 'member_assistance')
     ).resolves.toBe(true);
@@ -222,7 +217,7 @@ describe('NotificationManager (unit)', () => {
   });
 
   it('omits an undefined role prefix from CAPTCHA attention notifications', async () => {
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     await expect(manager.notifyCaptchaAttention(buildVerificationEvent(), 'expired')).resolves.toBe(
       true
@@ -236,7 +231,7 @@ describe('NotificationManager (unit)', () => {
   });
 
   it('notifies moderators when a completed browser check leaves the case pending', async () => {
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     await expect(
       manager.notifyCaptchaAttention(buildVerificationEvent(), 'evidence_only_pass')
@@ -260,7 +255,7 @@ describe('NotificationManager (unit)', () => {
       } else {
         jest.spyOn(detectionRepository, 'findByServerAndUser').mockRejectedValueOnce(error);
       }
-      const manager = new NotificationManager({} as any, configService, detectionRepository);
+      const manager = createManager();
       await expect(
         manager.upsertSuspiciousUserNotification(
           buildMember('guild-1', 'user-1'),
@@ -284,13 +279,7 @@ describe('NotificationManager (unit)', () => {
 
   it('sends a new notification when no existing message is set', async () => {
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection();
 
     for (let i = 0; i < 6; i += 1) {
       await detectionRepository.create({
@@ -306,11 +295,7 @@ describe('NotificationManager (unit)', () => {
     const sentMessage: MockMessage = { id: 'message-1', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
     const verificationEvent = buildVerificationEvent({ thread_id: null });
 
     await manager.upsertSuspiciousUserNotification(member, detectionResult, verificationEvent);
@@ -340,15 +325,9 @@ describe('NotificationManager (unit)', () => {
 
   it('preserves parked quarantine presentation when rebuilding a notification', async () => {
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection();
     adminChannel.send.mockResolvedValue({ id: 'message-1', edit: jest.fn() });
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = {
       ...buildVerificationEvent({
         metadata: {
@@ -378,21 +357,11 @@ describe('NotificationManager (unit)', () => {
   it('adds a web case button to suspicious user notifications when configured', async () => {
     process.env.DRASIL_WEB_PUBLIC_URL = 'https://drasilbot.com';
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection();
     const sentMessage: MockMessage = { id: 'message-1', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
 
     await manager.upsertSuspiciousUserNotification(
       member,
@@ -419,21 +388,11 @@ describe('NotificationManager (unit)', () => {
       settings: { [MODERATOR_BAN_ACTION_ENABLED_SETTING_KEY]: false },
     } as any);
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection();
     const sentMessage: MockMessage = { id: 'message-1', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
 
     await manager.upsertSuspiciousUserNotification(
       member,
@@ -447,22 +406,12 @@ describe('NotificationManager (unit)', () => {
 
   it('renders moderation action warnings on suspicious user notifications', async () => {
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection();
 
     const sentMessage: MockMessage = { id: 'message-1', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
     const verificationEvent = buildVerificationEvent({
       metadata: {
         [VERIFICATION_ACTION_FAILURES_METADATA_KEY]: [
@@ -496,22 +445,12 @@ describe('NotificationManager (unit)', () => {
     } as any);
 
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection();
 
     const sentMessage: MockMessage = { id: 'message-1', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
     const verificationEvent = buildVerificationEvent({ thread_id: null });
 
     await manager.upsertSuspiciousUserNotification(member, detectionResult, verificationEvent);
@@ -545,18 +484,12 @@ describe('NotificationManager (unit)', () => {
     } as any);
 
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection();
 
     const sentMessage: MockMessage = { id: 'message-1', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({ thread_id: null });
 
     await manager.upsertSuspiciousUserNotification(member, detectionResult, verificationEvent);
@@ -591,7 +524,7 @@ describe('NotificationManager (unit)', () => {
       },
     });
     adminChannel.send.mockResolvedValue({ id: 'notification-1', channelId: 'admin-channel' });
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     await manager.upsertObservedDetectionNotification(buildMember('guild-1', 'user-1'), {
       label: 'SUSPICIOUS',
       confidence: 0.8,
@@ -629,7 +562,7 @@ describe('NotificationManager (unit)', () => {
       });
       return { id: 'notification-1', channelId: 'admin-channel' };
     });
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     await manager.upsertObservedDetectionNotification(buildMember('guild-1', 'user-1'), {
       label: 'SUSPICIOUS',
       confidence: 0.8,
@@ -662,15 +595,11 @@ describe('NotificationManager (unit)', () => {
       detected_at: new Date(),
     });
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
+    const detectionResult: DetectionResult = buildSuspiciousDetection({
       reasons: [
         'Message contains suspicious keywords or patterns',
         'Risk analysis flagged recent message context as suspicious',
       ],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
       detectionEventId: detectionEvent.id,
       gptAnalysis: {
         result: 'SUSPICIOUS',
@@ -696,11 +625,11 @@ describe('NotificationManager (unit)', () => {
         promptVersion: 'report-triage-v1',
         isFallback: false,
       },
-    };
+    });
     const sentMessage: MockMessage = { id: 'message-1', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     await manager.upsertObservedDetectionNotification(member, detectionResult);
 
@@ -785,15 +714,11 @@ describe('NotificationManager (unit)', () => {
     adminChannel.messages.fetch.mockResolvedValue(existingMessage as unknown as Message<true>);
 
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
+    const detectionResult: DetectionResult = buildSuspiciousDetection({
       confidence: 0.85,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
       detectionEventId: currentEvent.id,
-    };
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    });
+    const manager = createManager();
 
     await manager.upsertObservedDetectionNotification(member, detectionResult);
 
@@ -863,15 +788,11 @@ describe('NotificationManager (unit)', () => {
       adminChannel.send.mockResolvedValue({ id: 'message-2', edit: jest.fn() });
 
       const member = buildMember('guild-1', 'user-1');
-      const detectionResult: DetectionResult = {
-        label: 'SUSPICIOUS',
+      const detectionResult: DetectionResult = buildSuspiciousDetection({
         confidence: 0.85,
-        reasons: ['Suspicious content'],
-        triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-        triggerContent: 'free discord nitro',
         detectionEventId: currentEvent.id,
-      };
-      const manager = new NotificationManager({} as any, configService, detectionRepository);
+      });
+      const manager = createManager();
 
       await manager.upsertObservedDetectionNotification(member, detectionResult);
 
@@ -896,11 +817,7 @@ describe('NotificationManager (unit)', () => {
       edit: jest.fn().mockResolvedValue(undefined),
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
 
     const marked = await manager.markObservedDetectionActionTaken(
       detectionEvent.id,
@@ -935,11 +852,7 @@ describe('NotificationManager (unit)', () => {
       edit: jest.fn().mockResolvedValue(undefined),
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
 
     await manager.markObservedDetectionActionTaken(
       detectionEvent.id,
@@ -977,11 +890,7 @@ describe('NotificationManager (unit)', () => {
       edit: jest.fn().mockResolvedValue(undefined),
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
 
     await manager.restoreObservedDetectionActions(detectionEvent.id, 'undid the dismissal', {
       id: 'admin-1',
@@ -1007,13 +916,7 @@ describe('NotificationManager (unit)', () => {
     } as any);
 
     const member = buildMember('guild-2', 'user-2');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.8,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection({ confidence: 0.8 });
 
     const existingMessage: MockMessage = {
       id: 'message-2',
@@ -1021,11 +924,7 @@ describe('NotificationManager (unit)', () => {
     };
     adminChannel.messages.fetch.mockResolvedValue(existingMessage as unknown as Message<true>);
 
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-2',
       thread_id: 'thread-1',
@@ -1045,13 +944,7 @@ describe('NotificationManager (unit)', () => {
 
   it('edits existing notification and omits Create Thread when thread exists', async () => {
     const member = buildMember('guild-2', 'user-2');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.8,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection({ confidence: 0.8 });
 
     const existingMessage: MockMessage = {
       id: 'message-2',
@@ -1059,7 +952,7 @@ describe('NotificationManager (unit)', () => {
     };
     adminChannel.messages.fetch.mockResolvedValue(existingMessage as unknown as Message<true>);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-2',
       thread_id: 'thread-1',
@@ -1083,11 +976,7 @@ describe('NotificationManager (unit)', () => {
     const message: MockMessage = { edit: jest.fn().mockResolvedValue(undefined) };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
 
-    const manager = new NotificationManager(
-      buildClientWithBotBanPermission() as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager(buildClientWithBotBanPermission() as any);
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-3',
       thread_id: null,
@@ -1116,7 +1005,7 @@ describe('NotificationManager (unit)', () => {
         fetch: jest.fn().mockResolvedValue(storedChannel),
       },
     };
-    const manager = new NotificationManager(client as any, configService, detectionRepository);
+    const manager = createManager(client as any);
     const verificationEvent = buildVerificationEvent({
       notification_channel_id: 'observed-channel-1',
       notification_message_id: 'message-stored-channel',
@@ -1154,7 +1043,7 @@ describe('NotificationManager (unit)', () => {
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-repair',
       metadata: {},
@@ -1180,7 +1069,7 @@ describe('NotificationManager (unit)', () => {
       edit: jest.fn().mockResolvedValue(undefined),
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-captcha-state',
     });
@@ -1211,7 +1100,7 @@ describe('NotificationManager (unit)', () => {
     const message: MockMessage = { edit: jest.fn().mockResolvedValue(undefined) };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-4',
     });
@@ -1232,7 +1121,7 @@ describe('NotificationManager (unit)', () => {
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-verified',
       status: VerificationStatus.VERIFIED,
@@ -1263,7 +1152,7 @@ describe('NotificationManager (unit)', () => {
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-5',
     });
@@ -1296,7 +1185,7 @@ describe('NotificationManager (unit)', () => {
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-6',
     });
@@ -1344,7 +1233,7 @@ describe('NotificationManager (unit)', () => {
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       notification_message_id: 'message-6-fallback',
     });
@@ -1386,7 +1275,7 @@ describe('NotificationManager (unit)', () => {
         fetch: jest.fn().mockResolvedValue(evidenceThread),
       },
     };
-    const manager = new NotificationManager(client as any, configService, detectionRepository);
+    const manager = createManager(client as any);
     const message = {
       id: 'msg-1',
       channelId: 'thread-1',
@@ -1431,12 +1320,8 @@ describe('NotificationManager (unit)', () => {
 
   it('displays fallback GPT diagnostics as unavailable', async () => {
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
+    const detectionResult: DetectionResult = buildSuspiciousDetection({
       reasons: ['Suspicious content', 'Risk analysis unavailable; review manually'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
       gptAnalysis: {
         result: 'OK',
         confidence: 0.1,
@@ -1448,11 +1333,11 @@ describe('NotificationManager (unit)', () => {
         promptVersion: GPT_PROFILE_PROMPT_VERSION,
         isFallback: true,
       },
-    };
+    });
     const sentMessage: MockMessage = { id: 'message-8', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({ thread_id: null });
 
     await manager.upsertSuspiciousUserNotification(member, detectionResult, verificationEvent);
@@ -1468,12 +1353,7 @@ describe('NotificationManager (unit)', () => {
 
   it('omits overlong risk-analysis prose instead of truncating it with ellipses', async () => {
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
+    const detectionResult: DetectionResult = buildSuspiciousDetection({
       gptAnalysis: {
         result: 'SUSPICIOUS',
         confidence: 0.91,
@@ -1485,11 +1365,11 @@ describe('NotificationManager (unit)', () => {
         promptVersion: GPT_PROFILE_PROMPT_VERSION,
         isFallback: false,
       },
-    };
+    });
     const sentMessage: MockMessage = { id: 'message-9', edit: jest.fn() };
     adminChannel.send.mockResolvedValue(sentMessage);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({ thread_id: null });
 
     await manager.upsertSuspiciousUserNotification(member, detectionResult, verificationEvent);
@@ -1505,13 +1385,7 @@ describe('NotificationManager (unit)', () => {
 
   it('preserves persisted thread analysis when rebuilding the embed', async () => {
     const member = buildMember('guild-1', 'user-1');
-    const detectionResult: DetectionResult = {
-      label: 'SUSPICIOUS',
-      confidence: 0.9,
-      reasons: ['Suspicious content'],
-      triggerSource: DetectionType.SUSPICIOUS_CONTENT,
-      triggerContent: 'free discord nitro',
-    };
+    const detectionResult: DetectionResult = buildSuspiciousDetection();
     const message: MockMessage = {
       id: 'message-7',
       embeds: [new EmbedBuilder().setTitle('Suspicious User')],
@@ -1519,7 +1393,7 @@ describe('NotificationManager (unit)', () => {
     };
     adminChannel.messages.fetch.mockResolvedValue(message as unknown as Message<true>);
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
     const verificationEvent = buildVerificationEvent({
       thread_id: 'thread-1',
       notification_message_id: 'message-7',
@@ -1630,7 +1504,7 @@ describe('NotificationManager (unit)', () => {
       },
     } as unknown as Guild;
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     const channelId = await manager.setupVerificationChannel(guild, 'case-role-1');
 
@@ -1762,7 +1636,7 @@ describe('NotificationManager (unit)', () => {
         create: jest.fn(),
       },
     } as unknown as Guild;
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     let markPersistenceStarted!: () => void;
     let releasePersistence!: () => void;
@@ -1835,7 +1709,7 @@ describe('NotificationManager (unit)', () => {
         create: createChannel,
       },
     } as unknown as Guild;
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     let markPersistenceStarted!: () => void;
     let releasePersistence!: () => void;
@@ -1892,7 +1766,7 @@ describe('NotificationManager (unit)', () => {
         create: createChannel,
       },
     } as unknown as Guild;
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     await expect(manager.setupVerificationChannel(guild, 'case-role-1')).resolves.toBeNull();
 
@@ -1959,7 +1833,7 @@ describe('NotificationManager (unit)', () => {
         create: jest.fn(),
       },
     } as unknown as Guild;
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     await manager.setupVerificationChannel(
       guild,
@@ -2019,7 +1893,7 @@ describe('NotificationManager (unit)', () => {
         create: jest.fn(),
       },
     } as unknown as Guild;
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     await manager.setupVerificationChannel(
       guild,
@@ -2070,7 +1944,7 @@ describe('NotificationManager (unit)', () => {
       },
     } as unknown as Guild;
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     const channelId = await manager.setupVerificationChannel(
       guild,
@@ -2122,7 +1996,7 @@ describe('NotificationManager (unit)', () => {
       },
     } as unknown as Guild;
 
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     const channelId = await manager.setupVerificationChannel(guild, 'case-role-1');
 
@@ -2141,7 +2015,7 @@ describe('NotificationManager (unit)', () => {
         fetch: jest.fn().mockRejectedValue({ code: 10003, message: 'Unknown Channel' }),
       },
     } as unknown as Guild;
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     await expect(
       manager.restoreVerificationChannelManagedPermissions(guild, {
@@ -2254,11 +2128,7 @@ describe('NotificationManager (unit)', () => {
       },
       channels: { fetch: jest.fn().mockResolvedValue(channel) },
     } as unknown as Guild;
-    const manager = new NotificationManager(
-      { user: { id: 'bot-1' } } as any,
-      configService,
-      detectionRepository
-    );
+    const manager = createManager({ user: { id: 'bot-1' } } as any);
 
     await expect(
       manager.restoreLegacyVerificationChannelPermissions(guild, 'legacy-channel', 'old-case-role')
@@ -2287,7 +2157,7 @@ describe('NotificationManager (unit)', () => {
     const guild = {
       channels: { fetch: jest.fn().mockRejectedValue(new Error('Discord unavailable')) },
     } as unknown as Guild;
-    const manager = new NotificationManager({} as any, configService, detectionRepository);
+    const manager = createManager();
 
     await expect(
       manager.restoreVerificationChannelManagedPermissions(guild, {
@@ -2324,7 +2194,7 @@ describe('NotificationManager (unit)', () => {
           create,
         },
       } as unknown as Guild;
-      const manager = new NotificationManager({} as any, configService, detectionRepository);
+      const manager = createManager();
       const choice =
         mode === 'create'
           ? { kind: 'create' as const }

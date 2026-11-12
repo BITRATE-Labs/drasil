@@ -65,6 +65,41 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     return { detection, detections, verification };
   }
 
+  type CaseVerification = Awaited<ReturnType<typeof createCase>>['verification'];
+  type ChallengeInput = Parameters<CaptchaChallengeRepository['create']>[0];
+  type CompletionInput = Parameters<VerificationEventRepository['completeCaptchaVerification']>[0];
+
+  function challengeInput(
+    verification: CaseVerification,
+    input: Pick<ChallengeInput, 'tokenHash' | 'expiresAt'> & Partial<ChallengeInput>
+  ): ChallengeInput {
+    return {
+      verificationEventId: verification.id,
+      serverId: verification.server_id,
+      userId: verification.user_id,
+      requestSource: CaptchaChallengeRequestSource.MODERATOR,
+      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
+      provider: CaptchaProvider.TURNSTILE,
+      methodRevision: 0,
+      caseRevision: verification.case_revision,
+      ...input,
+    };
+  }
+
+  function completionInput(
+    verification: CaseVerification,
+    input: Pick<CompletionInput, 'challengeId' | 'generation' | 'resolvedAt'>
+  ): CompletionInput {
+    return {
+      id: verification.id,
+      expectedCaseRevision: verification.case_revision,
+      serverId: verification.server_id,
+      userId: verification.user_id,
+      resolvedBy: 'drasil:captcha',
+      ...input,
+    };
+  }
+
   async function enableAutomaticCaptchaResolution(serverId: string): Promise<void> {
     const servers = new ServerRepository(prisma);
     await servers.updateSettings(
@@ -91,19 +126,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     async (settings) => {
       const { verification } = await createCase('guild-off-bypass', 'user-off-bypass');
       const repository = new CaptchaChallengeRepository(prisma);
-      const challenge = await repository.create({
-        verificationEventId: verification.id,
-        serverId: verification.server_id!,
-        userId: verification.user_id!,
-        requestSource: CaptchaChallengeRequestSource.MODERATOR,
-        passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: verification.case_revision,
-        tokenHash: 'off-test-hash',
-        expiresAt: new Date(Date.now() + 60_000),
-        requestedBy: 'moderator',
-      });
+      const challenge = await repository.create(
+        challengeInput(verification, {
+          tokenHash: 'off-test-hash',
+          expiresAt: new Date(Date.now() + 60_000),
+          requestedBy: 'moderator',
+        })
+      );
       // Isolate policy from the separate mode-off cancellation sweep.
       await prisma.servers.update({
         where: { guild_id: verification.server_id! },
@@ -125,19 +154,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'presentation-recovery-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'presentation-recovery-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
 
     await expect(challenges.recordDelivery(challenge.id, challenge.generation)).resolves.toBe(true);
     await expect(challenges.findDeliveredNeedingPresentation(10)).resolves.toEqual([
@@ -177,32 +200,20 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       enableManualCaptcha(first.verification.server_id),
       enableManualCaptcha(second.verification.server_id),
     ]);
-    const firstChallenge = await challenges.create({
-      verificationEventId: first.verification.id,
-      serverId: first.verification.server_id,
-      userId: first.verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: first.verification.case_revision,
-      tokenHash: 'presentation-rotation-hash-1',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
-    const secondChallenge = await challenges.create({
-      verificationEventId: second.verification.id,
-      serverId: second.verification.server_id,
-      userId: second.verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: second.verification.case_revision,
-      tokenHash: 'presentation-rotation-hash-2',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const firstChallenge = await challenges.create(
+      challengeInput(first.verification, {
+        tokenHash: 'presentation-rotation-hash-1',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
+    const secondChallenge = await challenges.create(
+      challengeInput(second.verification, {
+        tokenHash: 'presentation-rotation-hash-2',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await Promise.all([
       challenges.recordDelivery(firstChallenge.id, firstChallenge.generation),
       challenges.recordDelivery(secondChallenge.id, secondChallenge.generation),
@@ -231,36 +242,24 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const { verification } = await createCase('guild-captcha-retry', 'user-captcha-retry');
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const initial = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'initial-hash',
-      expiresAt: new Date(Date.now() - 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const initial = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'initial-hash',
+        expiresAt: new Date(Date.now() - 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.expirePending(new Date(), 10);
     await challenges.bypass(initial.id, initial.generation, 'moderator-bypass', 'Manual review');
 
     const retried = await challenges.retry({
+      ...challengeInput(verification, {
+        tokenHash: 'replacement-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-2',
+      }),
       expectedChallengeId: initial.id,
       expectedGeneration: initial.generation,
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'replacement-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-2',
     });
 
     expect(retried).toMatchObject({
@@ -323,34 +322,24 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const challenges = new CaptchaChallengeRepository(prisma);
 
     await expect(
-      challenges.create({
-        verificationEventId: verification.id,
-        serverId: verification.server_id,
-        userId: verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: verification.case_revision,
-        tokenHash: 'automatic-manual-mode-hash',
-        expiresAt: new Date(Date.now() + 60_000),
-      })
+      challenges.create(
+        challengeInput(verification, {
+          requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+          passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+          tokenHash: 'automatic-manual-mode-hash',
+          expiresAt: new Date(Date.now() + 60_000),
+        })
+      )
     ).rejects.toThrow('The case changed before the security check could be created.');
 
     await expect(
-      challenges.create({
-        verificationEventId: verification.id,
-        serverId: verification.server_id,
-        userId: verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.MODERATOR,
-        passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: verification.case_revision,
-        tokenHash: 'moderator-manual-mode-hash',
-        expiresAt: new Date(Date.now() + 60_000),
-        requestedBy: 'moderator-1',
-      })
+      challenges.create(
+        challengeInput(verification, {
+          tokenHash: 'moderator-manual-mode-hash',
+          expiresAt: new Date(Date.now() + 60_000),
+          requestedBy: 'moderator-1',
+        })
+      )
     ).resolves.toEqual(expect.objectContaining({ request_source: 'moderator' }));
   });
 
@@ -363,18 +352,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableAutomaticCaptchaResolution(verification.server_id);
 
-    const initial = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'locked-pass-effect-create',
-      expiresAt: new Date(Date.now() - 60_000),
-    });
+    const initial = await challenges.create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        tokenHash: 'locked-pass-effect-create',
+        expiresAt: new Date(Date.now() - 60_000),
+      })
+    );
     expect(initial.pass_effect).toBe(CaptchaChallengePassEffect.VERIFY_JOIN_ONLY);
 
     await challenges.expirePending(new Date(), 10);
@@ -387,18 +371,14 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       { turnstile: true, discord_image: true }
     );
     const retried = await challenges.retry({
+      ...challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'locked-pass-effect-retry',
+        expiresAt: new Date(Date.now() + 60_000),
+      }),
       expectedChallengeId: initial.id,
       expectedGeneration: initial.generation,
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'locked-pass-effect-retry',
-      expiresAt: new Date(Date.now() + 60_000),
     });
     expect(retried.pass_effect).toBe(CaptchaChallengePassEffect.EVIDENCE_ONLY);
     await expect(
@@ -430,20 +410,14 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     });
     await expect(requests.claimNext()).resolves.toEqual(expect.objectContaining({ id: queued.id }));
 
-    const challenge = await challenges.create({
-      actionRequestId: queued.id,
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'mutation-receipt-token',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-receipt',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        actionRequestId: queued.id,
+        tokenHash: 'mutation-receipt-token',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-receipt',
+      })
+    );
 
     await expect(requests.findById(queued.id)).resolves.toEqual(
       expect.objectContaining({
@@ -462,35 +436,27 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const { verification } = await createCase('guild-captcha-mode-retry', 'user-mode-retry');
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableAutomaticCaptchaResolution(verification.server_id);
-    const initial = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'automatic-retry-initial-hash',
-      expiresAt: new Date(Date.now() - 60_000),
-    });
+    const initial = await challenges.create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'automatic-retry-initial-hash',
+        expiresAt: new Date(Date.now() - 60_000),
+      })
+    );
     await challenges.expirePending(new Date(), 10);
     await enableManualCaptcha(verification.server_id);
 
     await expect(
       challenges.retry({
+        ...challengeInput(verification, {
+          requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+          passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+          tokenHash: 'automatic-retry-manual-mode-hash',
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
         expectedChallengeId: initial.id,
         expectedGeneration: initial.generation,
-        verificationEventId: verification.id,
-        serverId: verification.server_id,
-        userId: verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: verification.case_revision,
-        tokenHash: 'automatic-retry-manual-mode-hash',
-        expiresAt: new Date(Date.now() + 60_000),
       })
     ).rejects.toThrow('The case changed before the security check could be retried.');
   });
@@ -502,52 +468,34 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const initial = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'stale-retry-initial',
-      expiresAt: new Date(Date.now() - 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const initial = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'stale-retry-initial',
+        expiresAt: new Date(Date.now() - 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.expirePending(new Date(), 10);
     const advanced = await challenges.retry({
+      ...challengeInput(verification, {
+        tokenHash: 'stale-retry-advanced',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-2',
+      }),
       expectedChallengeId: initial.id,
       expectedGeneration: initial.generation,
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'stale-retry-advanced',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-2',
     });
     await challenges.bypass(advanced.id, advanced.generation, 'moderator-2', 'Reviewed manually');
 
     await expect(
       challenges.retry({
+        ...challengeInput(verification, {
+          tokenHash: 'stale-retry-rejected',
+          expiresAt: new Date(Date.now() + 120_000),
+          requestedBy: 'moderator-1',
+        }),
         expectedChallengeId: initial.id,
         expectedGeneration: initial.generation,
-        verificationEventId: verification.id,
-        serverId: verification.server_id,
-        userId: verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.MODERATOR,
-        passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: verification.case_revision,
-        tokenHash: 'stale-retry-rejected',
-        expiresAt: new Date(Date.now() + 120_000),
-        requestedBy: 'moderator-1',
       })
     ).rejects.toThrow('The security check changed before it could be retried.');
     await expect(challenges.findById(initial.id)).resolves.toEqual(
@@ -565,19 +513,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'bypass-closed-case-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'bypass-closed-case-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.verification_events.update({
       where: { id: verification.id },
       data: {
@@ -604,19 +546,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const servers = new ServerRepository(prisma);
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'bypass-disabled-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'bypass-disabled-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await servers.updateSettings(
       verification.server_id,
       { captcha_mode: 'off' },
@@ -639,19 +575,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       'user-captcha-bypass-compromised'
     );
     const challenges = new CaptchaChallengeRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'bypass-compromised-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'bypass-compromised-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.verification_events.update({
       where: { id: verification.id },
       data: { case_kind: CaseKind.COMPROMISED_ACCOUNT },
@@ -672,19 +602,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'bypass-attention-hash',
-      expiresAt: new Date(Date.now() - 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'bypass-attention-hash',
+        expiresAt: new Date(Date.now() - 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.expirePending(new Date(), 10);
     await requests.enqueue({
       serverId: verification.server_id,
@@ -719,19 +643,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'bypass-presentation-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'bypass-presentation-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.bypass(challenge.id, challenge.generation, 'moderator-1', 'Reviewed manually');
     const requestInput = {
       serverId: verification.server_id,
@@ -769,19 +687,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'pass-recovery-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'pass-recovery-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
@@ -810,19 +722,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       'guild-captcha-pass-recovery-newer',
       'user-captcha-pass-recovery-newer'
     );
-    const newerChallenge = await challenges.create({
-      verificationEventId: newerVerification.id,
-      serverId: newerVerification.server_id,
-      userId: newerVerification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: newerVerification.case_revision,
-      tokenHash: 'pass-recovery-newer-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const newerChallenge = await challenges.create(
+      challengeInput(newerVerification, {
+        tokenHash: 'pass-recovery-newer-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: newerChallenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
@@ -860,32 +766,23 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const challenges = new CaptchaChallengeRepository(prisma);
     const verifications = new VerificationEventRepository(prisma);
     await enableAutomaticCaptchaResolution(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'reopen-revision-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'reopen-revision-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
     });
-    const completion = {
+    const completion = completionInput(verification, {
       challengeId: challenge.id,
-      expectedCaseRevision: verification.case_revision,
       generation: challenge.generation,
-      id: verification.id,
       resolvedAt: new Date(),
-      resolvedBy: 'drasil:captcha',
-      serverId: verification.server_id,
-      userId: verification.user_id,
-    };
+    });
 
     await expect(verifications.completeCaptchaVerification(completion)).resolves.toEqual(
       expect.objectContaining({ status: VerificationStatus.VERIFIED })
@@ -907,32 +804,23 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const challenges = new CaptchaChallengeRepository(prisma);
     const verifications = new VerificationEventRepository(prisma);
     await enableAutomaticCaptchaResolution(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'finalization-lease-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'finalization-lease-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
     });
-    const completion = {
+    const completion = completionInput(verification, {
       challengeId: challenge.id,
-      expectedCaseRevision: verification.case_revision,
       generation: challenge.generation,
-      id: verification.id,
       resolvedAt: new Date(),
-      resolvedBy: 'drasil:captcha',
-      serverId: verification.server_id,
-      userId: verification.user_id,
-    };
+    });
     const completed = await verifications.completeCaptchaVerification(completion);
     expect(completed).toEqual(
       expect.objectContaining({
@@ -1084,19 +972,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     });
 
     await expect(
-      challenges.create({
-        verificationEventId: compromised.verification.id,
-        serverId: compromised.verification.server_id,
-        userId: compromised.verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.MODERATOR,
-        passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: compromised.verification.case_revision,
-        tokenHash: 'compromised-create-guard',
-        expiresAt: new Date(Date.now() + 60_000),
-        requestedBy: 'moderator-1',
-      })
+      challenges.create(
+        challengeInput(compromised.verification, {
+          tokenHash: 'compromised-create-guard',
+          expiresAt: new Date(Date.now() + 60_000),
+          requestedBy: 'moderator-1',
+        })
+      )
     ).rejects.toThrow('The case changed before the security check could be created.');
 
     const disabled = await createCase(
@@ -1109,38 +991,26 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       { turnstile: true, discord_image: true }
     );
     await expect(
-      challenges.create({
-        verificationEventId: disabled.verification.id,
-        serverId: disabled.verification.server_id,
-        userId: disabled.verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.MODERATOR,
-        passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: disabled.verification.case_revision,
-        tokenHash: 'disabled-create-guard',
-        expiresAt: new Date(Date.now() + 60_000),
-        requestedBy: 'moderator-1',
-      })
+      challenges.create(
+        challengeInput(disabled.verification, {
+          tokenHash: 'disabled-create-guard',
+          expiresAt: new Date(Date.now() + 60_000),
+          requestedBy: 'moderator-1',
+        })
+      )
     ).rejects.toThrow('The case changed before the security check could be created.');
 
     const retryCase = await createCase(
       'guild-captcha-retry-disabled',
       'user-captcha-retry-disabled'
     );
-    const challenge = await challenges.create({
-      verificationEventId: retryCase.verification.id,
-      serverId: retryCase.verification.server_id,
-      userId: retryCase.verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: retryCase.verification.case_revision,
-      tokenHash: 'disabled-retry-initial',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(retryCase.verification, {
+        tokenHash: 'disabled-retry-initial',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.recordDeliveryFailure(
       challenge.id,
       challenge.generation,
@@ -1154,19 +1024,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
 
     await expect(
       challenges.retry({
+        ...challengeInput(retryCase.verification, {
+          tokenHash: 'disabled-retry-replacement',
+          expiresAt: new Date(Date.now() + 120_000),
+          requestedBy: 'moderator-2',
+        }),
         expectedChallengeId: challenge.id,
         expectedGeneration: challenge.generation,
-        verificationEventId: retryCase.verification.id,
-        serverId: retryCase.verification.server_id,
-        userId: retryCase.verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.MODERATOR,
-        passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: retryCase.verification.case_revision,
-        tokenHash: 'disabled-retry-replacement',
-        expiresAt: new Date(Date.now() + 120_000),
-        requestedBy: 'moderator-2',
       })
     ).rejects.toThrow('The case changed before the security check could be retried.');
   });
@@ -1175,18 +1039,14 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const { verification } = await createCase('guild-captcha-expiry', 'user-captcha-expiry');
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableAutomaticCaptchaResolution(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'expiry-hash',
-      expiresAt: new Date(Date.now() - 60_000),
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'expiry-hash',
+        expiresAt: new Date(Date.now() - 60_000),
+      })
+    );
 
     await expect(challenges.expirePending(new Date(), 10)).resolves.toEqual([
       expect.objectContaining({ id: challenge.id, status: CaptchaChallengeStatus.EXPIRED }),
@@ -1202,19 +1062,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'expiry-attention-hash',
-      expiresAt: new Date(Date.now() - 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'expiry-attention-hash',
+        expiresAt: new Date(Date.now() - 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.expirePending(new Date(), 10);
     const idempotencyKey = `captcha:attention:${challenge.id}:1:expired`;
     const requestInput = {
@@ -1249,19 +1103,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'submission-attention-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'submission-attention-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.FAILED, updated_at: new Date() },
@@ -1298,19 +1146,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'delivery-attention-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'delivery-attention-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.recordDeliveryFailure(challenge.id, 1, 'discord_delivery_failed');
     const requestInput = {
       serverId: verification.server_id,
@@ -1343,19 +1185,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       'user-captcha-delivery-retry'
     );
     const challenges = new CaptchaChallengeRepository(prisma);
-    const initial = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'delivery-failed-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const initial = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'delivery-failed-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.recordDeliveryFailure(
       initial.id,
       initial.generation,
@@ -1364,19 +1200,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
 
     await expect(
       challenges.retry({
+        ...challengeInput(verification, {
+          tokenHash: 'delivery-retry-hash',
+          expiresAt: new Date(Date.now() + 120_000),
+          requestedBy: 'moderator-2',
+        }),
         expectedChallengeId: initial.id,
         expectedGeneration: initial.generation,
-        verificationEventId: verification.id,
-        serverId: verification.server_id,
-        userId: verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.MODERATOR,
-        passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: verification.case_revision,
-        tokenHash: 'delivery-retry-hash',
-        expiresAt: new Date(Date.now() + 120_000),
-        requestedBy: 'moderator-2',
       })
     ).resolves.toEqual(
       expect.objectContaining({
@@ -1395,19 +1225,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
-    const initial = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'delivery-retry-fence-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const initial = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'delivery-retry-fence-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.recordDeliveryFailure(
       initial.id,
       initial.generation,
@@ -1428,19 +1252,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       },
     });
     const retryInput = {
+      ...challengeInput(verification, {
+        tokenHash: 'delivery-retry-after-attention-hash',
+        expiresAt: new Date(Date.now() + 120_000),
+        requestedBy: 'moderator-2',
+      }),
       expectedChallengeId: initial.id,
       expectedGeneration: initial.generation,
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'delivery-retry-after-attention-hash',
-      expiresAt: new Date(Date.now() + 120_000),
-      requestedBy: 'moderator-2',
     };
 
     await expect(challenges.retry(retryInput)).rejects.toThrow(
@@ -1474,19 +1292,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       'user-captcha-interrupted-delivery'
     );
     const challenges = new CaptchaChallengeRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'interrupted-delivery-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'interrupted-delivery-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
 
     await expect(
       challenges.markStaleUndelivered(new Date(challenge.updated_at.getTime() - 1), 10)
@@ -1502,19 +1314,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     ]);
     await expect(
       challenges.retry({
+        ...challengeInput(verification, {
+          tokenHash: 'interrupted-delivery-retry-hash',
+          expiresAt: new Date(Date.now() + 120_000),
+          requestedBy: 'moderator-2',
+        }),
         expectedChallengeId: challenge.id,
         expectedGeneration: challenge.generation,
-        verificationEventId: verification.id,
-        serverId: verification.server_id,
-        userId: verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.MODERATOR,
-        passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: verification.case_revision,
-        tokenHash: 'interrupted-delivery-retry-hash',
-        expiresAt: new Date(Date.now() + 120_000),
-        requestedBy: 'moderator-2',
       })
     ).resolves.toEqual(expect.objectContaining({ generation: challenge.generation + 1 }));
   });
@@ -1524,19 +1330,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'disabled-hash',
-      expiresAt: new Date(Date.now() - 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'disabled-hash',
+        expiresAt: new Date(Date.now() - 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.servers.update({
       where: { guild_id: verification.server_id },
       data: { settings: { captcha_mode: 'off' } },
@@ -1584,32 +1384,20 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
-    const firstChallenge = await challenges.create({
-      verificationEventId: first.verification.id,
-      serverId: first.verification.server_id,
-      userId: first.verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: first.verification.case_revision,
-      tokenHash: 'cancelled-rotation-hash-1',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
-    const secondChallenge = await challenges.create({
-      verificationEventId: second.verification.id,
-      serverId: second.verification.server_id,
-      userId: second.verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: second.verification.case_revision,
-      tokenHash: 'cancelled-rotation-hash-2',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const firstChallenge = await challenges.create(
+      challengeInput(first.verification, {
+        tokenHash: 'cancelled-rotation-hash-1',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
+    const secondChallenge = await challenges.create(
+      challengeInput(second.verification, {
+        tokenHash: 'cancelled-rotation-hash-2',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await Promise.all([
       challenges.cancelPendingForCase(first.verification.id),
       challenges.cancelPendingForCase(second.verification.id),
@@ -1654,19 +1442,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'terminal-case-hash',
-      expiresAt: new Date(Date.now() - 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'terminal-case-hash',
+        expiresAt: new Date(Date.now() - 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.verification_events.update({
       where: { id: verification.id },
       data: { status: VerificationStatus.VERIFIED },
@@ -1686,19 +1468,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const verifications = new VerificationEventRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'reopen-pending-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'reopen-pending-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.verification_events.update({
       where: { id: verification.id },
       data: {
@@ -1732,19 +1508,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableManualCaptcha(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'compromised-case-hash',
-      expiresAt: new Date(Date.now() - 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'compromised-case-hash',
+        expiresAt: new Date(Date.now() - 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.verification_events.update({
       where: { id: verification.id },
       data: { case_kind: CaseKind.COMPROMISED_ACCOUNT },
@@ -1760,19 +1530,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const { verification } = await createCase('guild-captcha-reopened', 'user-captcha-reopened');
     const challenges = new CaptchaChallengeRepository(prisma);
     const requests = new ModerationActionRequestRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'cancelled-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'cancelled-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await challenges.cancelPendingForCase(verification.id);
 
     const cancellationPresentation = await requests.enqueue({
@@ -1791,19 +1555,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     });
 
     const retryInput = {
+      ...challengeInput(verification, {
+        tokenHash: 'reopened-hash',
+        expiresAt: new Date(Date.now() + 120_000),
+        requestedBy: 'moderator-2',
+      }),
       expectedChallengeId: challenge.id,
       expectedGeneration: challenge.generation,
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'reopened-hash',
-      expiresAt: new Date(Date.now() + 120_000),
-      requestedBy: 'moderator-2',
     };
 
     await expect(challenges.retry(retryInput)).rejects.toThrow(
@@ -1843,34 +1601,25 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const verifications = new VerificationEventRepository(prisma);
     const challenges = new CaptchaChallengeRepository(prisma);
     await enableAutomaticCaptchaResolution(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'exact-case-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'exact-case-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+    );
     const otherCase = await verifications.createFromDetection(
       null,
       verification.server_id,
       verification.user_id,
       VerificationStatus.PENDING
     );
-    const completion = {
+    const completion = completionInput(verification, {
       challengeId: challenge.id,
-      expectedCaseRevision: verification.case_revision,
       generation: challenge.generation,
-      id: verification.id,
       resolvedAt: new Date(),
-      resolvedBy: 'drasil:captcha',
-      serverId: verification.server_id,
-      userId: verification.user_id,
-    };
+    });
 
     await expect(verifications.completeCaptchaVerification(completion)).resolves.toBeNull();
     await prisma.captcha_challenges.update({
@@ -1928,32 +1677,23 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const challenges = new CaptchaChallengeRepository(prisma);
     const verifications = new VerificationEventRepository(prisma);
     await enableAutomaticCaptchaResolution(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'policy-fence-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'policy-fence-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
     });
-    const completion = {
+    const completion = completionInput(verification, {
       challengeId: challenge.id,
-      expectedCaseRevision: verification.case_revision,
       generation: challenge.generation,
-      id: verification.id,
       resolvedAt: new Date(),
-      resolvedBy: 'drasil:captcha',
-      serverId: verification.server_id,
-      userId: verification.user_id,
-    };
+    });
 
     await servers.updateSettings(verification.server_id, {
       captcha_pass_action: 'evidence_only',
@@ -1982,32 +1722,23 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     const challenges = new CaptchaChallengeRepository(prisma);
     const verifications = new VerificationEventRepository(prisma);
     await enableAutomaticCaptchaResolution(verification.server_id);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'policy-serialization-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'policy-serialization-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
     });
-    const completion = {
+    const completion = completionInput(verification, {
       challengeId: challenge.id,
-      expectedCaseRevision: verification.case_revision,
       generation: challenge.generation,
-      id: verification.id,
       resolvedAt: new Date(),
-      resolvedBy: 'drasil:captcha',
-      serverId: verification.server_id,
-      userId: verification.user_id,
-    };
+    });
     let completionSettled = false;
     let completionPromise!: ReturnType<VerificationEventRepository['completeCaptchaVerification']>;
 
@@ -2043,18 +1774,10 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
   ])('fences issue, retry, delivery and expiry for changed settings %j', async (settings) => {
     const { verification } = await createCase('guild-disabled-paths', 'user-disabled-paths');
     const repository = new CaptchaChallengeRepository(prisma);
-    const input = {
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
+    const input = challengeInput(verification, {
       tokenHash: 'disabled-paths',
       expiresAt: new Date(Date.now() + 60_000),
-    };
+    });
     const challenge = await repository.create(input);
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
@@ -2097,32 +1820,25 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       },
       { turnstile: true, discord_image: true }
     );
-    const challenge = await new CaptchaChallengeRepository(prisma).create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.DISCORD_IMAGE,
-      methodRevision: 1,
-      caseRevision: verification.case_revision,
-      tokenHash: 'image-policy',
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+    const challenge = await new CaptchaChallengeRepository(prisma).create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        provider: CaptchaProvider.DISCORD_IMAGE,
+        methodRevision: 1,
+        tokenHash: 'image-policy',
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
     });
-    const completion = {
+    const completion = completionInput(verification, {
       challengeId: challenge.id,
       generation: 1,
-      id: verification.id,
-      expectedCaseRevision: verification.case_revision,
-      serverId: verification.server_id,
-      userId: verification.user_id,
       resolvedAt: new Date(),
-      resolvedBy: 'drasil:captcha',
-    };
+    });
     const events = new VerificationEventRepository(prisma);
     await prisma.detection_events.updateMany({
       where: { latest_verification_event_id: verification.id },
@@ -2144,18 +1860,14 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
       const { verification } = await createCase('guild-method-fence', 'user-method-fence');
       await enableAutomaticCaptchaResolution(verification.server_id);
       const challenges = new CaptchaChallengeRepository(prisma);
-      const challenge = await challenges.create({
-        verificationEventId: verification.id,
-        serverId: verification.server_id,
-        userId: verification.user_id,
-        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-        provider: CaptchaProvider.TURNSTILE,
-        methodRevision: 0,
-        caseRevision: verification.case_revision,
-        tokenHash: 'method-fence',
-        expiresAt: new Date(Date.now() + 60_000),
-      });
+      const challenge = await challenges.create(
+        challengeInput(verification, {
+          requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+          passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+          tokenHash: 'method-fence',
+          expiresAt: new Date(Date.now() + 60_000),
+        })
+      );
       await prisma.captcha_challenges.update({
         where: { id: challenge.id },
         data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
@@ -2174,16 +1886,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
           { turnstile: true, discord_image: true }
         );
       await expect(
-        new VerificationEventRepository(prisma).completeCaptchaVerification({
-          challengeId: challenge.id,
-          generation: 1,
-          id: verification.id,
-          expectedCaseRevision: verification.case_revision,
-          serverId: verification.server_id,
-          userId: verification.user_id,
-          resolvedAt: new Date(),
-          resolvedBy: 'drasil:captcha',
-        })
+        new VerificationEventRepository(prisma).completeCaptchaVerification(
+          completionInput(verification, {
+            challengeId: challenge.id,
+            generation: 1,
+            resolvedAt: new Date(),
+          })
+        )
       ).resolves.toBeNull();
       expect(await challenges.findById(challenge.id)).toMatchObject({
         status: CaptchaChallengeStatus.PASSED,
@@ -2194,18 +1903,14 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
   it('rereads method revision after a server-lock wait even when the selected method returns to Turnstile', async () => {
     const { verification } = await createCase('guild-revision-race', 'user-revision-race');
     await enableAutomaticCaptchaResolution(verification.server_id);
-    const challenge = await new CaptchaChallengeRepository(prisma).create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
-      passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'revision-race',
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+    const challenge = await new CaptchaChallengeRepository(prisma).create(
+      challengeInput(verification, {
+        requestSource: CaptchaChallengeRequestSource.AUTOMATIC_SUSPICIOUS_JOIN,
+        passEffect: CaptchaChallengePassEffect.VERIFY_JOIN_ONLY,
+        tokenHash: 'revision-race',
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
@@ -2215,16 +1920,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`select guild_id from servers where guild_id=${verification.server_id} for update`;
       completion = new VerificationEventRepository(prisma)
-        .completeCaptchaVerification({
-          challengeId: challenge.id,
-          generation: 1,
-          id: verification.id,
-          expectedCaseRevision: verification.case_revision,
-          serverId: verification.server_id,
-          userId: verification.user_id,
-          resolvedAt: new Date(),
-          resolvedBy: 'drasil:captcha',
-        })
+        .completeCaptchaVerification(
+          completionInput(verification, {
+            challengeId: challenge.id,
+            generation: 1,
+            resolvedAt: new Date(),
+          })
+        )
         .finally(() => {
           settled = true;
         });
@@ -2256,19 +1958,13 @@ describeIntegration('CaptchaChallengeRepository (integration)', () => {
     );
     const challenges = new CaptchaChallengeRepository(prisma);
     const verifications = new VerificationEventRepository(prisma);
-    const challenge = await challenges.create({
-      verificationEventId: verification.id,
-      serverId: verification.server_id,
-      userId: verification.user_id,
-      requestSource: CaptchaChallengeRequestSource.MODERATOR,
-      passEffect: CaptchaChallengePassEffect.EVIDENCE_ONLY,
-      provider: CaptchaProvider.TURNSTILE,
-      methodRevision: 0,
-      caseRevision: verification.case_revision,
-      tokenHash: 'presentation-fence-hash',
-      expiresAt: new Date(Date.now() + 60_000),
-      requestedBy: 'moderator-1',
-    });
+    const challenge = await challenges.create(
+      challengeInput(verification, {
+        tokenHash: 'presentation-fence-hash',
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedBy: 'moderator-1',
+      })
+    );
     await prisma.captcha_challenges.update({
       where: { id: challenge.id },
       data: { status: CaptchaChallengeStatus.PASSED, passed_at: new Date() },
