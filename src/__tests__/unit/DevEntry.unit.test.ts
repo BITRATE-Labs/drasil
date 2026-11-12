@@ -47,4 +47,18 @@ describe('local development entry', () => {
       }
     }
   );
+  it('rejects production mode before bootstrap', () => {
+    const previous = { ...process.env };
+    process.env.NODE_ENV = 'production';
+    process.env.DRASIL_DEV_GUILD_ID = '100000000000000001';
+    try {
+      expect(() =>
+        jest.isolateModules(() => {
+          require('../../dev');
+        })
+      ).toThrow(/production/i);
+    } finally {
+      process.env = previous;
+    }
+  });
 });

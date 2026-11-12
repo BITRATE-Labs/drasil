@@ -377,7 +377,11 @@ export class EventHandler implements IEventHandler {
   ): (...args: TArguments) => Promise<void> {
     return async (...args: TArguments): Promise<void> => {
       try {
-        if (!isInLocalGuildScope(args[0])) return;
+        const subject =
+          eventName === Events.MessageUpdate || eventName === Events.GuildMemberUpdate
+            ? args[1]
+            : args[0];
+        if (!isInLocalGuildScope(subject)) return;
         await handler(...args);
       } catch (error) {
         console.error(`Unexpected error in recoverable Discord event "${eventName}":`, error);

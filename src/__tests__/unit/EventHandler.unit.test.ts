@@ -485,6 +485,44 @@ describe('EventHandler (unit)', () => {
     }
   });
 
+  it('scopes message edits by the new message when the old partial has no guild', async () => {
+    const selected = '100000000000000001';
+    const client = { on: jest.fn(), user: { id: 'bot-1' } };
+    const reports = { handleThreadMessageUpdate: jest.fn().mockResolvedValue(undefined) };
+    await buildHandler({ client, reportIntakeService: reports }).setupEventHandlers();
+    const updated = client.on.mock.calls.find(([event]) => event === Events.MessageUpdate)?.[1];
+    setLocalGuildScope(selected);
+    try {
+      const message = { guildId: selected, id: 'message' };
+      await updated({ guildId: null, id: 'message' }, message);
+      expect(reports.handleThreadMessageUpdate).toHaveBeenCalledWith(message);
+      await updated(message, { guildId: '100000000000000002', id: 'message' });
+      expect(reports.handleThreadMessageUpdate).toHaveBeenCalledTimes(1);
+    } finally {
+      setLocalGuildScope(undefined);
+    }
+  });
+
+  it('scopes partial member updates by the new member guild', async () => {
+    const selected = '100000000000000001';
+    const client = { on: jest.fn(), user: { id: 'bot-1' } };
+    const directory = { snapshot: jest.fn(), invalidate: jest.fn() };
+    await buildHandler({ client, reportMemberDirectory: directory }).setupEventHandlers();
+    const updated = client.on.mock.calls.find(([event]) => event === Events.GuildMemberUpdate)?.[1];
+    setLocalGuildScope(selected);
+    try {
+      await updated({ partial: true }, { guild: { id: selected }, user: { bot: true } });
+      expect(directory.invalidate).toHaveBeenCalledWith(selected);
+      await updated(
+        { guild: { id: selected }, partial: true },
+        { guild: { id: '100000000000000002' }, user: { bot: true } }
+      );
+      expect(directory.invalidate).toHaveBeenCalledTimes(1);
+    } finally {
+      setLocalGuildScope(undefined);
+    }
+  });
+
   it('registers Discord event handlers with current event names', async () => {
     const client = { on: jest.fn(), user: { id: 'bot-1' } };
     const handler = buildHandler({ client });

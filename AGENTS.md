@@ -66,6 +66,7 @@ Primary flow (see `docs/workflow.md`):
 
 - `.env` uses:
   - `DISCORD_TOKEN`, `OPENAI_API_KEY`
+  - `DRASIL_DEV_GUILD_ID` (required by the guild-scoped local dev entry)
   - `DATABASE_URL` (Prisma)
   - `PRISMA_DB_PASSWORD`, `POSTGRES_DB_URL` (local Supabase tooling + integration tests)
 - Local DB: `npx supabase start`
@@ -149,7 +150,7 @@ Practical workflow tips:
 
 ## Scripts
 
-- `npm run dev` start bot (hot reload)
+- `npm run dev` start the guild-scoped dev bot (hot reload; requires `DRASIL_DEV_GUILD_ID`)
 - `npm run build` compile TypeScript
 - `npm test` run unit tests (in-memory repositories)
 - `npm run test:coverage` run unit tests with coverage

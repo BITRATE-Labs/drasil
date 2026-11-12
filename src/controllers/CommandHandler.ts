@@ -207,10 +207,20 @@ export class CommandHandler implements ICommandHandler {
       const route = localGuildId
         ? Routes.applicationGuildCommands(clientId, localGuildId)
         : Routes.applicationCommands(clientId);
-      await rest.put(route, { body: this.commands });
+      const body = localGuildId
+        ? this.commands.map((command) => {
+            const localCommand = { ...command };
+            delete localCommand.integration_types;
+            delete localCommand.contexts;
+            delete localCommand.dm_permission;
+            return localCommand;
+          })
+        : this.commands;
+      await rest.put(route, { body });
 
       console.log('Successfully registered application commands.');
     } catch (error) {
+      if (getLocalGuildScope()) throw error;
       console.error('Failed to register commands:', error);
     }
   }
