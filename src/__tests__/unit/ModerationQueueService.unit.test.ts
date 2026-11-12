@@ -1217,6 +1217,46 @@ describe('ModerationQueueService', () => {
     ]);
   });
 
+  it('retains a rejected stale cleanup receipt and continues cleaning later items', async () => {
+    const { service, queueRepository, channel } = buildService();
+    const first = await queueRepository.upsert({
+      serverId: 'guild-1',
+      userId: 'first-user',
+      itemType: ModerationQueueItemType.CASE_MIRROR,
+      verificationEventId: 'first-case',
+      queueChannelId: 'queue-channel',
+      queueMessageId: 'first-message',
+    });
+    await queueRepository.upsert({
+      serverId: 'guild-1',
+      userId: 'next-user',
+      itemType: ModerationQueueItemType.CASE_MIRROR,
+      verificationEventId: 'next-case',
+      queueChannelId: 'queue-channel',
+      queueMessageId: 'next-message',
+    });
+    const firstMessage = new FakeDiscordMessage('first-message', 'queue-channel', {});
+    const nextMessage = new FakeDiscordMessage('next-message', 'queue-channel', {});
+    channel.sentMessages.push(firstMessage, nextMessage);
+    const cleanup = jest.spyOn(queueRepository, 'deleteStaleCaseMirror');
+    cleanup.mockRejectedValueOnce(new Error('private provider payload'));
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(service.syncServerQueue('guild-1')).resolves.toBeUndefined();
+      expect(queueRepository.items).toEqual([first]);
+      expect(firstMessage.deleted).toBe(false);
+      expect(nextMessage.deleted).toBe(true);
+      expect(warning).toHaveBeenCalledWith('Stale moderation queue cleanup incomplete', {
+        queue_item_id: first.id,
+        item_type: ModerationQueueItemType.CASE_MIRROR,
+        error_kind: 'error',
+      });
+    } finally {
+      warning.mockRestore();
+      cleanup.mockRestore();
+    }
+  });
+
   it('does not create observed mirrors for detections without observed notifications', async () => {
     const { channel, queueRepository, service } = buildService();
     const detectionEvent = { ...buildDetectionEvent(), metadata: {} };

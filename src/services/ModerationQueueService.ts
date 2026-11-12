@@ -219,6 +219,7 @@ export class ModerationQueueService implements IModerationQueueService {
       return;
     }
 
+    // The web inbox uses this durable mirror for case failure summaries without a Discord queue.
     const item = await this.moderationQueueRepository.upsert({
       serverId: verificationEvent.server_id,
       userId: verificationEvent.user_id,
@@ -805,19 +806,27 @@ export class ModerationQueueService implements IModerationQueueService {
       const staleObserved =
         item.item_type === ModerationQueueItemType.OBSERVED_ALERT_MIRROR &&
         (!item.detection_event_id || !activeObservedIds.has(item.detection_event_id));
-      if (
-        staleObserved &&
-        item.detection_event_id &&
-        readAutomaticModerationResponse(item.metadata)
-      ) {
-        // Revalidate under the detection lock; source enumeration predates concurrent responses.
-        await this.upsertObservedAlertMirrorById(item.detection_event_id);
-      } else if (staleCase && item.verification_event_id) {
-        await this.moderationQueueRepository.deleteStaleCaseMirror(item, (current) =>
-          this.deleteQueueMessage(current)
-        );
-      } else if (staleCase || staleObserved) {
-        await this.deleteQueueItems([item]);
+      try {
+        if (
+          staleObserved &&
+          item.detection_event_id &&
+          readAutomaticModerationResponse(item.metadata)
+        ) {
+          // Revalidate under the detection lock; source enumeration predates concurrent responses.
+          await this.upsertObservedAlertMirrorById(item.detection_event_id);
+        } else if (staleCase && item.verification_event_id) {
+          await this.moderationQueueRepository.deleteStaleCaseMirror(item, (current) =>
+            this.deleteQueueMessage(current)
+          );
+        } else if (staleCase || staleObserved) {
+          await this.deleteQueueItems([item]);
+        }
+      } catch (error) {
+        console.warn('Stale moderation queue cleanup incomplete', {
+          queue_item_id: item.id,
+          item_type: item.item_type,
+          error_kind: error instanceof Error ? 'error' : 'non_error',
+        });
       }
     }
   }
