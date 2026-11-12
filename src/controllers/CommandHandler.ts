@@ -1,3 +1,4 @@
+import { getLocalGuildScope } from '../localGuildScope';
 import { McpCommandHandler } from './McpCommandHandler';
 import { deferConfigurationMutation, replyToConfiguration } from './configInteractionResponse';
 import { setupCommandSchema } from '@drasil/application';
@@ -193,7 +194,6 @@ export class CommandHandler implements ICommandHandler {
     try {
       const rest = new REST({ version: '10' }).setToken(token);
 
-      // Register commands globally (for all guilds)
       const clientId = this.client.user?.id;
 
       if (!clientId) {
@@ -203,10 +203,24 @@ export class CommandHandler implements ICommandHandler {
 
       console.log('Started refreshing application (/) commands.');
 
-      await rest.put(Routes.applicationCommands(clientId), { body: this.commands });
+      const localGuildId = getLocalGuildScope();
+      const route = localGuildId
+        ? Routes.applicationGuildCommands(clientId, localGuildId)
+        : Routes.applicationCommands(clientId);
+      const body = localGuildId
+        ? this.commands.map((command) => {
+            const localCommand = { ...command };
+            delete localCommand.integration_types;
+            delete localCommand.contexts;
+            delete localCommand.dm_permission;
+            return localCommand;
+          })
+        : this.commands;
+      await rest.put(route, { body });
 
       console.log('Successfully registered application commands.');
     } catch (error) {
+      if (getLocalGuildScope()) throw error;
       console.error('Failed to register commands:', error);
     }
   }

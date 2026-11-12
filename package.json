@@ -14,7 +14,7 @@
   },
   "scripts": {
     "start": "ts-node src/index.ts",
-    "dev": "node --watch -r ts-node/register src/index.ts",
+    "dev": "node --watch -r ts-node/register src/dev.ts",
     "test": "jest --testPathPattern=src/__tests__/unit",
     "test:watch": "jest --watch --testPathPattern=src/__tests__/unit",
     "test:coverage": "jest --testPathPattern=src/__tests__/unit --coverage",

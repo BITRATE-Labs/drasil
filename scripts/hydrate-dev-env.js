@@ -53,6 +53,7 @@ const prismaPasswordSecret =
   process.env.DRASIL_PRISMA_PASSWORD_SECRET || `drasil/${environment}/PRISMA_DB_PASSWORD`;
 
 const existingEnv = fs.existsSync(envPath) ? parseDotenv(fs.readFileSync(envPath)) : {};
+const devGuildId = process.env.DRASIL_DEV_GUILD_ID ?? existingEnv.DRASIL_DEV_GUILD_ID;
 const optionalLangfuse = {};
 for (const key of [
   'LANGFUSE_PUBLIC_KEY',
@@ -86,6 +87,7 @@ const lines = [
   `DISCORD_TOKEN=${quoteEnvValue(discordToken)}`,
   `OPENAI_API_KEY=${quoteEnvValue(openAiKey)}`,
   ...(typeSafeKey ? [`TYPESAFE_API_KEY=${quoteEnvValue(typeSafeKey)}`] : []),
+  ...(devGuildId !== undefined ? [`DRASIL_DEV_GUILD_ID=${quoteEnvValue(devGuildId)}`] : []),
   ...Object.entries(optionalLangfuse).map(([key, value]) => `${key}=${quoteEnvValue(value)}`),
   `PRISMA_DB_PASSWORD=${quoteEnvValue(prismaPassword)}`,
   `DATABASE_URL=${quoteEnvValue(databaseUrl)}`,
