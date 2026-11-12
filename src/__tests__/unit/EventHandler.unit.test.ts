@@ -98,7 +98,7 @@ describe('EventHandler (unit)', () => {
 
     const configService =
       overrides?.configService ??
-      buildConfigService({
+      buildWritableConfigService({
         case_role_id: null,
         admin_channel_id: null,
         verification_channel_id: null,
@@ -195,7 +195,7 @@ describe('EventHandler (unit)', () => {
     );
   }
 
-  function buildConfigService(
+  function buildReadOnlyConfigService(
     serverConfig: Record<string, unknown>,
     cachedConfig: Record<string, unknown> = {}
   ) {
@@ -203,6 +203,15 @@ describe('EventHandler (unit)', () => {
       initialize: jest.fn().mockResolvedValue(undefined),
       getCachedServerConfig: jest.fn().mockReturnValue(cachedConfig),
       getServerConfig: jest.fn().mockResolvedValue(serverConfig),
+    };
+  }
+
+  function buildWritableConfigService(
+    serverConfig: Record<string, unknown>,
+    cachedConfig: Record<string, unknown> = {}
+  ) {
+    return {
+      ...buildReadOnlyConfigService(serverConfig, cachedConfig),
       updateServerConfig: jest.fn().mockResolvedValue({}),
       updateServerSettings: jest.fn().mockResolvedValue({}),
     };
@@ -277,7 +286,7 @@ describe('EventHandler (unit)', () => {
         ...settings,
       },
     };
-    return buildConfigService(serverConfig, serverConfig);
+    return buildWritableConfigService(serverConfig, serverConfig);
   }
 
   function buildMessage(permissions: PermissionsBitField): Message {
@@ -740,7 +749,7 @@ describe('EventHandler (unit)', () => {
       };
       const currentMember = buildManualIntakeMember(guild, [role.id]);
       (guild.members.fetch as jest.Mock).mockResolvedValue(currentMember);
-      const configService = buildConfigService({
+      const configService = buildWritableConfigService({
         case_role_id: 'case-role',
         settings: {
           manual_intake_enabled: true,
@@ -825,7 +834,7 @@ describe('EventHandler (unit)', () => {
       };
       const currentMember = buildManualIntakeMember(guild, [role.id]);
       (guild.members.fetch as jest.Mock).mockResolvedValue(currentMember);
-      const configService = buildConfigService({
+      const configService = buildWritableConfigService({
         case_role_id: 'case-role',
         settings: {
           manual_intake_enabled: true,
@@ -895,7 +904,7 @@ describe('EventHandler (unit)', () => {
       };
       const currentMember = buildManualIntakeMember(guild, [role.id]);
       (guild.members.fetch as jest.Mock).mockResolvedValue(currentMember);
-      const configService = buildConfigService({
+      const configService = buildWritableConfigService({
         case_role_id: 'case-role',
         settings: {
           manual_intake_enabled: true,
@@ -950,7 +959,7 @@ describe('EventHandler (unit)', () => {
         members: { fetch: jest.fn() },
         fetchAuditLogs: jest.fn(),
       };
-      const configService = buildConfigService({
+      const configService = buildWritableConfigService({
         case_role_id: 'case-role',
         settings: {
           manual_intake_enabled: true,
@@ -1009,7 +1018,7 @@ describe('EventHandler (unit)', () => {
       };
       const currentMember = buildManualIntakeMember(guild, [role.id]);
       (guild.members.fetch as jest.Mock).mockResolvedValue(currentMember);
-      const configService = buildConfigService({
+      const configService = buildWritableConfigService({
         case_role_id: 'case-role',
         settings: {
           manual_intake_enabled: true,
@@ -1079,7 +1088,7 @@ describe('EventHandler (unit)', () => {
         },
       },
     };
-    const configService = buildConfigService({
+    const configService = buildWritableConfigService({
       guild_id: 'guild-1',
       settings: {
         role_gate_enabled: true,
@@ -1145,7 +1154,7 @@ describe('EventHandler (unit)', () => {
         },
       },
     };
-    const configService = buildConfigService({
+    const configService = buildWritableConfigService({
       guild_id: 'guild-1',
       case_role_id: caseRole.id,
       settings: {
@@ -1231,7 +1240,7 @@ describe('EventHandler (unit)', () => {
       ...oldMember,
       roles: { cache: new Map([[gainedRole.id, gainedRole]]) },
     };
-    const configService = buildConfigService({
+    const configService = buildWritableConfigService({
       guild_id: 'guild-1',
       case_role_id: 'case-role',
       settings: {},
@@ -2400,7 +2409,7 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = buildConfigService(
+    const configService = buildReadOnlyConfigService(
       {
         settings: {
           automatic_detection_exempt_moderators: true,
@@ -2427,7 +2436,7 @@ describe('EventHandler (unit)', () => {
 
   it('runs automatic message detection for moderation members when exemption is disabled', async () => {
     const detectionOrchestrator = buildCleanMessageDetection();
-    const configService = buildConfigService(
+    const configService = buildReadOnlyConfigService(
       {
         settings: {
           automatic_detection_exempt_moderators: false,
@@ -2535,7 +2544,7 @@ describe('EventHandler (unit)', () => {
     ['message watchlist is disabled', { message_deletion_watchlist_enabled: false }],
   ])('does not load global watchlist rows when %s', async (_label, settings) => {
     const detectionOrchestrator = buildCleanMessageDetection(GLOBAL_WATCHLIST_MESSAGE);
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       settings: {
         detection_response_mode: 'notify_only',
         min_confidence_threshold: 70,
@@ -2568,7 +2577,7 @@ describe('EventHandler (unit)', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const detectionOrchestrator = buildCleanMessageDetection(GLOBAL_WATCHLIST_MESSAGE);
-      const configService = buildConfigService({
+      const configService = buildReadOnlyConfigService({
         case_role_id: 'case-role-1',
         admin_channel_id: 'admin-channel-1',
         verification_channel_id: 'verification-channel-1',
@@ -2625,7 +2634,7 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       case_role_id: 'case-role-1',
       admin_channel_id: 'admin-channel-1',
       verification_channel_id: 'verification-channel-1',
@@ -2682,7 +2691,7 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       settings: {
         detection_response_mode: 'record_only',
         min_confidence_threshold: 70,
@@ -2722,7 +2731,7 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       case_role_id: 'case-role-1',
       admin_channel_id: 'admin-channel-1',
       verification_channel_id: 'verification-channel-1',
@@ -2771,7 +2780,7 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       guild_id: 'guild-1',
       case_role_id: 'case-role-1',
       admin_channel_id: 'admin-channel-1',
@@ -2826,7 +2835,7 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       guild_id: 'guild-1',
       case_role_id: 'case-role-1',
       admin_channel_id: 'admin-channel-1',
@@ -2870,7 +2879,7 @@ describe('EventHandler (unit)', () => {
       detectMessage: jest.fn(),
       detectNewJoin: jest.fn(),
     };
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       guild_id: 'guild-1',
       case_role_id: null,
       admin_channel_id: null,
@@ -3135,7 +3144,7 @@ describe('EventHandler (unit)', () => {
       captureUserEvent: jest.fn().mockResolvedValue(undefined),
       shutdown: jest.fn(),
     };
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       settings: {
         detection_response_mode: 'notify_only',
         gpt_message_check_count: 3,
@@ -3200,7 +3209,7 @@ describe('EventHandler (unit)', () => {
       captureUserEvent: jest.fn().mockResolvedValue(undefined),
       shutdown: jest.fn(),
     };
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       settings: {
         detection_response_mode: 'notify_only',
         gpt_message_check_count: 3,
@@ -3240,7 +3249,7 @@ describe('EventHandler (unit)', () => {
 
   it('clamps the forced GPT message window to retained context capacity', async () => {
     const detectionOrchestrator = buildCleanMessageDetection();
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       settings: {
         detection_response_mode: 'notify_only',
         gpt_message_check_count: 25,
@@ -3299,7 +3308,7 @@ describe('EventHandler (unit)', () => {
       triggerSource,
       triggerContent,
     });
-    const configService = buildConfigService({
+    const configService = buildReadOnlyConfigService({
       settings: {
         automatic_detection_exempt_moderators: false,
         detection_response_mode: 'notify_only',
@@ -3506,7 +3515,7 @@ describe('EventHandler (unit)', () => {
       verification_channel_id: 'verification-channel-1',
       settings: { detection_response_mode: 'notify_only' },
     };
-    const configService = buildConfigService(serverConfig, serverConfig);
+    const configService = buildWritableConfigService(serverConfig, serverConfig);
     const handler = buildHandler({
       configService,
       detectionOrchestrator,
@@ -3539,7 +3548,7 @@ describe('EventHandler (unit)', () => {
       bot: false,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = buildConfigService({
+    const configService = buildWritableConfigService({
       guild_id: 'guild-1',
       case_role_id: null,
       admin_channel_id: 'admin-channel-1',
@@ -3611,7 +3620,7 @@ describe('EventHandler (unit)', () => {
       verification_channel_id: 'verification-channel-1',
       settings: {},
     };
-    const configService = buildConfigService(serverConfig, serverConfig);
+    const configService = buildWritableConfigService(serverConfig, serverConfig);
     const notificationManager = {
       upsertObservedDetectionNotification: jest.fn(),
       setupVerificationChannel: jest.fn().mockResolvedValue('verification-channel-1'),
@@ -3718,7 +3727,7 @@ describe('EventHandler (unit)', () => {
       id: 'owner-1',
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = buildConfigService({
+    const configService = buildWritableConfigService({
       guild_id: 'guild-1',
       case_role_id: null,
       admin_channel_id: null,
@@ -3757,7 +3766,7 @@ describe('EventHandler (unit)', () => {
       bot: true,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = buildConfigService({
+    const configService = buildWritableConfigService({
       guild_id: 'guild-1',
       case_role_id: null,
       admin_channel_id: null,
@@ -3846,7 +3855,7 @@ describe('EventHandler (unit)', () => {
   });
 
   it('suppresses repeated setup nudges after a recent attempt', async () => {
-    const configService = buildConfigService({
+    const configService = buildWritableConfigService({
       guild_id: 'guild-1',
       case_role_id: null,
       admin_channel_id: null,
@@ -3876,13 +3885,16 @@ describe('EventHandler (unit)', () => {
       bot: false,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = buildConfigService({
-      guild_id: 'guild-1',
-      case_role_id: null,
-      admin_channel_id: null,
-      verification_channel_id: null,
-      settings: {},
-    });
+    const configService = {
+      ...buildReadOnlyConfigService({
+        guild_id: 'guild-1',
+        case_role_id: null,
+        admin_channel_id: null,
+        verification_channel_id: null,
+        settings: {},
+      }),
+      updateServerSettings: jest.fn().mockResolvedValue({}),
+    };
     const setupDiagnosticsService = {
       validateGuildSetup: jest.fn().mockResolvedValue({
         guildId: 'guild-1',
@@ -4090,16 +4102,19 @@ describe('EventHandler (unit)', () => {
   );
 
   it('skips detection-time setup validation immediately after a warning attempt', async () => {
-    const configService = buildConfigService({
-      guild_id: 'guild-1',
-      case_role_id: null,
-      admin_channel_id: null,
-      verification_channel_id: null,
-      settings: {
-        setup_nudge_last_attempt_at: new Date().toISOString(),
-        setup_warning_last_fingerprint: 'case-role-missing',
-      },
-    });
+    const configService = {
+      ...buildReadOnlyConfigService({
+        guild_id: 'guild-1',
+        case_role_id: null,
+        admin_channel_id: null,
+        verification_channel_id: null,
+        settings: {
+          setup_nudge_last_attempt_at: new Date().toISOString(),
+          setup_warning_last_fingerprint: 'case-role-missing',
+        },
+      }),
+      updateServerSettings: jest.fn().mockResolvedValue({}),
+    };
     const setupDiagnosticsService = {
       validateGuildSetup: jest.fn(),
     };
@@ -4125,17 +4140,20 @@ describe('EventHandler (unit)', () => {
       bot: false,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = buildConfigService({
-      guild_id: 'guild-1',
-      case_role_id: null,
-      admin_channel_id: null,
-      verification_channel_id: null,
-      settings: {
-        setup_nudge_last_attempt_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-        setup_nudge_last_recipient_id: 'installer-1',
-        setup_warning_last_fingerprint: 'admin-channel-missing|case-role-missing',
-      },
-    });
+    const configService = {
+      ...buildReadOnlyConfigService({
+        guild_id: 'guild-1',
+        case_role_id: null,
+        admin_channel_id: null,
+        verification_channel_id: null,
+        settings: {
+          setup_nudge_last_attempt_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          setup_nudge_last_recipient_id: 'installer-1',
+          setup_warning_last_fingerprint: 'admin-channel-missing|case-role-missing',
+        },
+      }),
+      updateServerSettings: jest.fn().mockResolvedValue({}),
+    };
     const setupDiagnosticsService = {
       validateGuildSetup: jest.fn().mockResolvedValue({
         guildId: 'guild-1',
@@ -4181,7 +4199,7 @@ describe('EventHandler (unit)', () => {
       bot: false,
       send: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = buildConfigService({
+    const configService = buildWritableConfigService({
       guild_id: 'guild-1',
       case_role_id: null,
       admin_channel_id: null,

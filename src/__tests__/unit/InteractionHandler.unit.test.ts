@@ -64,7 +64,16 @@ import {
   buildAdminActionCustomId,
   parseAdminActionCustomId,
 } from '../../utils/adminActionCustomIds';
-import type { AccountQuarantinePreview } from '../../services/AccountQuarantineService';
+import type {
+  AccountQuarantinePreview,
+  IAccountQuarantineService,
+} from '../../services/AccountQuarantineService';
+import type { ISetupDiagnosticsService } from '../../services/SetupDiagnosticsService';
+import type { IReportIntakeService } from '../../services/ReportIntakeService';
+import type { IDetectionEventsRepository } from '../../repositories/DetectionEventsRepository';
+import type { ICaptchaChallengeService } from '../../services/CaptchaChallengeService';
+import type { IModerationActionRequestRepository } from '../../repositories/ModerationActionRequestRepository';
+import type { IReportIntakeRepository } from '../../repositories/ReportIntakeRepository';
 
 const handlerApplications = new WeakMap<InteractionHandler, BotApplication>();
 function buildHandler(
@@ -570,14 +579,14 @@ describe('InteractionHandler (unit)', () => {
 
   const createHandler = (
     overrides: {
-      setupDiagnosticsService?: ConstructorParameters<typeof InteractionHandler>[8];
-      reportIntakeService?: ConstructorParameters<typeof InteractionHandler>[9];
-      roleGateService?: ConstructorParameters<typeof InteractionHandler>[13];
-      detectionEventsRepository?: ConstructorParameters<typeof InteractionHandler>[14];
-      accountQuarantineService?: ConstructorParameters<typeof InteractionHandler>[15];
-      captchaChallengeService?: ConstructorParameters<typeof InteractionHandler>[16];
-      actionRequests?: ConstructorParameters<typeof InteractionHandler>[17];
-      reportIntakes?: ConstructorParameters<typeof InteractionHandler>[18];
+      setupDiagnosticsService?: ISetupDiagnosticsService;
+      reportIntakeService?: IReportIntakeService;
+      roleGateService?: IRoleGateService;
+      detectionEventsRepository?: IDetectionEventsRepository;
+      accountQuarantineService?: IAccountQuarantineService;
+      captchaChallengeService?: ICaptchaChallengeService;
+      actionRequests?: IModerationActionRequestRepository;
+      reportIntakes?: IReportIntakeRepository;
     } = {}
   ): InteractionHandler =>
     buildHandler(
