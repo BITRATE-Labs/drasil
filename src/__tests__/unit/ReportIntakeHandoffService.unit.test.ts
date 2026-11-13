@@ -65,6 +65,8 @@ async function fixture(
   const channel = {
     id: 'thread',
     guildId: 'guild',
+    archived: false,
+    isThread: () => true,
     messages: {
       fetch: jest.fn(async (id?: unknown) =>
         typeof id === 'string'

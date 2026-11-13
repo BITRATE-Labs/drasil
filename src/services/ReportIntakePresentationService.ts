@@ -222,13 +222,31 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
   }
   private async presentAvailableClaim(claim: ReportPresentationClaim): Promise<void> {
     let intake = await this.current(claim);
-    const closed = this.isClosed(intake);
-    if (!closed && !readReporterPresentation(intake)?.restoreArchive)
-      return this.presentActiveClaim(claim);
-    const channel = intake.thread_id ? await this.client.channels.fetch(intake.thread_id) : null;
+    const channel = intake.thread_id
+      ? await this.client.channels.fetch(intake.thread_id, { force: true })
+      : null;
     if (!channel) throw Object.assign(new Error('Report thread missing'), { code: 10003 });
-    if (!channel.isThread() || channel.guildId !== intake.server_id)
+    if (
+      !channel.isThread() ||
+      channel.guildId !== intake.server_id ||
+      channel.id !== intake.thread_id
+    )
       throw new Error('Report thread mismatch');
+    intake = await this.current(claim);
+    const closed = this.isClosed(intake);
+    if (!closed && !readReporterPresentation(intake)?.restoreArchive) {
+      if (!channel.archived) return this.presentActiveClaim(claim);
+      try {
+        await this.checkRollout(this.project(intake, ''), intake);
+        await this.current(claim);
+        await channel.setArchived(false, 'Update report card');
+        await this.presentActiveClaim(claim);
+      } finally {
+        const latest = await this.repository.findById(intake.id);
+        if (latest && this.isClosed(latest)) await this.restoreClosedThread(claim, channel);
+      }
+      return;
+    }
     if (!closed) {
       await this.restoreClosedThread(claim, channel);
       return this.presentActiveClaim(claim);

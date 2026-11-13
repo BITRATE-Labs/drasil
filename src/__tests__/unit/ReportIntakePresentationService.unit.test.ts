@@ -543,6 +543,78 @@ it('rechecks the rollout before enabling a newly sent confirmation', async () =>
   expect(f.messages.get('1')!.components).toEqual([]);
 });
 
+it('updates a submitted receipt in an auto-archived active report thread', async () => {
+  const f = await fixture();
+  await f.service.reconcile(f.intake.id);
+  await suggest(f);
+  await f.service.reconcile(f.intake.id);
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.SUBMITTED,
+    confirmedTargetUserId: 'target',
+    closedAt: new Date(),
+  });
+  f.channel.archived = true;
+
+  await f.service.reconcile(f.intake.id);
+
+  expect(f.channel.archived).toBe(false);
+  expect(f.channel.setArchived.mock.calls.map(([archived]) => archived)).toEqual([false]);
+  expect(f.messages.size).toBe(2);
+  expect(JSON.stringify(f.messages.get('2')?.embeds)).toContain('Report submitted');
+  expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
+    reporter_presentation: { nextDueAt: null },
+  });
+});
+
+it('preserves a moderator close that races reopening an auto-archived thread', async () => {
+  const f = await fixture();
+  await f.service.reconcile(f.intake.id);
+  f.channel.archived = true;
+  const setArchived = f.channel.setArchived.getMockImplementation()!;
+  f.channel.setArchived.mockImplementation(async (archived) => {
+    if (!archived)
+      await f.repository.update(f.intake.id, {
+        status: ReportIntakeStatus.CLOSED_BY_REPORTER,
+        closedAt: new Date(),
+      });
+    await setArchived(archived);
+  });
+
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('Report presentation changed');
+
+  expect(f.channel.archived).toBe(true);
+  expect(f.channel.setArchived.mock.calls.map(([archived]) => archived)).toEqual([false, true]);
+  expect(JSON.stringify(f.messages.get('1')?.embeds)).not.toContain('Thread closed');
+  f.channel.setArchived.mockImplementation(setArchived);
+  const recovery = await f.repository.claimPendingPresentation(
+    new Date(Date.now() + 61_000),
+    f.intake.id
+  );
+  expect(recovery).not.toBeNull();
+  await f.service.presentClaim(recovery!);
+  expect(f.channel.archived).toBe(true);
+  expect(JSON.stringify([...f.messages.values()].map((message) => message.embeds))).toContain(
+    'Thread closed'
+  );
+});
+
+it('does not reopen an auto-archived confirmation after rollout is disabled', async () => {
+  const f = await fixture();
+  await suggest(f);
+  await f.service.reconcile(f.intake.id);
+  f.channel.archived = true;
+  f.config.getServerConfig
+    .mockResolvedValueOnce({ settings: { report_intake_staged_enabled: true } } as never)
+    .mockResolvedValue({ settings: { report_intake_staged_enabled: false } } as never);
+
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow(
+    'Staged report confirmation disabled'
+  );
+
+  expect(f.channel.archived).toBe(true);
+  expect(f.channel.setArchived).not.toHaveBeenCalled();
+});
+
 it.each([
   ReportIntakeStatus.CLOSED_BY_REPORTER,
   ReportIntakeStatus.DISMISSED,
