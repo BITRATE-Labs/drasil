@@ -42,6 +42,8 @@ export function reporterViewKey(intake: ReportIntake): string {
     intake.confirmed_target_user_id ?? null,
     m.submission ?? null,
     m.thread_closed_at ?? null,
+    m.observed_action_closed_at ?? null,
+    m.observed_action_reopened_at ?? null,
     a?.outcome ?? null,
     (a?.handoff as { state?: string } | undefined)?.state ?? null,
   ]);

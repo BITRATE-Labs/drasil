@@ -305,9 +305,7 @@ describe('durable reporter presentation', () => {
         await f.service.reconcile(f.intake.id);
         expect(JSON.stringify(f.messages.get('2')?.components)).toContain('Try again');
       } else {
-        await expect(f.service.reconcile(f.intake.id)).rejects.toThrow(
-          'Staged report confirmation disabled'
-        );
+        await expect(f.service.reconcile(f.intake.id)).resolves.toBe(true);
         expect(f.messages.size).toBe(1);
       }
     }
@@ -333,6 +331,35 @@ it('does not take over the shipped non-staged multiple-candidate flow', async ()
   expect(await f.service.reconcile(f.intake.id)).toBe(false);
   expect(f.channel.send).not.toHaveBeenCalled();
 });
+it('keeps retry controls disabled when saving the sent-message binding fails', async () => {
+  const f = await fixture();
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+    confirmedTargetUserId: 'target',
+    metadata: {
+      workflow: 'staged',
+      submission: {
+        token: 'token',
+        targetUserId: 'target',
+        state: 'not_dispatched',
+        claimedAt: new Date().toISOString(),
+        settledAt: new Date().toISOString(),
+      },
+    },
+  });
+  const send = f.channel.send.getMockImplementation()!;
+  f.channel.send.mockImplementationOnce(async (payload) => {
+    const message = await send(payload);
+    jest.spyOn(f.repository, 'updateIfCurrent').mockResolvedValueOnce(null);
+    return message;
+  });
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('Report message changed');
+  expect(f.messages.get('1')?.components).toEqual([]);
+  await f.service.reconcile(f.intake.id);
+  expect(f.messages.size).toBe(1);
+  expect(JSON.stringify(f.messages.get('1')?.components)).toContain('Try again');
+});
+
 it.each(['unknown', 'dispatching'])('never enables retry for %s submission', async (state) => {
   const f = await fixture();
   await f.repository.update(f.intake.id, {
@@ -483,9 +510,7 @@ it('does not publish a saved confirmation when the rollout is disabled', async (
   f.config.getServerConfig.mockResolvedValue({
     settings: { report_intake_staged_enabled: false },
   } as never);
-  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow(
-    'Staged report confirmation disabled'
-  );
+  await expect(f.service.reconcile(f.intake.id)).resolves.toBe(true);
   expect(f.config.getServerConfig).toHaveBeenCalledWith('guild', {
     forceRefresh: true,
     failOnReadError: true,

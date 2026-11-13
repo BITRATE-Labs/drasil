@@ -92,7 +92,8 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
             throw new Error('Report review delivery pending');
         } catch (error) {
           const reporter = readReporterPresentation(current);
-          if (!reporter || reporter.nextDueAt) await this.reporterPresentation.presentClaim(claim);
+          if (!claim.reporterPaused && (!reporter || reporter.nextDueAt))
+            await this.reporterPresentation.presentClaim(claim);
           throw error;
         }
         if (
@@ -106,7 +107,8 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
           return;
         const saved = await this.repository.findById(current.id);
         const reporter = saved && readReporterPresentation(saved);
-        if (!reporter || reporter.nextDueAt) await this.reporterPresentation.reconcile(current.id);
+        if (!claim.reporterPaused && (!reporter || reporter.nextDueAt))
+          await this.reporterPresentation.reconcile(current.id);
       } else {
         await this.reporterPresentation.presentClaim(claim);
         await this.repository.completePresentation(claim, { kind: 'published' });

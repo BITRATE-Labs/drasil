@@ -1,5 +1,6 @@
 import {
   readReporterPresentation,
+  reportRoot,
   reporterViewKey,
 } from '../utils/reportIntakePresentationMetadata';
 import {
@@ -407,9 +408,33 @@ export function canPresent(intake: ReportIntake): boolean {
   );
 }
 
+export function reporterActionRequiresRollout(intake: ReportIntake, now: Date): boolean {
+  const state = projectReportIntakeState(intake);
+  const metadata = reportRoot(intake);
+  if (
+    metadata.thread_closed_at ||
+    metadata.observed_action_closed_at ||
+    state.status === 'closed_by_reporter' ||
+    (intake.closed_at && !['submitted', 'actioned'].includes(state.status)) ||
+    state.status === 'submitted' ||
+    state.submission?.state === 'accepted'
+  )
+    return false;
+  if (state.submission)
+    return state.submission.state === 'not_dispatched' && Boolean(state.submission.settledAt);
+  const { analysis } = presentationMetadata(intake);
+  return (
+    state.status === 'needs_reporter_confirmation' &&
+    intake.analysis_revision === intake.evidence_revision &&
+    analysis.outcome?.kind === 'confirm' &&
+    Boolean(intake.analysis_due_at && intake.analysis_due_at > now)
+  );
+}
+
 export function presentationClaimChange(
   intake: ReportIntake,
-  now: Date
+  now: Date,
+  allowReporter = true
 ): {
   claim: ReportPresentationClaim;
   change: Partial<ReportIntake>;
@@ -417,7 +442,7 @@ export function presentationClaimChange(
   if (!canPresent(intake)) return null;
   const reporter = readReporterPresentation(intake);
   const { metadata, analysis } = presentationMetadata(intake);
-  if (reporter && !reporter.threadMissing && reporter.nextDueAt) {
+  if (allowReporter && reporter && !reporter.threadMissing && reporter.nextDueAt) {
     if (
       new Date(reporter.nextDueAt) > now ||
       (analysis.presentation?.lease && new Date(analysis.presentation.lease.until) > now)
@@ -450,6 +475,14 @@ export function presentationClaimChange(
     };
   }
   if (
+    !allowReporter &&
+    (intake.status !== ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION ||
+      intake.closed_at ||
+      analysis.outcome?.kind !== 'admin_review' ||
+      analysis.handoff.state === 'none')
+  )
+    return null;
+  if (
     !analysis.outcome ||
     analysis.handoff.state === 'resolved' ||
     (intake.analysis_revision !== intake.evidence_revision &&
@@ -480,7 +513,12 @@ export function presentationClaimChange(
     updated_at: now,
   };
   return {
-    claim: { intake: { ...intake, ...change }, revision: intake.evidence_revision, leaseToken },
+    claim: {
+      intake: { ...intake, ...change },
+      revision: intake.evidence_revision,
+      leaseToken,
+      ...(!allowReporter ? { reporterPaused: true as const } : {}),
+    },
     change,
   };
 }
@@ -514,7 +552,8 @@ export function completePresentationChange(
   const success =
     result.kind === 'published' ||
     (result.kind === 'delivered' &&
-      (result.receipt === 'sent' ||
+      (claim.reporterPaused ||
+        result.receipt === 'sent' ||
         (analysis.handoff.state !== 'none' && analysis.handoff.receipt === 'sent') ||
         reporter?.threadMissing === true));
   const nextDueAt =
@@ -538,8 +577,9 @@ export function completePresentationChange(
   if (reporter)
     metadata.reporter_presentation = {
       ...reporter,
-      nextDueAt:
-        reporter.threadMissing || result.kind === 'published' || reporter.nextDueAt === null
+      nextDueAt: claim.reporterPaused
+        ? reporter.nextDueAt
+        : reporter.threadMissing || result.kind === 'published' || reporter.nextDueAt === null
           ? null
           : nextDueAt,
     };

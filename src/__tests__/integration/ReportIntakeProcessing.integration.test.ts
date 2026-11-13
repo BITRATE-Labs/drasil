@@ -81,6 +81,50 @@ describeIntegration('durable report intake processing', () => {
     expect(saved.evidence_revision).toBe(1);
     expect(saved.metadata).toMatchObject({ reporter_presentation: expect.any(Object) });
   });
+
+  it('rotates global claim sources so reporter backlog cannot starve quarantined or staff work', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    for (let index = 0; index < 5; index++)
+      await f.repository.create({
+        serverId: f.intake.server_id,
+        reporterId: f.intake.reporter_id,
+        metadata: { reporter_presentation: { nextDueAt: now.toISOString() } },
+      });
+    const quarantined = await f.prisma.report_intakes.create({
+      data: {
+        server_id: f.intake.server_id,
+        reporter_id: f.intake.reporter_id,
+        status: 'needs_admin_confirmation',
+        analysis_failure_code: 'invalid_metadata',
+        metadata: { analysis: 'malformed' },
+      },
+    });
+    const staff = await f.repository.create({
+      serverId: f.intake.server_id,
+      reporterId: f.intake.reporter_id,
+      status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      metadata: {
+        analysis: {
+          ...processingMetadata(f.intake).analysis,
+          outcome,
+          handoff: {
+            state: 'pending',
+            reason: 'no_match',
+            attempts: 0,
+            nextDueAt: now.toISOString(),
+            receipt: 'pending',
+          },
+        },
+      },
+    });
+    const reporterClaim = await f.repository.claimPendingPresentation(new Date());
+    expect(reporterClaim).not.toBeNull();
+    expect([quarantined.id, staff.id]).not.toContain(reporterClaim!.intake.id);
+    expect((await f.repository.claimPendingPresentation(new Date()))?.intake.id).toBe(
+      quarantined.id
+    );
+    expect((await f.repository.claimPendingPresentation(new Date()))?.intake.id).toBe(staff.id);
+  });
   it('preserves invalid reporter delivery metadata without blocking evidence or other presentations', async () => {
     const invalid = { openingMessageId: 123, restoreArchive: true, nextDueAt: now.toISOString() };
     const f = await fixture({ reporter_presentation: invalid });
@@ -133,6 +177,137 @@ describeIntegration('durable report intake processing', () => {
       reporter_presentation: { nextDueAt: null },
     });
   });
+
+  it.each(['postgres', 'memory'])(
+    'pauses disabled actionable cards without blocking staff or closed-card recovery (%s)',
+    async (backend) => {
+      const f = await fixture();
+      const servers = new ServerRepository(f.prisma);
+      const repository =
+        backend === 'postgres' ? f.repository : new InMemoryReportIntakeRepository(servers);
+      await new UserRepository(f.prisma).getOrCreateUser('rollout-target', 'target', now);
+      await servers.updateSettings(f.intake.server_id, { report_intake_staged_enabled: false });
+      const createActionable = async (kind: 'confirm' | 'retry', staff = false) => {
+        const intake = await repository.create({
+          serverId: f.intake.server_id,
+          reporterId: f.intake.reporter_id,
+          status:
+            kind === 'confirm'
+              ? ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION
+              : ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+          confirmedTargetUserId: kind === 'retry' ? 'rollout-target' : null,
+          metadata: {
+            workflow: 'staged',
+            reporter_presentation: { nextDueAt: now.toISOString() },
+            ...(kind === 'retry'
+              ? {
+                  submission: {
+                    token: 'retry',
+                    targetUserId: 'rollout-target',
+                    state: 'not_dispatched',
+                    claimedAt: now.toISOString(),
+                    settledAt: now.toISOString(),
+                  },
+                }
+              : {}),
+            analysis: {
+              ...processingMetadata(f.intake).analysis,
+              outcome:
+                kind === 'retry'
+                  ? outcome
+                  : {
+                      ...outcome,
+                      kind: 'confirm',
+                      candidate: {
+                        candidateId: 'target',
+                        discordUserId: 'rollout-target',
+                        serverId: f.intake.server_id,
+                        username: 'target',
+                        globalName: null,
+                        nickname: null,
+                        displayName: 'Target',
+                        avatarUrl: null,
+                        sourceRefs: [],
+                        matchedFields: ['userId'],
+                        subjectMatches: [
+                          { subjectId: 'target', sourceRefs: [], matchedFields: ['userId'] },
+                        ],
+                      },
+                    },
+              ...(staff
+                ? {
+                    handoff: {
+                      state: 'pending',
+                      reason: 'no_match',
+                      receipt: 'pending',
+                      attempts: 0,
+                      nextDueAt: now.toISOString(),
+                    },
+                  }
+                : {}),
+            },
+          },
+        });
+        return (await repository.update(intake.id, {
+          analysisDueAt: new Date(Date.now() + 600000),
+        }))!;
+      };
+      const confirm = await createActionable('confirm');
+      const retry = await createActionable('retry');
+      for (const intake of [confirm, retry]) {
+        expect(await repository.claimPendingPresentation(new Date(), intake.id)).toBeNull();
+        expect((await repository.findById(intake.id))?.metadata).toEqual(intake.metadata);
+      }
+      expect(await repository.claimPendingPresentation(new Date())).toBeNull();
+      const staff = await createActionable('retry', true);
+      const staffClaim = await repository.claimPendingPresentation(new Date(), staff.id);
+      expect(staffClaim).toMatchObject({ intake: { id: staff.id }, reporterPaused: true });
+      expect(
+        await repository.completePresentation(staffClaim!, {
+          kind: 'delivered',
+          channelId: 'queue',
+          messageId: 'review',
+          receipt: 'pending',
+        })
+      ).toBe(true);
+      const delivered = (await repository.findById(staff.id))!;
+      expect(delivered.metadata).toMatchObject({
+        reporter_presentation: { nextDueAt: expect.any(String) },
+        analysis: {
+          handoff: { state: 'delivered', receipt: 'pending' },
+          presentation: { lastFailure: null },
+        },
+      });
+      expect(
+        Date.parse(processingMetadata(delivered).analysis.presentation!.nextDueAt!)
+      ).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
+      for (const status of [
+        ReportIntakeStatus.CLOSED_BY_REPORTER,
+        ReportIntakeStatus.ACTIONED,
+        ReportIntakeStatus.SUBMITTED,
+      ]) {
+        const terminal = await createActionable('retry');
+        await repository.update(terminal.id, {
+          status,
+          closedAt: new Date(),
+          metadata: {
+            ...(terminal.metadata as Record<string, unknown>),
+            ...(status === ReportIntakeStatus.ACTIONED
+              ? { observed_action_closed_at: now.toISOString() }
+              : {}),
+          },
+        });
+        expect(
+          (await repository.claimPendingPresentation(new Date(), terminal.id))?.intake.id
+        ).toBe(terminal.id);
+      }
+      await servers.updateSettings(f.intake.server_id, { report_intake_staged_enabled: true });
+      for (const intake of [confirm, retry])
+        expect((await repository.claimPendingPresentation(new Date(), intake.id))?.intake.id).toBe(
+          intake.id
+        );
+    }
+  );
 
   it('records history recovery attention once without replacing identity delivery metadata', async () => {
     const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });

@@ -81,3 +81,17 @@ it('preserves malformed reporter obligations when scheduling a changed status', 
   expect(scheduleReporterChange(intake, change)).toBe(change);
   expect(reporterViewKey(intake)).toMatch(/^v1:sha256:[0-9a-f]{64}$/);
 });
+
+it.each(['observed_action_closed_at', 'observed_action_reopened_at'])(
+  'invalidates the view and schedules presentation when %s changes',
+  async (key) => {
+    const intake = await fixture({ reporter_presentation: { nextDueAt: null } });
+    intake.status = ReportIntakeStatus.ACTIONED;
+    intake.closed_at = new Date();
+    const metadata = { ...(intake.metadata as object), [key]: new Date().toISOString() };
+    expect(reporterViewKey({ ...intake, metadata })).not.toBe(reporterViewKey(intake));
+    expect(scheduleReporterChange(intake, { metadata }).metadata).toMatchObject({
+      reporter_presentation: { nextDueAt: expect.any(String) },
+    });
+  }
+);

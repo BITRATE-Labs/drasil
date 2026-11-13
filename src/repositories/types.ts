@@ -1008,6 +1008,7 @@ export interface ReportAnalysisClaim {
 }
 
 export interface ReportPresentationClaim {
+  reporterPaused?: true;
   intake: ReportIntake;
   revision: number;
   leaseToken: string;

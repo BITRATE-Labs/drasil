@@ -1,4 +1,7 @@
-import { scheduleReporterChange } from '../../utils/reportIntakePresentationMetadata';
+import {
+  readReporterPresentation,
+  scheduleReporterChange,
+} from '../../utils/reportIntakePresentationMetadata';
 import { getReportIntakeSettings } from '../../utils/reportIntakeSettings';
 import {
   analysisClaimChange,
@@ -6,6 +9,7 @@ import {
   canAnalyze,
   completeAnalysisChange,
   presentationClaimChange,
+  reporterActionRequiresRollout,
   completePresentationChange,
   evidenceBatchChange,
   ownsAnalysis,
@@ -1684,6 +1688,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
   private evidence: ReportIntakeEvidence[] = [];
   private intakeIdCounter = 0;
   private evidenceIdCounter = 0;
+  private nextPresentationSource = 0;
 
   async recordEvidenceBatch(
     input: ReportEvidenceBatch
@@ -1718,14 +1723,30 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
     now: Date,
     intakeId?: string
   ): Promise<ReportPresentationClaim | null> {
-    for (const intake of this.intakes.values()) {
+    const first = intakeId ? 0 : this.nextPresentationSource;
+    if (!intakeId) this.nextPresentationSource = (first + 1) % 3;
+    const source = (intake: ReportIntake): number =>
+      intake.analysis_failure_code === 'invalid_metadata'
+        ? 1
+        : readReporterPresentation(intake)?.nextDueAt
+          ? 0
+          : 2;
+    const ordered = [...this.intakes].sort(
+      (a, b) => ((source(a) - first + 3) % 3) - ((source(b) - first + 3) % 3)
+    );
+    for (const intake of ordered) {
       if (intakeId && intake.id !== intakeId) continue;
       if (
+        !readReporterPresentation(intake) &&
         intake.status === ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION &&
         !(await this.stagedEnabled(intake.server_id))
       )
         continue;
-      const result = presentationClaimChange(intake, now);
+      const allowReporter =
+        !readReporterPresentation(intake) ||
+        !reporterActionRequiresRollout(intake, now) ||
+        (await this.stagedEnabled(intake.server_id));
+      const result = presentationClaimChange(intake, now, allowReporter);
       if (!result) continue;
       Object.assign(intake, scheduleReporterChange(intake, result.change));
       return result.claim;

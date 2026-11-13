@@ -976,45 +976,56 @@ describe('ModerationQueueService', () => {
     expect(fallback.send).toHaveBeenCalledTimes(1);
   });
 
-  it('upgrades a generic attention item and prevents a later generic message from downgrading it', async () => {
-    const intakeRepository = new InMemoryReportIntakeRepository();
-    const { service, queueRepository, channel } = buildService({ intakeRepository });
-    const intake = await createReviewIntake(intakeRepository, {
-      serverId: 'guild-1',
-      reporterId: 'reporter',
-      threadId: 'thread',
-      status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
-    });
-    const message = {
-      id: 'source',
-      content: 'Synthetic report evidence',
-      channelId: 'thread',
-      author: { id: 'reporter' },
-      createdTimestamp: Date.now(),
-      url: 'https://discord.com/channels/guild-1/thread/source',
-    } as Message;
-    await service.recordReportThreadAttention(intake, message);
-    const originalId = queueRepository.items[0].id;
-    await service.upsertReportIdentityReview({
-      intake,
-      revision: 0,
-      outcome: {
-        kind: 'admin_review',
-        reason: 'no_match',
-        candidates: [],
-        coverage: { kind: 'unavailable', reason: 'transport' },
-        includedEvidenceIds: [],
-        excludedEvidenceIds: [],
-      },
-    });
-    await service.recordReportThreadAttention(intake, { ...message, id: 'later' } as Message);
-    expect(queueRepository.items).toHaveLength(1);
-    expect(queueRepository.items[0].id).toBe(originalId);
-    expect(queueRepository.items[0].metadata).toMatchObject({ identity_review: { revision: 0 } });
-    expect(channel.sentMessages).toHaveLength(1);
-    expect(channel.sentMessages[0].embeds[0].title).toBe('Report needs admin review');
-    expect(channel.send).toHaveBeenCalledTimes(1);
-  });
+  it.each([false, true])(
+    'upgrades attention to identity review, delivery-only=%s',
+    async (deliveryOnly) => {
+      const intakeRepository = new InMemoryReportIntakeRepository();
+      const { service, queueRepository, channel } = buildService({ intakeRepository });
+      const intake = await createReviewIntake(intakeRepository, {
+        serverId: 'guild-1',
+        reporterId: 'reporter',
+        threadId: 'thread',
+        status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      });
+      const message = {
+        id: 'source',
+        content: 'Synthetic report evidence',
+        channelId: 'thread',
+        author: { id: 'reporter' },
+        createdTimestamp: Date.now(),
+        url: 'https://discord.com/channels/guild-1/thread/source',
+      } as Message;
+      await service.recordReportThreadAttention(intake, message);
+      const originalId = queueRepository.items[0].id;
+      if (deliveryOnly)
+        queueRepository.items[0].metadata = {
+          reporter_delivery_only: true,
+          reporter_delivery_failure: 'history_ambiguous',
+        };
+      await service.upsertReportIdentityReview({
+        intake,
+        revision: 0,
+        outcome: {
+          kind: 'admin_review',
+          reason: 'no_match',
+          candidates: [],
+          coverage: { kind: 'unavailable', reason: 'transport' },
+          includedEvidenceIds: [],
+          excludedEvidenceIds: [],
+        },
+      });
+      await service.recordReportThreadAttention(intake, { ...message, id: 'later' } as Message);
+      expect(queueRepository.items).toHaveLength(1);
+      expect(queueRepository.items[0].id).toBe(originalId);
+      expect(queueRepository.items[0].metadata).toMatchObject({
+        identity_review: { revision: 0 },
+        reporter_delivery_only: false,
+      });
+      expect(channel.sentMessages).toHaveLength(1);
+      expect(channel.sentMessages[0].embeds[0].title).toBe('Report needs admin review');
+      expect(channel.send).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('does not let a delayed old send replace the delivery pointer from a replacement claim', async () => {
     jest.useFakeTimers();

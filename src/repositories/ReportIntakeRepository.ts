@@ -1,5 +1,6 @@
 import {
   reporterPresentationSchema,
+  readReporterPresentation,
   reportRoot,
   scheduleReporterChange,
 } from '../utils/reportIntakePresentationMetadata';
@@ -8,6 +9,7 @@ import type { ReportAnalysisOutcome } from '@drasil/application';
 import {
   analysisClaimChange,
   presentationClaimChange,
+  reporterActionRequiresRollout,
   completePresentationChange,
   ANALYSIS_CLAIM_SCAN_LIMIT,
   OPEN_ANALYSIS_STATUSES as OPEN_INTAKE_STATUSES,
@@ -119,6 +121,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
   // Fairness only; eligibility and ownership are rechecked under the report lock.
   private quarantinePresentationAfter: string | null = null;
   private reporterPresentationAfter: string | null = null;
+  private nextPresentationSource = 0;
   constructor(@inject(TYPES.PrismaClient) private prisma: PrismaClient) {}
 
   private async lockedIntake(
@@ -207,8 +210,27 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     now: Date,
     intakeId?: string
   ): Promise<ReportPresentationClaim | null> {
+    const sources = [
+      (): Promise<ReportPresentationClaim | null> => this.claimReporterPresentation(now, intakeId),
+      (): Promise<ReportPresentationClaim | null> =>
+        this.claimQuarantinedPresentation(now, intakeId),
+      (): Promise<ReportPresentationClaim | null> => this.claimStaffPresentation(now, intakeId),
+    ];
+    const first = intakeId ? 0 : this.nextPresentationSource;
+    if (!intakeId) this.nextPresentationSource = (first + 1) % sources.length;
+    for (let offset = 0; offset < sources.length; offset++) {
+      const claim = await sources[(first + offset) % sources.length]();
+      if (claim) return claim;
+    }
+    return null;
+  }
+
+  private async claimReporterPresentation(
+    now: Date,
+    intakeId?: string
+  ): Promise<ReportPresentationClaim | null> {
     const after = intakeId ? null : this.reporterPresentationAfter;
-    const reporter = await this.prisma.$transaction(async (transaction) => {
+    return this.prisma.$transaction(async (transaction) => {
       const rows = await transaction.$queryRaw<ReportIntake[]>`SELECT * FROM report_intakes
         WHERE (${intakeId ?? null}::uuid IS NULL OR id = ${intakeId ?? null}::uuid)
         AND (${after}::uuid IS NULL OR id > ${after}::uuid)
@@ -218,7 +240,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
         ORDER BY id FOR UPDATE SKIP LOCKED LIMIT ${ANALYSIS_CLAIM_SCAN_LIMIT}`;
       for (const intake of rows) {
         if (!intakeId) this.reporterPresentationAfter = intake.id;
-        const result = presentationClaimChange(intake, now);
+        const result = await this.presentationChange(transaction, intake, now);
         if (!result) continue;
         await this.writeProcessing(transaction, intake, result.change);
         return result.claim;
@@ -227,9 +249,12 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
         this.reporterPresentationAfter = null;
       return null;
     });
-    if (reporter) return reporter;
-    const quarantined = await this.claimQuarantinedPresentation(now, intakeId);
-    if (quarantined) return quarantined;
+  }
+
+  private async claimStaffPresentation(
+    now: Date,
+    intakeId?: string
+  ): Promise<ReportPresentationClaim | null> {
     return this.prisma.$transaction(async (transaction) => {
       const rows = await transaction.$queryRaw<ReportIntake[]>`
         SELECT * FROM report_intakes WHERE (${intakeId ?? null}::uuid IS NULL OR id = ${intakeId ?? null}::uuid)
@@ -247,7 +272,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
         AND COALESCE(metadata->'analysis'->'handoff'->>'state', '') <> 'resolved'
         ORDER BY updated_at, id FOR UPDATE SKIP LOCKED LIMIT ${ANALYSIS_CLAIM_SCAN_LIMIT}`;
       for (const intake of rows) {
-        const result = presentationClaimChange(intake, now);
+        const result = await this.presentationChange(transaction, intake, now);
         if (!result) continue;
         await this.writeProcessing(transaction, intake, result.change);
         return result.claim;
@@ -276,7 +301,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
       const claim = await this.prisma.$transaction(async (transaction) => {
         const current = await this.lockedIntake(transaction, snapshot.id);
         if (!current || current.analysis_failure_code !== 'invalid_metadata') return null;
-        const result = presentationClaimChange(current, now);
+        const result = await this.presentationChange(transaction, current, now);
         if (!result) return null;
         await this.writeProcessing(transaction, current, result.change);
         return result.claim;
@@ -284,6 +309,24 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
       if (claim) return claim;
     }
     return null;
+  }
+
+  private async presentationChange(
+    transaction: Prisma.TransactionClient,
+    intake: ReportIntake,
+    now: Date
+  ): Promise<ReturnType<typeof presentationClaimChange>> {
+    let allowReporter = true;
+    if (readReporterPresentation(intake) && reporterActionRequiresRollout(intake, now)) {
+      const server = await transaction.servers.findUnique({
+        where: { guild_id: intake.server_id },
+        select: { settings: true },
+      });
+      allowReporter = getReportIntakeSettings(
+        (server?.settings ?? {}) as ServerSettings
+      ).stagedEnabled;
+    }
+    return presentationClaimChange(intake, now, allowReporter);
   }
 
   async completePresentation(

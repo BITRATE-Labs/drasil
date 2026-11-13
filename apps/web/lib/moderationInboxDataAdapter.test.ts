@@ -520,9 +520,20 @@ it.each(['history_ambiguous', 'history_incomplete'])(
       report_intake_id: 'report-1',
       queue_channel_id: null,
       queue_message_id: null,
-      metadata: { reporter_delivery_failure: reason },
+      metadata: { reporter_delivery_failure: reason, reporter_delivery_only: true },
     })!;
     expect(view.summary).toContain('Report card recovery blocked:');
     expect(view.summary).toContain('Review the report thread.');
   }
 );
+
+it('keeps the identity-review summary when card recovery also needs attention', () => {
+  const view = parseModerationQueueRow({
+    ...baseQueueRow,
+    item_type: 'report_thread_attention',
+    report_intake_id: 'report-1',
+    report_summary: 'Review the reported account and attached evidence.',
+    metadata: { reporter_delivery_failure: 'history_ambiguous' },
+  })!;
+  expect(view.summary).toBe('Review the reported account and attached evidence.');
+});

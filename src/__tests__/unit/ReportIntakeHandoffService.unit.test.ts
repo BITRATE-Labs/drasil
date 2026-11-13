@@ -104,7 +104,18 @@ async function fixture(
     intakeService as unknown as IReportIntakeService,
     threads as unknown as IThreadManager
   );
-  return { repository, intake, outcome, service, channel, queue, intakeService, threads, client };
+  return {
+    repository,
+    intake,
+    outcome,
+    service,
+    channel,
+    queue,
+    intakeService,
+    threads,
+    client,
+    servers,
+  };
 }
 
 describe('saved report handoff', () => {
@@ -396,8 +407,99 @@ it.each(['not_dispatched', 'unknown'])(
     await service.publishOutcome(f.intake.id);
     expect(f.channel.send).toHaveBeenCalledTimes(1);
     const payload = JSON.stringify(f.channel.send.mock.calls[0]);
-    expect(payload).toContain(state === 'unknown' ? 'Checking submission' : 'Try again');
+    expect(payload).toContain(
+      state === 'unknown' ? 'Checking submission' : "Your report wasn't submitted"
+    );
+    if (state === 'not_dispatched') {
+      const message = await f.channel.messages.fetch('receipt-0');
+      expect(JSON.stringify(((message as Message).edit as jest.Mock).mock.calls)).toContain(
+        'Try again'
+      );
+    }
     expect(payload).not.toContain('Sent to moderators');
+  }
+);
+
+it.each([true, false])(
+  'keeps disabled retry publication paused during staff delivery, success=%s',
+  async (delivered) => {
+    const f = await fixture();
+    const dueAt = new Date().toISOString();
+    await f.repository.update(f.intake.id, {
+      confirmedTargetUserId: 'target',
+      metadata: {
+        ...(f.intake.metadata as object),
+        workflow: 'staged',
+        reporter_presentation: { nextDueAt: dueAt },
+        submission: {
+          token: 'token',
+          targetUserId: 'target',
+          state: 'not_dispatched',
+          claimedAt: dueAt,
+          settledAt: dueAt,
+        },
+      },
+    });
+    const before = (await f.repository.findById(f.intake.id))!;
+    await f.servers.updateSettings('guild', { report_intake_staged_enabled: false });
+    const config = mock<IConfigService>();
+    const presenter = new ReportIntakePresentationService(
+      f.repository,
+      f.client as unknown as Client,
+      config,
+      mock<IModerationQueueRepository>()
+    );
+    const render = jest.spyOn(presenter, 'presentClaim');
+    const reconcile = jest.spyOn(presenter, 'reconcile');
+    const claim = jest.spyOn(f.repository, 'claimPendingPresentation');
+    config.getServerConfig.mockResolvedValue({
+      settings: { report_intake_staged_enabled: false },
+    } as Awaited<ReturnType<IConfigService['getServerConfig']>>);
+    expect(await presenter.reconcile(f.intake.id)).toBe(true);
+    expect(claim).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+    expect((await f.repository.findById(f.intake.id))?.metadata).toEqual(before.metadata);
+    reconcile.mockClear();
+    config.getServerConfig.mockClear();
+    const service = new ReportIntakeHandoffService(
+      f.repository,
+      f.queue as unknown as IModerationQueueService,
+      f.client as unknown as Client,
+      f.intakeService as unknown as IReportIntakeService,
+      f.threads as unknown as IThreadManager,
+      presenter
+    );
+    if (!delivered)
+      f.queue.upsertReportIdentityReview.mockRejectedValue(new Error('Staff delivery unavailable'));
+    await service.publishOutcome(f.intake.id);
+    const saved = (await f.repository.findById(f.intake.id))!;
+    expect(f.queue.upsertReportIdentityReview).toHaveBeenCalledTimes(1);
+    expect(render).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(config.getServerConfig).not.toHaveBeenCalled();
+    expect(f.client.channels.fetch).not.toHaveBeenCalled();
+    expect(saved.metadata).toMatchObject({
+      reporter_presentation: (before.metadata as Record<string, unknown>).reporter_presentation,
+    });
+    const analysis = processingMetadata(saved).analysis;
+    expect(analysis.handoff).toMatchObject({
+      state: delivered ? 'delivered' : 'pending',
+      receipt: 'pending',
+    });
+    expect(analysis.presentation?.lastFailure).toBe(delivered ? null : 'delivery_unavailable');
+    if (delivered)
+      expect(Date.parse(analysis.presentation!.nextDueAt!)).toBeGreaterThan(
+        Date.now() + 23 * 60 * 60 * 1000
+      );
+    await service.publishOutcome(f.intake.id);
+    expect(f.queue.upsertReportIdentityReview).toHaveBeenCalledTimes(1);
+    await f.servers.updateSettings('guild', { report_intake_staged_enabled: true });
+    config.getServerConfig.mockResolvedValue({
+      settings: { report_intake_staged_enabled: true },
+    } as Awaited<ReturnType<IConfigService['getServerConfig']>>);
+    await presenter.reconcile(f.intake.id);
+    expect(f.channel.send).toHaveBeenCalledTimes(1);
+    expect(config.getServerConfig).toHaveBeenCalled();
   }
 );
 

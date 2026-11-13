@@ -19,7 +19,11 @@ import { randomBytes } from 'node:crypto';
 import { projectReportIntakeState } from '@drasil/application';
 import { TYPES } from '../di/symbols';
 import { IReportIntakeRepository } from '../repositories/ReportIntakeRepository';
-import { ownsPresentation, presentationMetadata } from '../repositories/reportIntakeProcessing';
+import {
+  ownsPresentation,
+  presentationMetadata,
+  reporterActionRequiresRollout,
+} from '../repositories/reportIntakeProcessing';
 import {
   ReportIntakeStatus,
   type ReportIntake,
@@ -56,6 +60,13 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
   async reconcile(intakeId: string): Promise<boolean> {
     let intake = await this.repository.findById(intakeId);
     if (!intake || !projectReportIntakeState(intake).staged) return false;
+    if (reporterActionRequiresRollout(intake, new Date())) {
+      const config = await this.configService.getServerConfig(intake.server_id, {
+        forceRefresh: true,
+        failOnReadError: true,
+      });
+      if (!getReportIntakeSettings(config.settings).stagedEnabled) return true;
+    }
     let scheduled = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       const storedReporter = readReporterPresentation(intake);
@@ -439,7 +450,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       await this.checkRollout(state, intake);
       message = await channel.send({
         ...payload,
-        components: state.kind === 'confirm' ? [] : payload.components,
+        components: state.kind === 'confirm' || state.kind === 'failed' ? [] : payload.components,
         ...(first
           ? {
               content: `<@${intake.reporter_id}>`,
