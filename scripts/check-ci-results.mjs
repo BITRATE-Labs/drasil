@@ -5,6 +5,9 @@ export function assertCiResults(results) {
   for (const job of ['static-unit', 'database-acceptance', 'isolated-browsers', 'package-smoke']) {
     assert.equal(results?.[job]?.result, 'success', `${job} must succeed`);
   }
+  for (const [job, value] of Object.entries(results)) {
+    assert.equal(value?.result, 'success', `${job} must succeed`);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

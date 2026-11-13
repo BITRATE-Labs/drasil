@@ -130,6 +130,9 @@ jobs:
         run: npm run application:build
       - name: Isolated browser and visual checks
         run: npm --ignore-scripts run ci:browsers:prepared
+      - name: Log legacy screenshot differences on failure
+        if: failure()
+        run: node scripts/log-workspace-screenshot-diffs.mjs apps/web/test-results
       - name: Upload Playwright artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v7.0.1

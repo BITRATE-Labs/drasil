@@ -28,6 +28,18 @@ test('rejects empty or invalid results', () => {
     assert.throws(() => assertCiResults(value));
 });
 
+test('also requires any additional workflow prerequisite to succeed', () => {
+  for (const result of ['failure', 'cancelled', 'skipped', 'in_progress', undefined]) {
+    assert.throws(
+      () => assertCiResults({ ...successful(), 'additional-check': { result } }),
+      { message: /additional-check/ }
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertCiResults({ ...successful(), 'additional-check': { result: 'success' } })
+  );
+});
+
 test('CLI rejects missing or malformed JSON and propagates failure', () => {
   for (const value of ['', '{', JSON.stringify({}), JSON.stringify(successful())]) {
     const result = spawnSync(process.execPath, ['scripts/check-ci-results.mjs'], {
