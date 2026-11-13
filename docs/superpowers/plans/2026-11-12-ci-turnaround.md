@@ -115,4 +115,7 @@ Root npm scripts are sufficient for the split; avoid changing `apps/web/package.
 - Approved design commit: `35b1ad6`.
 - User approved the design and 25 percent runner-minute threshold before this plan was written.
 - Source and historical run references are in the design's evidence appendix.
-- Implementation, cleanup-only hosted measurement and final split measurement are pending.
+- Cleanup implementation: `6ed95b6847ce95423373721aaef9e22d376bdcee`. [Cleanup-only CI](https://github.com/BITRATE-Labs/drasil/actions/runs/43344172909) passed, with 17m28s for build-test and 13m48s for its quality gate. Its quality-gate log contains one application build, one bot build and one migration preparation; the separate Docker smoke retains its own clean build.
+- Local checks passed: 119 bot unit suites / 2,331 tests / 96 snapshots; 46 application suites / 648 tests; 32 standalone Postgres suites / 891 tests on fresh owned storage; 63 contracts tests; root build, action boundary and lint; contracts/web lint and typechecking. The application Jest configuration has an unchanged Windows path-matching limitation; local coverage passed with an explicit testMatch override. The complete hosted Linux chain passed.
+- Workflow split: `53262d459082d5e887713b076ae3a050da85a271`. Independent whole-branch source review found no actionable findings; 21 helper/guard tests and actionlint passed. A subsequent one-line fix restores explicit local Prisma generation before compilation in check:ci.
+- Final split timing, cost comparison and latest-head review sweep remain pending. Their receipt will be posted on PR #315 so recording a completed hosted measurement does not itself create another source revision requiring a new timing run.
