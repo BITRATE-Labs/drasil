@@ -1,6 +1,7 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  testMatch: ['<rootDir>/src/**/*.test.ts'],
+  // Keep Windows worktree paths out of glob expansion in Jest 29.
+  testMatch: ['**/src/**/*.test.ts'],
   clearMocks: true,
 };
