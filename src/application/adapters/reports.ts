@@ -320,6 +320,7 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
           finish: async (result): Promise<{ archived: boolean; message: string }> => {
             let archived = loadedThread.archived ?? false;
             let initialArchiveSucceeded = archived;
+            let restored = false;
             const closed = await deps.reportIntakeService.findIntakeById(intake.id);
             try {
               if (result.shouldArchiveThread && !archived) {
@@ -333,11 +334,13 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
               const verified = await loadedThread.fetch(true).catch(() => null);
               archived = verified?.archived === true;
               if (verified && !verified.archived && closed && !initialArchiveSucceeded)
-                await deps.reportIntakeService.restoreFailedThreadClose?.(
-                  current,
-                  closed,
-                  result.closeVersion
-                );
+                restored =
+                  (await deps.reportIntakeService
+                    .restoreFailedThreadClose?.(current, closed, result.closeVersion)
+                    .catch((restoreError) => {
+                      console.warn('Report thread close restoration unconfirmed:', restoreError);
+                      return false;
+                    })) === true;
               if (archived) {
                 initialArchiveSucceeded = true;
                 await deps.reportIntakeService
@@ -351,7 +354,12 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
                 archived: false,
                 message: 'Drasil is still closing the thread. Please try again shortly.',
               };
-            if (!archived) throw new ReportThreadCloseError();
+            if (!archived && restored) throw new ReportThreadCloseError();
+            if (!archived)
+              return {
+                archived: false,
+                message: `${result.message} Drasil could not confirm that the thread was archived.`,
+              };
             return { archived, message: result.message };
           },
         };

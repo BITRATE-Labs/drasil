@@ -6,7 +6,11 @@ import { Client, EmbedBuilder } from 'discord.js';
 import { TYPES } from '../di/symbols';
 import { IReportIntakeRepository } from '../repositories/ReportIntakeRepository';
 import { ownsPresentation, presentationMetadata } from '../repositories/reportIntakeProcessing';
-import type { ReportPresentationClaim } from '../repositories/types';
+import {
+  ReportIntakeStatus,
+  type ReportIntake,
+  type ReportPresentationClaim,
+} from '../repositories/types';
 import { IModerationQueueService } from './ModerationQueueService';
 import { IReportIntakeService, getReportConfirmationMessageIds } from './ReportIntakeService';
 import { IThreadManager } from './ThreadManager';
@@ -117,7 +121,10 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
     }
     if (!analysis.outcome) return;
     if (analysis.outcome.kind === 'confirm') {
-      if (malformedReporter) throw new Error('Invalid reporter presentation metadata');
+      if (malformedReporter) {
+        await this.escalateMalformedConfirmation(current);
+        return;
+      }
       await this.publishConfirmation(claim);
       await this.repository.completePresentation(claim, { kind: 'published' });
       return;
@@ -155,6 +162,39 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
       messageId: result.messageId,
       receipt,
     });
+  }
+  private async escalateMalformedConfirmation(intake: ReportIntake): Promise<void> {
+    const { metadata, analysis } = presentationMetadata(intake);
+    if (analysis.outcome?.kind !== 'confirm') return;
+    const now = new Date().toISOString();
+    analysis.outcome = {
+      kind: 'admin_review',
+      reason: 'evidence_unavailable',
+      candidates: [analysis.outcome.candidate],
+      coverage: { kind: 'unavailable', reason: 'invalid_metadata' },
+      includedEvidenceIds: analysis.outcome.includedEvidenceIds,
+      excludedEvidenceIds: analysis.outcome.excludedEvidenceIds,
+    };
+    analysis.handoff = {
+      state: 'pending',
+      reason: 'evidence_unavailable',
+      attempts: 0,
+      nextDueAt: now,
+      receipt: 'pending',
+    };
+    analysis.presentation = {
+      revision: intake.evidence_revision,
+      attempts: 0,
+      nextDueAt: now,
+      lease: null,
+    };
+    if (
+      !(await this.repository.updateIfCurrent(intake, {
+        status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+        metadata: { ...metadata, analysis },
+      }))
+    )
+      throw new Error('Report review changed');
   }
   private async sendReceipt(claim: ReportPresentationClaim): Promise<boolean> {
     const current = await this.repository.findById(claim.intake.id);

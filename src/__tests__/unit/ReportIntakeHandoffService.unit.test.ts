@@ -525,6 +525,51 @@ it('delivers staff review while preserving malformed reporter delivery obligatio
   });
 });
 
+it('routes an unusable confirmation to staff without replacing malformed card metadata', async () => {
+  const f = await fixture();
+  const { metadata, analysis } = processingMetadata(f.intake);
+  const candidate = {
+    candidateId: 'candidate',
+    discordUserId: 'target',
+    serverId: 'guild',
+    username: 'target',
+    globalName: null,
+    nickname: null,
+    displayName: null,
+    avatarUrl: null,
+    matchedFields: ['username' as const],
+    sourceRefs: [],
+    subjectMatches: [{ subjectId: 'target', sourceRefs: [], matchedFields: ['username' as const] }],
+  };
+  analysis.outcome = {
+    kind: 'confirm',
+    candidate,
+    coverage: { kind: 'not_required', reason: 'validated_anchor' },
+    includedEvidenceIds: ['evidence'],
+    excludedEvidenceIds: [],
+  };
+  analysis.handoff = { state: 'none' };
+  const invalid = { openingMessageId: 123 };
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION,
+    metadata: { ...metadata, analysis, reporter_presentation: invalid },
+  });
+
+  await f.service.publishOutcome(f.intake.id);
+  const saved = (await f.repository.findById(f.intake.id))!;
+  expect(saved.status).toBe(ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION);
+  expect(saved.metadata).toMatchObject({ reporter_presentation: invalid });
+  expect(processingMetadata(saved).analysis.outcome).toMatchObject({
+    kind: 'admin_review',
+    candidates: [candidate],
+    includedEvidenceIds: ['evidence'],
+  });
+  await f.service.publishOutcome(f.intake.id);
+  expect(f.queue.upsertReportIdentityReview).toHaveBeenCalledTimes(1);
+  expect(f.intakeService.publishSavedConfirmation).not.toHaveBeenCalled();
+  expect(f.channel.send).not.toHaveBeenCalled();
+});
+
 it('keeps staff reconciliation claimable when the reporter thread is missing', async () => {
   const f = await fixture();
   await f.repository.update(f.intake.id, {
