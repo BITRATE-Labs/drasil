@@ -575,6 +575,7 @@ export class ModerationQueueService implements IModerationQueueService {
         lastNotifiedAt: existing?.last_notified_at,
         metadata: this.toJson({
           ...oldMetadata,
+          reporter_delivery_only: false,
           identity_review: {
             ...identity,
             revision: input.revision,

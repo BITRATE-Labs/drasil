@@ -1,8 +1,13 @@
 import { ModerationQueueRepository } from '../../repositories/ModerationQueueRepository';
+import { reporterViewKey } from '../../utils/reportIntakePresentationMetadata';
 import { ReportIntakeAnalysisWorker } from '../../services/ReportIntakeAnalysisWorker';
 import type { IReportIntakeAgentService } from '../../services/ReportIntakeAgentService';
 import type { IConfigService } from '../../config/ConfigService';
-import { processingMetadata } from '../../repositories/reportIntakeProcessing';
+import {
+  ANALYSIS_CLAIM_SCAN_LIMIT,
+  PRESENTATION_RECONCILE_MS,
+  processingMetadata,
+} from '../../repositories/reportIntakeProcessing';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { InMemoryReportIntakeRepository } from '../fakes/inMemoryRepositories';
@@ -62,6 +67,430 @@ describeIntegration('durable report intake processing', () => {
     };
     return { prisma, repository, intake, batch };
   }
+
+  it('keeps ordinary updates unconditional alongside concurrent processing metadata writes', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    const [updated, recorded] = await Promise.all([
+      f.repository.update(f.intake.id, { summary: 'Updated summary' }),
+      f.repository.recordEvidenceBatch(f.batch),
+    ]);
+    expect(updated).not.toBeNull();
+    expect(recorded).toBe('recorded');
+    const saved = (await f.repository.findById(f.intake.id))!;
+    expect(saved.summary).toBe('Updated summary');
+    expect(saved.evidence_revision).toBe(1);
+    expect(saved.metadata).toMatchObject({ reporter_presentation: expect.any(Object) });
+  });
+
+  it('rotates global claim sources so reporter backlog cannot starve quarantined or staff work', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    for (let index = 0; index < 5; index++)
+      await f.repository.create({
+        serverId: f.intake.server_id,
+        reporterId: f.intake.reporter_id,
+        metadata: { reporter_presentation: { nextDueAt: now.toISOString() } },
+      });
+    const quarantined = await f.prisma.report_intakes.create({
+      data: {
+        server_id: f.intake.server_id,
+        reporter_id: f.intake.reporter_id,
+        status: 'needs_admin_confirmation',
+        analysis_failure_code: 'invalid_metadata',
+        metadata: { analysis: 'malformed' },
+      },
+    });
+    const staff = await f.repository.create({
+      serverId: f.intake.server_id,
+      reporterId: f.intake.reporter_id,
+      status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      metadata: {
+        analysis: {
+          ...processingMetadata(f.intake).analysis,
+          outcome,
+          handoff: {
+            state: 'pending',
+            reason: 'no_match',
+            attempts: 0,
+            nextDueAt: now.toISOString(),
+            receipt: 'pending',
+          },
+        },
+      },
+    });
+    const reporterClaim = await f.repository.claimPendingPresentation(new Date());
+    expect(reporterClaim).not.toBeNull();
+    expect([quarantined.id, staff.id]).not.toContain(reporterClaim!.intake.id);
+    expect((await f.repository.claimPendingPresentation(new Date()))?.intake.id).toBe(
+      quarantined.id
+    );
+    expect((await f.repository.claimPendingPresentation(new Date()))?.intake.id).toBe(staff.id);
+  });
+  it('preserves invalid reporter delivery metadata without blocking evidence or other presentations', async () => {
+    const invalid = { openingMessageId: 123, restoreArchive: true, nextDueAt: now.toISOString() };
+    const f = await fixture({ reporter_presentation: invalid });
+    expect(await f.repository.recordEvidenceBatch(f.batch)).toBe('recorded');
+    expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+      reporter_presentation: invalid,
+    });
+    const healthy = await f.repository.create({
+      serverId: f.intake.server_id,
+      reporterId: f.intake.reporter_id,
+      metadata: { reporter_presentation: { nextDueAt: now.toISOString() } },
+    });
+    expect((await f.repository.claimPendingPresentation(new Date()))?.intake.id).toBe(healthy.id);
+    expect(await f.repository.claimPendingPresentation(new Date(), f.intake.id)).toBeNull();
+  });
+
+  it('advances past a full batch of malformed due cards during global scanning', async () => {
+    const f = await fixture();
+    for (let index = 1; index <= ANALYSIS_CLAIM_SCAN_LIMIT + 1; index++) {
+      await f.prisma.report_intakes.create({
+        data: {
+          id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+          server_id: f.intake.server_id,
+          reporter_id: f.intake.reporter_id,
+          status: 'collecting_evidence',
+          metadata: {
+            reporter_presentation: {
+              nextDueAt: now.toISOString(),
+              ...(index <= ANALYSIS_CLAIM_SCAN_LIMIT ? { openingMessageId: 123 } : {}),
+            },
+          },
+        },
+      });
+    }
+    expect(await f.repository.claimPendingPresentation(new Date())).toBeNull();
+    const next = await f.repository.claimPendingPresentation(new Date());
+    expect(next?.intake.id).toBe(
+      `00000000-0000-4000-8000-${String(ANALYSIS_CLAIM_SCAN_LIMIT + 1).padStart(12, '0')}`
+    );
+  });
+
+  it('does not claim reporter cards after opening has expired', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    await f.repository.update(f.intake.id, {
+      status: ReportIntakeStatus.EXPIRED,
+      closedAt: new Date(),
+    });
+    expect(await f.repository.claimPendingPresentation(new Date(), f.intake.id)).toBeNull();
+    expect((await f.repository.findById(f.intake.id))!.metadata).toMatchObject({
+      reporter_presentation: { nextDueAt: null },
+    });
+  });
+
+  it.each(['postgres', 'memory'])(
+    'pauses disabled actionable cards without blocking staff or closed-card recovery (%s)',
+    async (backend) => {
+      const f = await fixture();
+      const servers = new ServerRepository(f.prisma);
+      const repository =
+        backend === 'postgres' ? f.repository : new InMemoryReportIntakeRepository(servers);
+      await new UserRepository(f.prisma).getOrCreateUser('rollout-target', 'target', now);
+      await servers.updateSettings(f.intake.server_id, { report_intake_staged_enabled: false });
+      const createActionable = async (kind: 'confirm' | 'retry', staff = false) => {
+        const intake = await repository.create({
+          serverId: f.intake.server_id,
+          reporterId: f.intake.reporter_id,
+          status:
+            kind === 'confirm'
+              ? ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION
+              : ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+          confirmedTargetUserId: kind === 'retry' ? 'rollout-target' : null,
+          metadata: {
+            workflow: 'staged',
+            reporter_presentation: { nextDueAt: now.toISOString() },
+            ...(kind === 'retry'
+              ? {
+                  submission: {
+                    token: 'retry',
+                    targetUserId: 'rollout-target',
+                    state: 'not_dispatched',
+                    claimedAt: now.toISOString(),
+                    settledAt: now.toISOString(),
+                  },
+                }
+              : {}),
+            analysis: {
+              ...processingMetadata(f.intake).analysis,
+              outcome:
+                kind === 'retry'
+                  ? outcome
+                  : {
+                      ...outcome,
+                      kind: 'confirm',
+                      candidate: {
+                        candidateId: 'target',
+                        discordUserId: 'rollout-target',
+                        serverId: f.intake.server_id,
+                        username: 'target',
+                        globalName: null,
+                        nickname: null,
+                        displayName: 'Target',
+                        avatarUrl: null,
+                        sourceRefs: [],
+                        matchedFields: ['userId'],
+                        subjectMatches: [
+                          { subjectId: 'target', sourceRefs: [], matchedFields: ['userId'] },
+                        ],
+                      },
+                    },
+              ...(staff
+                ? {
+                    handoff: {
+                      state: 'pending',
+                      reason: 'no_match',
+                      receipt: 'pending',
+                      attempts: 0,
+                      nextDueAt: now.toISOString(),
+                    },
+                  }
+                : {}),
+            },
+          },
+        });
+        return (await repository.update(intake.id, {
+          analysisDueAt: new Date(Date.now() + 600000),
+        }))!;
+      };
+      const confirm = await createActionable('confirm');
+      const retry = await createActionable('retry');
+      for (const intake of [confirm, retry]) {
+        expect(await repository.claimPendingPresentation(new Date(), intake.id)).toBeNull();
+        expect((await repository.findById(intake.id))?.metadata).toEqual(intake.metadata);
+      }
+      expect(await repository.claimPendingPresentation(new Date())).toBeNull();
+      const staff = await createActionable('retry', true);
+      const staffClaim = await repository.claimPendingPresentation(new Date(), staff.id);
+      expect(staffClaim).toMatchObject({ intake: { id: staff.id }, reporterPaused: true });
+      expect(
+        await repository.completePresentation(staffClaim!, {
+          kind: 'delivered',
+          channelId: 'queue',
+          messageId: 'review',
+          receipt: 'pending',
+        })
+      ).toBe(true);
+      const delivered = (await repository.findById(staff.id))!;
+      expect(delivered.metadata).toMatchObject({
+        reporter_presentation: { nextDueAt: expect.any(String) },
+        analysis: {
+          handoff: { state: 'delivered', receipt: 'pending' },
+          presentation: { lastFailure: null },
+        },
+      });
+      expect(
+        Date.parse(processingMetadata(delivered).analysis.presentation!.nextDueAt!)
+      ).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
+      for (const status of [
+        ReportIntakeStatus.CLOSED_BY_REPORTER,
+        ReportIntakeStatus.ACTIONED,
+        ReportIntakeStatus.SUBMITTED,
+      ]) {
+        const terminal = await createActionable('retry');
+        await repository.update(terminal.id, {
+          status,
+          closedAt: new Date(),
+          metadata: {
+            ...(terminal.metadata as Record<string, unknown>),
+            ...(status === ReportIntakeStatus.ACTIONED
+              ? { observed_action_closed_at: now.toISOString() }
+              : {}),
+          },
+        });
+        expect(
+          (await repository.claimPendingPresentation(new Date(), terminal.id))?.intake.id
+        ).toBe(terminal.id);
+      }
+      await servers.updateSettings(f.intake.server_id, { report_intake_staged_enabled: true });
+      for (const intake of [confirm, retry])
+        expect((await repository.claimPendingPresentation(new Date(), intake.id))?.intake.id).toBe(
+          intake.id
+        );
+    }
+  );
+
+  it('records history recovery attention once without replacing identity delivery metadata', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    await f.prisma.report_intakes.update({
+      where: { id: f.intake.id },
+      data: { thread_id: 'report-thread' },
+    });
+    const claim = (await f.repository.claimPendingPresentation(new Date(), f.intake.id))!;
+    const queue = new ModerationQueueRepository(f.prisma);
+    await queue.setReportDeliveryFailure(claim, 'history_incomplete');
+    const item = (await queue.listByReportIntake(f.intake.id))[0];
+    await f.prisma.moderation_queue_items.update({
+      where: { id: item.id },
+      data: {
+        queue_channel_id: 'review-channel',
+        queue_message_id: 'review-message',
+        metadata: { identity_review: { revision: 0, send_reserved: true }, retained: 'value' },
+      },
+    });
+    await queue.setReportDeliveryFailure(claim, 'history_ambiguous');
+    expect(await queue.listByReportIntake(f.intake.id)).toHaveLength(1);
+    expect(await queue.findById(item.id)).toMatchObject({
+      queue_channel_id: 'review-channel',
+      queue_message_id: 'review-message',
+      metadata: {
+        identity_review: { send_reserved: true },
+        retained: 'value',
+        reporter_delivery_failure: 'history_ambiguous',
+      },
+    });
+    await queue.setReportDeliveryFailure(claim, null);
+    expect(await queue.findById(item.id)).toMatchObject({
+      queue_message_id: 'review-message',
+      metadata: { identity_review: { send_reserved: true }, retained: 'value' },
+    });
+    expect(
+      ((await queue.findById(item.id))!.metadata as Record<string, unknown>)
+        .reporter_delivery_failure
+    ).toBeUndefined();
+    await queue.setReportDeliveryFailure(claim, 'history_ambiguous');
+    await f.repository.update(f.intake.id, { status: ReportIntakeStatus.EXPIRED });
+    await queue.setReportDeliveryFailure(claim, 'history_incomplete');
+    expect((await queue.findById(item.id))!.metadata).toMatchObject({
+      reporter_delivery_failure: 'history_ambiguous',
+    });
+  });
+
+  it('removes resolved failure-only attention and preserves acknowledged cleanup records', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    await f.prisma.report_intakes.update({
+      where: { id: f.intake.id },
+      data: { thread_id: 'report-thread' },
+    });
+    const claim = (await f.repository.claimPendingPresentation(new Date(), f.intake.id))!;
+    const queue = new ModerationQueueRepository(f.prisma);
+    await queue.setReportDeliveryFailure(claim, 'history_incomplete');
+    await queue.setReportDeliveryFailure(claim, null);
+    expect(await queue.listByReportIntake(f.intake.id)).toHaveLength(0);
+    await queue.setReportDeliveryFailure(claim, 'history_incomplete');
+    const item = (await queue.listByReportIntake(f.intake.id))[0];
+    await queue.reserveOrdinaryAcknowledgement(item.id, item.server_id);
+    await queue.setReportDeliveryFailure(claim, 'history_ambiguous');
+    expect(await queue.findById(item.id)).toMatchObject({
+      attention_cleanup_pending: true,
+      metadata: { attention_cleanup: { source_thread_id: 'report-thread' } },
+    });
+    expect(await queue.listByReportIntake(f.intake.id)).toHaveLength(1);
+  });
+
+  it('serializes reporter presentation claims and rejects a stale claim after submission', async () => {
+    const f = await fixture({ reporter_presentation: { nextDueAt: now.toISOString() } });
+    const claims = await Promise.all([
+      f.repository.claimPendingPresentation(now, f.intake.id),
+      f.repository.claimPendingPresentation(now, f.intake.id),
+    ]);
+    const claim = claims.find(Boolean)!;
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    await f.repository.update(f.intake.id, { status: ReportIntakeStatus.SUBMITTED });
+    expect(await f.repository.completePresentation(claim, { kind: 'published' })).toBe(false);
+    const next = await f.repository.claimPendingPresentation(
+      new Date(Date.now() + 61000),
+      f.intake.id
+    );
+    expect(next?.intake.status).toBe(ReportIntakeStatus.SUBMITTED);
+    expect(await f.repository.completePresentation(next!, { kind: 'published' })).toBe(true);
+    const saved = await f.repository.findById(f.intake.id);
+    expect(saved?.metadata).toMatchObject({ reporter_presentation: { nextDueAt: null } });
+  });
+
+  it.each(['delivered', 'acknowledged'])(
+    'keeps settled reporter cards idle while reclaiming %s staff review',
+    async (state) => {
+      const f = await fixture({
+        workflow: 'staged',
+        reporter_presentation: { nextDueAt: now.toISOString() },
+        analysis: {
+          schemaVersion: 1,
+          sources: {},
+          outcome,
+          coverage: outcome.coverage,
+          requestReservations: [],
+          handoff: {
+            state,
+            reason: 'ambiguous',
+            messageId: 'review-message',
+            channelId: 'review-channel',
+            attempts: 1,
+            nextDueAt: now.toISOString(),
+            receipt: 'sent',
+            ...(state === 'acknowledged'
+              ? { acknowledgedBy: 'moderator', acknowledgedAt: now.toISOString() }
+              : {}),
+          },
+        },
+      });
+      await f.repository.update(f.intake.id, {
+        status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      });
+      const reporterClaim = await f.repository.claimPendingPresentation(new Date(), f.intake.id);
+      expect(reporterClaim).not.toBeNull();
+      const persistedClaim = (await f.repository.findById(f.intake.id))!;
+      expect(reporterViewKey(persistedClaim)).toBe(reporterViewKey(reporterClaim!.intake));
+      expect(await f.repository.completePresentation(reporterClaim!, { kind: 'published' })).toBe(
+        true
+      );
+      const settled = (await f.repository.findById(f.intake.id))!;
+      expect(settled.metadata).toMatchObject({ reporter_presentation: { nextDueAt: null } });
+      const staffDueAt = processingMetadata(settled).analysis.presentation!.nextDueAt!;
+      expect(await f.repository.claimPendingPresentation(new Date(), f.intake.id)).toBeNull();
+
+      const staffClaim = await f.repository.claimPendingPresentation(
+        new Date(new Date(staffDueAt).getTime() + 1)
+      );
+      expect(staffClaim?.intake.id).toBe(f.intake.id);
+      expect(staffClaim?.intake.metadata).toMatchObject({
+        reporter_presentation: { nextDueAt: null },
+      });
+      const completedAt = Date.now();
+      expect(
+        await f.repository.completePresentation(staffClaim!, {
+          kind: 'delivered',
+          channelId: 'review-channel',
+          messageId: 'review-message',
+          receipt: 'pending',
+        })
+      ).toBe(true);
+      const refreshed = (await f.repository.findById(f.intake.id))!;
+      expect(refreshed.metadata).toMatchObject({
+        reporter_presentation: { nextDueAt: null },
+        analysis: {
+          presentation: { lastFailure: null },
+          handoff: { state, receipt: 'sent' },
+        },
+      });
+      expect(
+        new Date(processingMetadata(refreshed).analysis.presentation!.nextDueAt!).getTime()
+      ).toBeGreaterThanOrEqual(completedAt + PRESENTATION_RECONCILE_MS);
+    }
+  );
+
+  it('preserves durable message IDs when new evidence retires confirmation authority', async () => {
+    const f = await fixture({
+      reporter_presentation: {
+        openingMessageId: 'opening',
+        followupMessageId: 'followup',
+        nextDueAt: null,
+      },
+      last_confirmation_prompt_token: 'old',
+      last_confirmation_prompt_message_id: 'followup',
+    });
+    await f.repository.recordEvidenceBatch(f.batch);
+    const saved = await f.repository.findById(f.intake.id);
+    expect(saved?.metadata).toMatchObject({
+      reporter_presentation: {
+        openingMessageId: 'opening',
+        followupMessageId: 'followup',
+        nextDueAt: expect.any(String),
+      },
+    });
+    expect(
+      (saved?.metadata as Record<string, unknown>).last_confirmation_prompt_token
+    ).toBeUndefined();
+  });
 
   it.each([
     'corrupt',

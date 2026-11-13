@@ -109,7 +109,11 @@ describeIntegration('staged report staff resolution', () => {
       server,
       users,
       new ServerMemberRepository(prisma),
-      {} as IConfigService,
+      {
+        getServerConfig: jest.fn().mockResolvedValue({
+          settings: { report_intake_staged_enabled: true },
+        }),
+      } as unknown as IConfigService,
       {} as IReportCandidateService,
       {
         retireReportConfirmationPrompts: jest.fn().mockResolvedValue(undefined),
@@ -136,7 +140,6 @@ describeIntegration('staged report staff resolution', () => {
         open: async () => {
           throw new Error('not used');
         },
-        markOpenFailed: async () => {},
         confirm: async (ctx, command, staff) =>
           service.confirmCandidate({
             intakeId: command.intakeId,

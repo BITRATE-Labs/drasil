@@ -1,4 +1,9 @@
 import {
+  readReporterPresentation,
+  reportRoot,
+  reporterViewKey,
+} from '../utils/reportIntakePresentationMetadata';
+import {
   reportAnalysisMetadataSchema,
   projectReportIntakeState,
   reportAnalysisOutcomeSchema,
@@ -393,6 +398,7 @@ export function presentationMetadata(intake: ReportIntake): ReturnType<typeof pr
 }
 
 export function canPresent(intake: ReportIntake): boolean {
+  if (readReporterPresentation(intake)) return intake.status !== ReportIntakeStatus.EXPIRED;
   return (
     OPEN_ANALYSIS_STATUSES.includes(intake.status) &&
     !intake.closed_at &&
@@ -402,15 +408,80 @@ export function canPresent(intake: ReportIntake): boolean {
   );
 }
 
+export function reporterActionRequiresRollout(intake: ReportIntake, now: Date): boolean {
+  const state = projectReportIntakeState(intake);
+  const metadata = reportRoot(intake);
+  if (
+    metadata.thread_closed_at ||
+    metadata.observed_action_closed_at ||
+    state.status === 'closed_by_reporter' ||
+    (intake.closed_at && !['submitted', 'actioned'].includes(state.status)) ||
+    state.status === 'submitted' ||
+    state.submission?.state === 'accepted'
+  )
+    return false;
+  if (state.submission)
+    return state.submission.state === 'not_dispatched' && Boolean(state.submission.settledAt);
+  const { analysis } = presentationMetadata(intake);
+  return (
+    state.status === 'needs_reporter_confirmation' &&
+    intake.analysis_revision === intake.evidence_revision &&
+    analysis.outcome?.kind === 'confirm' &&
+    Boolean(intake.analysis_due_at && intake.analysis_due_at > now)
+  );
+}
+
 export function presentationClaimChange(
   intake: ReportIntake,
-  now: Date
+  now: Date,
+  allowReporter = true
 ): {
   claim: ReportPresentationClaim;
   change: Partial<ReportIntake>;
 } | null {
   if (!canPresent(intake)) return null;
+  const reporter = readReporterPresentation(intake);
   const { metadata, analysis } = presentationMetadata(intake);
+  if (allowReporter && reporter && !reporter.threadMissing && reporter.nextDueAt) {
+    if (
+      new Date(reporter.nextDueAt) > now ||
+      (analysis.presentation?.lease && new Date(analysis.presentation.lease.until) > now)
+    )
+      return null;
+    const leaseToken = randomUUID();
+    analysis.presentation = {
+      revision: intake.evidence_revision,
+      attempts:
+        (reporter.attemptViewKey === reporterViewKey(intake)
+          ? (analysis.presentation?.attempts ?? 0)
+          : 0) + 1,
+      nextDueAt: reporter.nextDueAt,
+      lease: {
+        token: leaseToken,
+        until: new Date(now.getTime() + PRESENTATION_LEASE_MS).toISOString(),
+      },
+    };
+    const change = {
+      metadata: {
+        ...metadata,
+        analysis,
+        reporter_presentation: { ...reporter, attemptViewKey: reporterViewKey(intake) },
+      } as ReportIntake['metadata'],
+      updated_at: now,
+    };
+    return {
+      claim: { intake: { ...intake, ...change }, revision: intake.evidence_revision, leaseToken },
+      change,
+    };
+  }
+  if (
+    !allowReporter &&
+    (intake.status !== ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION ||
+      intake.closed_at ||
+      analysis.outcome?.kind !== 'admin_review' ||
+      analysis.handoff.state === 'none')
+  )
+    return null;
   if (
     !analysis.outcome ||
     analysis.handoff.state === 'resolved' ||
@@ -442,7 +513,12 @@ export function presentationClaimChange(
     updated_at: now,
   };
   return {
-    claim: { intake: { ...intake, ...change }, revision: intake.evidence_revision, leaseToken },
+    claim: {
+      intake: { ...intake, ...change },
+      revision: intake.evidence_revision,
+      leaseToken,
+      ...(!allowReporter ? { reporterPaused: true as const } : {}),
+    },
     change,
   };
 }
@@ -455,7 +531,9 @@ export function ownsPresentation(
   if (!canPresent(intake) || intake.evidence_revision !== claim.revision) return false;
   const { analysis } = presentationMetadata(intake);
   return (
-    analysis.handoff.state !== 'resolved' &&
+    (readReporterPresentation(intake)
+      ? reporterViewKey(intake) === reporterViewKey(claim.intake)
+      : analysis.handoff.state !== 'resolved') &&
     analysis.presentation?.lease?.token === claim.leaseToken &&
     new Date(analysis.presentation.lease.until) > now
   );
@@ -470,20 +548,44 @@ export function completePresentationChange(
   if (!ownsPresentation(intake, claim, now)) return null;
   const { metadata, analysis } = presentationMetadata(intake);
   const attempts = analysis.presentation?.attempts ?? 1;
+  const reporter = readReporterPresentation(intake);
   const success =
-    result.kind === 'published' || (result.kind === 'delivered' && result.receipt === 'sent');
+    result.kind === 'published' ||
+    (result.kind === 'delivered' &&
+      (claim.reporterPaused ||
+        result.receipt === 'sent' ||
+        (analysis.handoff.state !== 'none' && analysis.handoff.receipt === 'sent') ||
+        reporter?.threadMissing === true));
   const nextDueAt =
-    result.kind === 'published'
-      ? null
-      : new Date(
-          now.getTime() +
-            (success
-              ? PRESENTATION_RECONCILE_MS
-              : (PRESENTATION_RETRY_MS[attempts - 1] ?? PRESENTATION_RECONCILE_MS))
-        ).toISOString();
+    result.kind === 'published' &&
+    intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION &&
+    analysis.outcome?.kind === 'admin_review' &&
+    analysis.handoff.state === 'pending'
+      ? now.toISOString()
+      : result.kind === 'published' &&
+          !(
+            intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION &&
+            ['delivered', 'acknowledged'].includes(analysis.handoff.state)
+          )
+        ? null
+        : new Date(
+            now.getTime() +
+              (success
+                ? PRESENTATION_RECONCILE_MS
+                : (PRESENTATION_RETRY_MS[attempts - 1] ?? PRESENTATION_RECONCILE_MS))
+          ).toISOString();
+  if (reporter)
+    metadata.reporter_presentation = {
+      ...reporter,
+      nextDueAt: claim.reporterPaused
+        ? reporter.nextDueAt
+        : reporter.threadMissing || result.kind === 'published' || reporter.nextDueAt === null
+          ? null
+          : nextDueAt,
+    };
   analysis.presentation = {
     revision: claim.revision,
-    attempts,
+    attempts: success && reporter ? 0 : attempts,
     nextDueAt,
     lease: null,
     lastFailure: success ? null : 'delivery_unavailable',
@@ -502,7 +604,15 @@ export function completePresentationChange(
         attempts,
         nextDueAt,
       });
-    } else analysis.handoff = { ...handoff, attempts, nextDueAt: nextDueAt ?? now.toISOString() };
+    } else
+      analysis.handoff = {
+        ...handoff,
+        ...(reporter && result.kind === 'published' && handoff.state !== 'pending'
+          ? { receipt: 'sent' as const }
+          : {}),
+        attempts,
+        nextDueAt: nextDueAt ?? now.toISOString(),
+      };
   }
   return { metadata: { ...metadata, analysis } as ReportIntake['metadata'], updated_at: now };
 }

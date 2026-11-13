@@ -146,6 +146,184 @@ describe('ReportIntakeService', () => {
     return { ...setup, intake, prompt, send, message };
   }
 
+  it('persists the opening card schedule before reporter activation', async () => {
+    const f = buildService();
+    jest.mocked(f.configService.getServerConfig).mockResolvedValue({
+      settings: { report_intake_staged_enabled: true },
+    } as never);
+    const intake = await f.service.openIntakeFromThread({
+      serverId: 'guild-1',
+      reporter: buildReporter(),
+      threadId: 'thread-1',
+      channelId: 'channel-1',
+    });
+    expect(await f.reportIntakeRepository.findById(intake.id)).toMatchObject({
+      metadata: { workflow: 'staged', reporter_presentation: { nextDueAt: expect.any(String) } },
+    });
+    expect(
+      await f.reportIntakeRepository.claimPendingPresentation(new Date(), intake.id)
+    ).not.toBeNull();
+  });
+  it('rechecks rollout before accepting a retry and immediately before dispatch', async () => {
+    const f = await preparePrompt();
+    jest
+      .mocked(f.configService.getServerConfig)
+      .mockResolvedValue({ settings: { report_intake_staged_enabled: true } } as never);
+    await f.reportIntakeRepository.update(f.intake.id, {
+      status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      confirmedTargetUserId: 'target',
+      metadata: {
+        workflow: 'staged',
+        reporter_presentation: { followupMessageId: 'prompt', nextDueAt: null },
+        last_confirmation_prompt_message_id: 'prompt',
+        last_confirmation_prompt_token: 'prompt-token',
+        last_confirmation_prompt_revision: 0,
+        submission: {
+          state: 'not_dispatched',
+          token: 'submission-token',
+          targetUserId: 'target',
+          claimedAt: new Date().toISOString(),
+          settledAt: new Date().toISOString(),
+        },
+      },
+    });
+    const input = {
+      intakeId: f.intake.id,
+      targetUserId: 'target',
+      confirmedById: 'reporter-1',
+      promptMessageId: 'prompt',
+      promptToken: 'prompt-token',
+      expectedEvidenceRevision: 0,
+    };
+    expect(await f.service.confirmCandidate(input)).toMatchObject({ confirmed: true });
+    jest
+      .mocked(f.configService.getServerConfig)
+      .mockResolvedValue({ settings: { report_intake_staged_enabled: false } } as never);
+    expect(await f.service.beginConfirmedSubmission(f.intake.id, 'submission-token')).toBe(false);
+    expect(await f.service.confirmCandidate(input)).toMatchObject({
+      confirmed: false,
+      message: 'Report submission is temporarily unavailable.',
+    });
+    expect(f.configService.getServerConfig).toHaveBeenLastCalledWith('guild-1', {
+      forceRefresh: true,
+      failOnReadError: true,
+    });
+    expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toMatchObject({
+      submission: { state: 'not_dispatched' },
+    });
+  });
+
+  it('restores an unchanged draft after a verified archive failure', async () => {
+    const f = await preparePrompt();
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { reporter_presentation: { nextDueAt: null } },
+    });
+    const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    const closeResult = await f.service.closeIntakeForThread({
+      threadId: 'thread-1',
+      closedById: 'reporter-1',
+    });
+    const closed = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    expect(await f.service.restoreFailedThreadClose(before, closed, closeResult.closeVersion)).toBe(
+      true
+    );
+    expect(await f.reportIntakeRepository.findById(f.intake.id)).toMatchObject({
+      status: before.status,
+      closed_at: null,
+    });
+  });
+  it('does not undo a concurrent change while recovering a failed close', async () => {
+    const f = await preparePrompt();
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { reporter_presentation: { nextDueAt: null } },
+    });
+    const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    const closeResult = await f.service.closeIntakeForThread({
+      threadId: 'thread-1',
+      closedById: 'reporter-1',
+    });
+    const closed = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    await f.reportIntakeRepository.update(f.intake.id, { metadata: { other_action: true } });
+    expect(await f.service.restoreFailedThreadClose(before, closed, closeResult.closeVersion)).toBe(
+      false
+    );
+    expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toMatchObject({
+      other_action: true,
+    });
+  });
+
+  it.each(['dispatching', 'unknown'])(
+    'does not close a report with an unresolved %s submission',
+    async (state) => {
+      const f = await preparePrompt();
+      await f.reportIntakeRepository.update(f.intake.id, {
+        status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+        confirmedTargetUserId: 'target',
+        metadata: {
+          reporter_presentation: { nextDueAt: null },
+          submission: {
+            state,
+            token: 'token',
+            targetUserId: 'target',
+            claimedAt: new Date().toISOString(),
+            dispatchedAt: new Date().toISOString(),
+            settledAt: new Date().toISOString(),
+          },
+        },
+      });
+      expect(
+        await f.service.closeIntakeForThread({ threadId: 'thread-1', closedById: 'reporter-1' })
+      ).toMatchObject({ closed: false });
+      expect((await f.reportIntakeRepository.findById(f.intake.id))?.closed_at).toBeNull();
+    }
+  );
+
+  it('does not mistake a moderator resolution for its own close snapshot', async () => {
+    const f = await preparePrompt();
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { reporter_presentation: { nextDueAt: null } },
+    });
+    const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    const result = await f.service.closeIntakeForThread({
+      threadId: 'thread-1',
+      closedById: 'reporter-1',
+    });
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { review_resolved_at: new Date().toISOString() },
+    });
+    const reread = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    expect(await f.service.restoreFailedThreadClose(before, reread, result.closeVersion)).toBe(
+      false
+    );
+    expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toHaveProperty(
+      'review_resolved_at'
+    );
+  });
+
+  it('does not restore a snapshot taken before a concurrent staff handoff', async () => {
+    const f = await preparePrompt();
+    await f.reportIntakeRepository.update(f.intake.id, {
+      metadata: { reporter_presentation: { nextDueAt: null } },
+    });
+    const before = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    await f.reportIntakeRepository.update(f.intake.id, {
+      status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+      metadata: { ...(before.metadata as object), handoff_pending: true },
+    });
+    const result = await f.service.closeIntakeForThread({
+      threadId: 'thread-1',
+      closedById: 'reporter-1',
+    });
+    const closed = (await f.reportIntakeRepository.findById(f.intake.id))!;
+    expect(await f.service.restoreFailedThreadClose(before, closed, result.closeVersion)).toBe(
+      false
+    );
+    expect((await f.reportIntakeRepository.findById(f.intake.id))?.metadata).toHaveProperty(
+      'handoff_pending',
+      true
+    );
+  });
+
   async function stagedSetup() {
     const setup = await preparePrompt();
     jest.mocked(setup.configService.getServerConfig).mockResolvedValue({
@@ -244,6 +422,9 @@ describe('ReportIntakeService', () => {
     async ({ field, currentName, accepted }) => {
       const f = await preparePrompt();
       await f.service.handleThreadMessage(f.message);
+      jest.mocked(f.configService.getServerConfig).mockResolvedValue({
+        settings: { report_intake_staged_enabled: true },
+      } as Awaited<ReturnType<IConfigService['getServerConfig']>>);
       const current = (await f.reportIntakeRepository.findById(f.intake.id))!;
       const { metadata, analysis } = processingMetadata(current);
       analysis.outcome = {
@@ -305,7 +486,7 @@ describe('ReportIntakeService', () => {
       includedEvidenceIds: [],
       excludedEvidenceIds: [],
     };
-    // A completed analysis includes the due time, which ordinary update deliberately cannot change.
+    // Model the persisted completion snapshot, including its confirmation deadline.
     const at = new Date();
     jest.spyOn(setup.reportIntakeRepository, 'findById').mockImplementation(async () => saved);
     let saved = {
@@ -322,6 +503,27 @@ describe('ReportIntakeService', () => {
       });
     return { ...setup, read: () => saved };
   }
+  it.each([true, false])('returns the presenter reconciliation result: %s', async (published) => {
+    const f = await savedCandidate();
+    const presenter = {
+      reconcile: jest.fn().mockResolvedValue(published),
+      presentClaim: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ReportIntakeService(
+      f.reportIntakeRepository,
+      f.serverRepository,
+      new InMemoryUserRepository(),
+      new InMemoryServerMemberRepository(),
+      f.configService,
+      f.candidateService,
+      f.threadManager,
+      f.moderationQueueService,
+      presenter
+    );
+    expect(await service.publishSavedConfirmation(f.intake.id, f.message)).toBe(published);
+    expect(presenter.reconcile).toHaveBeenCalledWith(f.intake.id);
+    expect(f.send).not.toHaveBeenCalled();
+  });
   it('shows the distinct global name and actual match field in saved confirmation', async () => {
     const f = await savedCandidate();
     const saved = f.read();
@@ -403,7 +605,7 @@ describe('ReportIntakeService', () => {
     expect(prompt.edit).toHaveBeenCalledWith({ components: [] });
   });
 
-  it('saves one complete screenshot-only revision before acknowledging once', async () => {
+  it('saves one complete screenshot-only revision without a separate acknowledgment', async () => {
     const {
       service,
       reportIntakeRepository,
@@ -426,7 +628,7 @@ describe('ReportIntakeService', () => {
     expect(await reportIntakeRepository.listEvidence(intake.id)).toEqual([
       expect.objectContaining({ kind: ReportIntakeEvidenceKind.SCREENSHOT }),
     ]);
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
     expect(candidateService.resolvePlatformBackedCandidates).not.toHaveBeenCalled();
     expect(moderationQueueService.recordReportThreadAttention).not.toHaveBeenCalled();
   });
@@ -704,7 +906,7 @@ describe('ReportIntakeService', () => {
             displayName: 'Target user-1',
           },
         })
-      ).toMatchObject({ confirmed: true });
+      ).toMatchObject({ confirmed: enabled });
     }
   );
 
@@ -880,7 +1082,7 @@ describe('ReportIntakeService', () => {
     });
   });
 
-  it('acknowledges concurrent distinct evidence batches only once', async () => {
+  it('saves concurrent distinct evidence without acknowledgment messages', async () => {
     const { service, reportIntakeRepository, intake, message, send } = await stagedSetup();
     await Promise.all([
       service.handleThreadMessage(message),
@@ -889,16 +1091,15 @@ describe('ReportIntakeService', () => {
     expect(await reportIntakeRepository.findById(intake.id)).toMatchObject({
       evidence_revision: 2,
     });
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it('keeps accepted evidence when the initial acknowledgement fails', async () => {
+  it('keeps accepted evidence without requiring a separate acknowledgment', async () => {
     const { service, reportIntakeRepository, intake, message, send } = await stagedSetup();
     send.mockRejectedValue(new Error('transport unavailable'));
     await expect(service.handleThreadMessage(message)).resolves.toBe(true);
     expect(await reportIntakeRepository.findById(intake.id)).toMatchObject({
       evidence_revision: 1,
-      metadata: { evidence_acknowledgement: { state: 'failed' } },
     });
     expect(await reportIntakeRepository.listEvidence(intake.id)).toHaveLength(2);
   });

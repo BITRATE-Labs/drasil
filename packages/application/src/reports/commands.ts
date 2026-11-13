@@ -47,6 +47,7 @@ export const queuedReportCommandSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('confirm_intake_candidate'),
+      promptToken: id.optional(),
       expectedEvidenceRevision,
       intakeId: id,
       threadId: id,

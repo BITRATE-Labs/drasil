@@ -1,9 +1,16 @@
-import { inject, injectable } from 'inversify';
+import { readReporterPresentation, reportRoot } from '../utils/reportIntakePresentationMetadata';
+import { projectReportIntakeState } from '@drasil/application';
+import { IReportIntakePresentationService } from './ReportIntakePresentationService';
+import { inject, injectable, optional } from 'inversify';
 import { Client, EmbedBuilder } from 'discord.js';
 import { TYPES } from '../di/symbols';
 import { IReportIntakeRepository } from '../repositories/ReportIntakeRepository';
 import { ownsPresentation, presentationMetadata } from '../repositories/reportIntakeProcessing';
-import type { ReportPresentationClaim } from '../repositories/types';
+import {
+  ReportIntakeStatus,
+  type ReportIntake,
+  type ReportPresentationClaim,
+} from '../repositories/types';
 import { IModerationQueueService } from './ModerationQueueService';
 import { IReportIntakeService, getReportConfirmationMessageIds } from './ReportIntakeService';
 import { IThreadManager } from './ThreadManager';
@@ -22,7 +29,10 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
     @inject(TYPES.ModerationQueueService) private queue: IModerationQueueService,
     @inject(TYPES.DiscordClient) private client: Client,
     @inject(TYPES.ReportIntakeService) private intakeService: IReportIntakeService,
-    @inject(TYPES.ThreadManager) private threads: IThreadManager
+    @inject(TYPES.ThreadManager) private threads: IThreadManager,
+    @inject(TYPES.ReportIntakePresentationService)
+    @optional()
+    private reporterPresentation?: IReportIntakePresentationService
   ) {}
   async deliverPending(limit = 5): Promise<number> {
     let delivered = 0;
@@ -63,25 +73,80 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
     const current = await this.repository.findById(claim.intake.id);
     if (!current || !ownsPresentation(current, claim, new Date())) return;
     const { analysis } = presentationMetadata(current);
+    const malformedReporter =
+      reportRoot(current).reporter_presentation !== undefined && !readReporterPresentation(current);
+    if (
+      this.reporterPresentation &&
+      projectReportIntakeState(current).staged &&
+      !malformedReporter
+    ) {
+      if (
+        analysis.outcome?.kind === 'admin_review' &&
+        current.status === 'needs_admin_confirmation' &&
+        !current.closed_at
+      ) {
+        let result: Awaited<ReturnType<IModerationQueueService['upsertReportIdentityReview']>>;
+        try {
+          result = await this.queue.upsertReportIdentityReview({
+            intake: current,
+            outcome: analysis.outcome,
+            revision: claim.revision,
+          });
+          if (!result.delivered || !result.channelId || !result.messageId)
+            throw new Error('Report review delivery pending');
+        } catch (error) {
+          const reporter = readReporterPresentation(current);
+          if (!claim.reporterPaused && (!reporter || reporter.nextDueAt))
+            await this.reporterPresentation.presentClaim(claim);
+          throw error;
+        }
+        if (
+          !(await this.repository.completePresentation(claim, {
+            kind: 'delivered',
+            channelId: result.channelId,
+            messageId: result.messageId,
+            receipt: 'pending',
+          }))
+        )
+          return;
+        const saved = await this.repository.findById(current.id);
+        const reporter = saved && readReporterPresentation(saved);
+        if (!claim.reporterPaused && (!reporter || reporter.nextDueAt))
+          await this.reporterPresentation.reconcile(current.id);
+      } else {
+        await this.reporterPresentation.presentClaim(claim);
+        await this.repository.completePresentation(claim, { kind: 'published' });
+      }
+      return;
+    }
     if (!analysis.outcome) return;
     if (analysis.outcome.kind === 'confirm') {
+      if (malformedReporter) {
+        await this.escalateMalformedConfirmation(current);
+        return;
+      }
       await this.publishConfirmation(claim);
       await this.repository.completePresentation(claim, { kind: 'published' });
       return;
     }
     let receipt: 'pending' | 'sent' =
       analysis.handoff.state !== 'none' ? analysis.handoff.receipt : 'pending';
-    if (receipt !== 'sent') {
+    if (
+      receipt !== 'sent' &&
+      !malformedReporter &&
+      !readReporterPresentation(current)?.threadMissing
+    ) {
       try {
         if (await this.sendReceipt(claim)) receipt = 'sent';
       } catch {
         /* Receipt delivery and moderator notification recover independently. */
       }
     }
-    await this.threads.retireReportConfirmationPrompts(
-      current,
-      getReportConfirmationMessageIds(current)
-    );
+    if (!malformedReporter)
+      await this.threads.retireReportConfirmationPrompts(
+        current,
+        getReportConfirmationMessageIds(current)
+      );
     const result = await this.queue.upsertReportIdentityReview({
       intake: current,
       outcome: analysis.outcome,
@@ -97,6 +162,39 @@ export class ReportIntakeHandoffService implements IReportIntakeHandoffService {
       messageId: result.messageId,
       receipt,
     });
+  }
+  private async escalateMalformedConfirmation(intake: ReportIntake): Promise<void> {
+    const { metadata, analysis } = presentationMetadata(intake);
+    if (analysis.outcome?.kind !== 'confirm') return;
+    const now = new Date().toISOString();
+    analysis.outcome = {
+      kind: 'admin_review',
+      reason: 'evidence_unavailable',
+      candidates: [analysis.outcome.candidate],
+      coverage: { kind: 'unavailable', reason: 'invalid_metadata' },
+      includedEvidenceIds: analysis.outcome.includedEvidenceIds,
+      excludedEvidenceIds: analysis.outcome.excludedEvidenceIds,
+    };
+    analysis.handoff = {
+      state: 'pending',
+      reason: 'evidence_unavailable',
+      attempts: 0,
+      nextDueAt: now,
+      receipt: 'pending',
+    };
+    analysis.presentation = {
+      revision: intake.evidence_revision,
+      attempts: 0,
+      nextDueAt: now,
+      lease: null,
+    };
+    if (
+      !(await this.repository.updateIfCurrent(intake, {
+        status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+        metadata: { ...metadata, analysis },
+      }))
+    )
+      throw new Error('Report review changed');
   }
   private async sendReceipt(claim: ReportPresentationClaim): Promise<boolean> {
     const current = await this.repository.findById(claim.intake.id);

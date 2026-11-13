@@ -1,7 +1,8 @@
+import { IReportIntakePresentationService } from './ReportIntakePresentationService';
 import type { ImageChallengeReference } from './CaptchaImageService';
 import type { ResolvedThreadClosureResult } from '@drasil/application';
 export type { ResolvedThreadClosureResult } from '@drasil/application';
-import { injectable, inject } from 'inversify';
+import { injectable, inject, optional } from 'inversify';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -46,6 +47,7 @@ import {
 import { getDiscordErrorCode } from '../utils/discordErrors';
 import { getVerificationActionFailureCode } from '../utils/verificationActionFailures';
 import { parseAdminActionCustomId } from '../utils/adminActionCustomIds';
+import { findAuthoredReportMessage } from '../utils/reportPresentationDiscord';
 
 export const VERIFICATION_THREAD_TYPE_METADATA_KEY = 'thread_type';
 export const VERIFICATION_THREAD_TYPE = 'verification';
@@ -153,7 +155,8 @@ export interface IThreadManager {
   activateReportIntakeThread(
     thread: ThreadChannel,
     reporter: GuildMember,
-    reportIntakeId?: string
+    reportIntakeId?: string,
+    mode?: 'resume' | 'resume_staged'
   ): Promise<boolean>;
 
   /**
@@ -259,7 +262,10 @@ export class ThreadManager implements IThreadManager {
     verificationEventRepository: IVerificationEventRepository,
     @inject(TYPES.UserRepository) userRepository: IUserRepository,
     @inject(TYPES.ServerRepository) serverRepository: IServerRepository,
-    @inject(TYPES.ServerMemberRepository) serverMemberRepository: IServerMemberRepository
+    @inject(TYPES.ServerMemberRepository) serverMemberRepository: IServerMemberRepository,
+    @inject(TYPES.ReportIntakePresentationService)
+    @optional()
+    private reporterPresentation?: IReportIntakePresentationService
   ) {
     this.client = client;
     this.configService = configService;
@@ -1632,13 +1638,28 @@ export class ThreadManager implements IThreadManager {
   public async activateReportIntakeThread(
     thread: ThreadChannel,
     reporter: GuildMember,
-    reportIntakeId?: string
+    reportIntakeId?: string,
+    mode?: 'resume' | 'resume_staged'
   ): Promise<boolean> {
     try {
-      await thread.members.add(reporter.id);
-
+      const membership = mode
+        ? await thread.members.fetch({ member: reporter.id, force: true }).catch(() => null)
+        : null;
+      if (membership?.id !== reporter.id) await thread.members.add(reporter.id);
       await this.addCaseResponderMembers(reporter.guild, thread, [reporter.id]);
+      // Staged opening cards are durably scheduled before admission.
+      if (mode === 'resume_staged') return true;
 
+      if (reportIntakeId && this.reporterPresentation) {
+        try {
+          if (await this.reporterPresentation.reconcile(reportIntakeId)) return true;
+        } catch (error) {
+          // The opening card is scheduled with the intake, before reporter admission.
+          console.warn('Report card delivery deferred:', error);
+          return true;
+        }
+      }
+      if (mode === 'resume' && (await this.hasLegacyReportWelcome(thread))) return true;
       const components = reportIntakeId
         ? [
             new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -1656,6 +1677,8 @@ export class ThreadManager implements IThreadManager {
 
       await thread.send({
         content: this.buildReportIntakeThreadMessage(),
+        nonce: thread.id,
+        enforceNonce: true,
         ...(components.length ? { components } : {}),
         allowedMentions: {
           parse: [],
@@ -1670,6 +1693,22 @@ export class ThreadManager implements IThreadManager {
       console.error(`Failed to activate report intake thread ${thread.id}:`, error);
       return false;
     }
+  }
+
+  private async hasLegacyReportWelcome(thread: ThreadChannel): Promise<boolean> {
+    if (!this.client.user) throw new Error('Report welcome author unavailable');
+    const existing = await findAuthoredReportMessage(
+      thread,
+      this.client.user.id,
+      (message) =>
+        message.channelId === thread.id &&
+        message.content === this.buildReportIntakeThreadMessage(),
+      new Date(0)
+    );
+    if (existing) return true;
+    // Sending can automatically reopen an archived thread; resume must preserve its closure.
+    if ((await thread.fetch(true)).archived) throw new Error('Report intake thread is archived');
+    return false;
   }
 
   private async setPrivateEvidenceThreadState(

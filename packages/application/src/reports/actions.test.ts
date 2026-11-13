@@ -47,7 +47,6 @@ function fixture(): {
       load: async () => intake,
       findOpen: async () => null,
       open: async () => intake,
-      markOpenFailed: async () => {},
       confirm: async () => {
         intake.confirmedTargetUserId = 'target';
         return {
@@ -198,21 +197,27 @@ it('changed reason policy blocks user report before submission', async () => {
     })
   ).toMatchObject({ code: 'reason_required' });
 });
-it('a failed activation deletes the created thread and records failure', async () => {
-  const f = fixture();
-  const events: string[] = [];
-  f.deps.threads.activate = async (): Promise<boolean> => false;
-  f.deps.intakes.markOpenFailed = async (): Promise<void> => {
-    events.push('failed');
-  };
-  f.deps.threads.deleteFailed = async (): Promise<void> => {
-    events.push('deleted');
-  };
-  expect(
-    await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
-  ).toMatchObject({ outcome: { status: 'activation_failed' } });
-  expect(events).toEqual(['failed', 'deleted']);
-});
+it.each(['false', 'throw'])(
+  'preserves the intake and thread after activation returns %s',
+  async (result) => {
+    const f = fixture();
+    const events: string[] = [];
+    f.deps.threads.activate = async (): Promise<boolean> => {
+      if (result === 'throw') throw new Error('Admission response lost');
+      return false;
+    };
+    f.deps.threads.deleteFailed = async (): Promise<void> => {
+      events.push('deleted');
+    };
+    const action = f.actions.execute(context, {
+      kind: 'start_report_intake',
+      channelId: 'channel',
+    });
+    if (result === 'throw') await expect(action).rejects.toThrow('Admission response lost');
+    else expect(await action).toMatchObject({ outcome: { status: 'activation_failed' } });
+    expect(events).toEqual([]);
+  }
+);
 it('a claim acquired during closure is reported as busy without thread effects', async () => {
   const f = fixture();
   let effects = 0;
@@ -232,6 +237,51 @@ it('a claim acquired during closure is reported as busy without thread effects',
     await f.actions.execute(context, { kind: 'close_report_intake', intakeId: 'intake' })
   ).toMatchObject({ outcome: { status: 'busy' } });
   expect(effects).toBe(0);
+});
+it.each(['admitted', 'refused', 'throw'])(
+  'preserves the existing thread link when admission repair is %s',
+  async (result) => {
+    const f = fixture();
+    f.deps.intakes.findOpen = async (): Promise<ReportIntakeState> => f.intake;
+    const calls: string[] = [];
+    f.deps.threads.activate = async (_context, threadId, intakeId, mode): Promise<boolean> => {
+      expect([threadId, intakeId, mode]).toEqual(['thread', 'intake', 'resume']);
+      calls.push('admit');
+      if (result === 'throw') throw new Error('Membership response unavailable');
+      return result === 'admitted';
+    };
+    f.deps.threads.create = async (): Promise<null> => {
+      calls.push('create');
+      return null;
+    };
+    f.deps.threads.deleteFailed = async (): Promise<void> => {
+      calls.push('delete');
+    };
+    f.deps.threads.notifyOpened = async (): Promise<void> => {
+      calls.push('notify');
+    };
+    expect(
+      await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
+    ).toMatchObject({
+      outcome: {
+        status: result === 'admitted' ? 'existing' : 'activation_failed',
+        intake: { threadId: 'thread' },
+      },
+    });
+    expect(calls).toEqual(['admit']);
+  }
+);
+it('resumes staged admission without requesting another opening-card publication', async () => {
+  const f = fixture();
+  f.intake.staged = true;
+  f.deps.intakes.findOpen = async (): Promise<ReportIntakeState> => f.intake;
+  f.deps.threads.activate = async (_context, threadId, intakeId, mode): Promise<boolean> => {
+    expect([threadId, intakeId, mode]).toEqual(['thread', 'intake', 'resume_staged']);
+    return true;
+  };
+  expect(
+    await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
+  ).toMatchObject({ outcome: { status: 'existing', intake: { threadId: 'thread' } } });
 });
 it('submission trusts the stored reporter rather than the confirmation payload reporter', async () => {
   const f = fixture();
@@ -512,3 +562,65 @@ it.each(['staff', 'reporter', 'wrong token', 'changed evidence', 'mcp'] as const
     expect(f.submissionCount()).toBe(0);
   }
 );
+it.each(['unknown', 'dispatching', 'accepted'] as const)(
+  'never retries a %s submission',
+  async (state) => {
+    const f = fixture();
+    f.intake.status = 'needs_admin_confirmation';
+    f.intake.confirmedTargetUserId = 'target';
+    f.intake.submission = {
+      token: 'same-token',
+      targetUserId: 'target',
+      state,
+      claimedAt: '2026-11-12T00:00:00.000Z',
+      dispatchedAt: '2026-11-12T00:00:01.000Z',
+      settledAt: '2026-11-12T00:00:02.000Z',
+    };
+    const result = await f.actions.execute(context, {
+      kind: 'confirm_intake_candidate',
+      intakeId: 'intake',
+      threadId: 'thread',
+      promptMessageId: 'current',
+      promptToken: 'token',
+      targetUserId: 'target',
+    });
+    expect(result.kind).toBe('denied');
+    expect(f.submissionCount()).toBe(0);
+  }
+);
+it('retries a settled undispatched submission through the same action boundary', async () => {
+  const f = fixture();
+  f.intake.status = 'needs_admin_confirmation';
+  f.intake.confirmedTargetUserId = 'target';
+  f.intake.submission = {
+    token: 'same-token',
+    targetUserId: 'target',
+    state: 'not_dispatched',
+    claimedAt: '2026-11-12T00:00:00.000Z',
+    settledAt: '2026-11-12T00:00:02.000Z',
+  };
+  const result = await f.actions.execute(context, {
+    kind: 'confirm_intake_candidate',
+    intakeId: 'intake',
+    threadId: 'thread',
+    promptMessageId: 'current',
+    promptToken: 'token',
+    targetUserId: 'target',
+  });
+  expect(result.kind).toBe('outcome');
+  expect(f.submissionCount()).toBe(1);
+  expect(f.intake.submission.token).toBe('same-token');
+});
+it('rejects a stale provided token even when the message ID is unchanged', async () => {
+  const f = fixture();
+  const result = await f.actions.execute(context, {
+    kind: 'confirm_intake_candidate',
+    intakeId: 'intake',
+    threadId: 'thread',
+    promptMessageId: 'current',
+    promptToken: 'old',
+    targetUserId: 'target',
+  });
+  expect(result.kind).toBe('denied');
+  expect(f.submissionCount()).toBe(0);
+});

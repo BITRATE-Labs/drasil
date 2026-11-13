@@ -1,6 +1,8 @@
+import { IReportIntakePresentationService } from './ReportIntakePresentationService';
 import { formatReportIdentity } from '../utils/reportIdentityPresentation';
 import {
   projectReportIntakeState,
+  isRetryableReportSubmission,
   reportAnalysisMetadataSchema,
   type ReportCommand,
   type ReportSubmissionProgress,
@@ -61,6 +63,7 @@ export const REPORT_INTAKE_CONFIRM_CUSTOM_ID_PREFIX = 'report_intake_confirm';
 export const REPORT_INTAKE_REJECT_CUSTOM_ID_PREFIX = 'report_intake_reject';
 
 export interface ReportIntakeCloseResult {
+  closeVersion?: string;
   closed: boolean;
   message: string;
   shouldArchiveThread?: boolean;
@@ -95,6 +98,12 @@ export interface OpenReportIntakeInput {
 }
 
 export interface IReportIntakeService {
+  refreshPresentation?(intakeId: string): Promise<void>;
+  restoreFailedThreadClose?(
+    before: ReportIntake,
+    closed: ReportIntake,
+    closeVersion?: string
+  ): Promise<boolean>;
   publishSavedConfirmation(
     intakeId: string,
     message: Message,
@@ -116,6 +125,7 @@ export interface IReportIntakeService {
   confirmCandidate(input: {
     intakeId: string;
     targetUserId: string;
+    promptToken?: string;
     confirmedById: string;
     confirmedByStaff?: boolean;
     currentMember?: ReportDirectoryMember;
@@ -180,8 +190,15 @@ export class ReportIntakeService implements IReportIntakeService {
     @inject(TYPES.ThreadManager) private threadManager: IThreadManager,
     @inject(TYPES.ModerationQueueService)
     @optional()
-    private moderationQueueService?: IModerationQueueService
+    private moderationQueueService?: IModerationQueueService,
+    @inject(TYPES.ReportIntakePresentationService)
+    @optional()
+    private reporterPresentation?: IReportIntakePresentationService
   ) {}
+
+  async refreshPresentation(intakeId: string): Promise<void> {
+    await this.reporterPresentation?.reconcile(intakeId);
+  }
 
   async publishSavedConfirmation(
     intakeId: string,
@@ -190,6 +207,11 @@ export class ReportIntakeService implements IReportIntakeService {
   ): Promise<boolean> {
     const intake = await this.reportIntakeRepository.findById(intakeId);
     if (!intake || !(await this.canPublishSavedConfirmation(intake, claim))) return false;
+    if (this.reporterPresentation) {
+      if (!claim) return this.reporterPresentation.reconcile(intakeId);
+      await this.reporterPresentation.presentClaim(claim);
+      return true;
+    }
     const { analysis, metadata } = processingMetadata(intake);
     if (analysis.outcome?.kind !== 'confirm') return false;
     const candidate: ReportCandidate = {
@@ -291,7 +313,9 @@ export class ReportIntakeService implements IReportIntakeService {
       status: ReportIntakeStatus.COLLECTING_EVIDENCE,
       metadata: {
         source: 'report_button',
-        ...(getReportIntakeSettings(config.settings).stagedEnabled ? { workflow: 'staged' } : {}),
+        ...(getReportIntakeSettings(config.settings).stagedEnabled
+          ? { workflow: 'staged', reporter_presentation: { nextDueAt: new Date().toISOString() } }
+          : {}),
         intake_channel_id: input.channelId,
         opened_at: new Date().toISOString(),
       },
@@ -469,46 +493,17 @@ export class ReportIntakeService implements IReportIntakeService {
     });
     if (result === 'recorded') {
       await this.retireConfirmationPrompts(intake, getReportConfirmationMessageIds(intake));
-      await this.acknowledgeStagedEvidence(intake.id, message);
+      await this.reporterPresentation
+        ?.reconcile(intake.id)
+        .catch((error) => console.warn('Report card update pending:', error));
     }
     return true;
-  }
-
-  private async acknowledgeStagedEvidence(intakeId: string, message: Message): Promise<void> {
-    if (!hasMessageSend(message.channel)) return;
-    const current = await this.reportIntakeRepository.findById(intakeId);
-    if (!current) return;
-    const metadata = toRecord(current.metadata);
-    if (metadata.evidence_acknowledgement) return;
-    const reserved = await this.reportIntakeRepository.updateIfCurrent(current, {
-      metadata: { ...metadata, evidence_acknowledgement: { state: 'reserved' } },
-    });
-    if (!reserved) return;
-    let state = 'sent';
-    try {
-      await message.channel.send({
-        content: 'Evidence saved.',
-        components: [],
-        allowedMentions: { parse: [] },
-      });
-    } catch {
-      state = 'failed';
-    }
-    for (let attempt = 0; attempt < REPORT_INTAKE_STATE_WRITE_ATTEMPTS; attempt++) {
-      const latest = await this.reportIntakeRepository.findById(intakeId);
-      if (!latest) return;
-      if (
-        await this.reportIntakeRepository.updateIfCurrent(latest, {
-          metadata: { ...toRecord(latest.metadata), evidence_acknowledgement: { state } },
-        })
-      )
-        return;
-    }
   }
 
   async confirmCandidate(input: {
     intakeId: string;
     targetUserId: string;
+    promptToken?: string;
     confirmedById: string;
     confirmedByStaff?: boolean;
     currentMember?: ReportDirectoryMember;
@@ -525,6 +520,12 @@ export class ReportIntakeService implements IReportIntakeService {
     if (!intake) {
       return { confirmed: false, message: 'This report could not be found.' };
     }
+    if (
+      toRecord(intake.metadata).reporter_presentation &&
+      input.promptMessageId === toRecord(intake.metadata).last_confirmation_prompt_message_id &&
+      input.promptToken !== toRecord(intake.metadata).last_confirmation_prompt_token
+    )
+      return { confirmed: false, message: 'Use the latest confirmation message in this thread.' };
     const confirmedByReporter = intake.reporter_id === input.confirmedById;
     if (!confirmedByReporter && input.confirmedByStaff !== true) {
       return {
@@ -533,6 +534,8 @@ export class ReportIntakeService implements IReportIntakeService {
       };
     }
     const state = projectReportIntakeState(intake);
+    if (state.staged && !(await this.stagedSubmissionEnabled(intake.server_id)))
+      return { confirmed: false, message: 'Report submission is temporarily unavailable.' };
     if (
       state.staged &&
       (input.expectedEvidenceRevision !== state.evidenceRevision ||
@@ -540,6 +543,19 @@ export class ReportIntakeService implements IReportIntakeService {
         input.promptMessageId !== state.promptMessageId)
     )
       return { confirmed: false, message: 'Use the latest report review message.' };
+    if (isRetryableReportSubmission(state) && input.targetUserId === state.confirmedTargetUserId) {
+      const evidence = activeReportEvidence(
+        intake,
+        await this.reportIntakeRepository.listEvidence(intake.id)
+      );
+      return {
+        confirmed: true,
+        message: 'Retrying report submission.',
+        reporterId: intake.reporter_id,
+        reason: this.buildSubmissionReason(intake, evidence),
+        attachments: this.buildSubmissionAttachments(evidence),
+      };
+    }
     const adminSelection =
       input.confirmedByStaff === true &&
       intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION;
@@ -979,6 +995,11 @@ export class ReportIntakeService implements IReportIntakeService {
     const submission = projectReportIntakeState(intake).submission;
     if (!submission || submission.token !== token || submission.state !== 'not_dispatched')
       return false;
+    if (
+      projectReportIntakeState(intake).staged &&
+      !(await this.stagedSubmissionEnabled(intake.server_id))
+    )
+      return false;
     return Boolean(
       await this.reportIntakeRepository.updateIfCurrent(intake, {
         status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
@@ -990,6 +1011,14 @@ export class ReportIntakeService implements IReportIntakeService {
         }),
       })
     );
+  }
+
+  private async stagedSubmissionEnabled(serverId: string): Promise<boolean> {
+    const config = await this.configService.getServerConfig(serverId, {
+      forceRefresh: true,
+      failOnReadError: true,
+    });
+    return getReportIntakeSettings(config.settings).stagedEnabled;
   }
 
   async settleConfirmedSubmission(
@@ -1078,6 +1107,29 @@ export class ReportIntakeService implements IReportIntakeService {
     await this.clearReportThreadAttention(input.intakeId);
   }
 
+  async restoreFailedThreadClose(
+    before: ReportIntake,
+    closed: ReportIntake,
+    closeVersion?: string
+  ): Promise<boolean> {
+    if (
+      before.id !== closed.id ||
+      before.evidence_revision !== closed.evidence_revision ||
+      before.confirmed_target_user_id !== closed.confirmed_target_user_id
+    )
+      return false;
+    if (!closeVersion || closeVersion !== reportCloseVersion(before, closed)) return false;
+    // Only undo our exact close snapshot; never overwrite a concurrent report action.
+    const restored = await this.reportIntakeRepository.updateIfCurrent(closed, {
+      status: before.status,
+      closedAt: before.closed_at,
+      metadata: toRecord(before.metadata),
+    });
+    if (!restored) return false;
+    await this.refreshPresentation(before.id).catch(() => undefined);
+    return true;
+  }
+
   async closeIntakeForThread(input: {
     threadId: string;
     closedById: string;
@@ -1095,6 +1147,19 @@ export class ReportIntakeService implements IReportIntakeService {
         return {
           closed: false,
           message: 'Only the reporter or a moderator can close this report.',
+        };
+      const submission = projectReportIntakeState(intake).submission;
+      if (
+        toRecord(intake.metadata).reporter_presentation &&
+        !input.closeMode &&
+        submission &&
+        (submission.state === 'dispatching' ||
+          submission.state === 'unknown' ||
+          (submission.state === 'not_dispatched' && !submission.settledAt))
+      )
+        return {
+          closed: false,
+          message: 'Wait until the submission outcome is known before closing this thread.',
         };
       if (input.closeMode?.kind === 'resolve_submission') {
         const submission = projectReportIntakeState(intake).submission;
@@ -1125,6 +1190,8 @@ export class ReportIntakeService implements IReportIntakeService {
           analysisLeaseUntil: null,
           metadata: {
             ...resolveReportHandoff(intake, input.closedById, now),
+            thread_closed_at: now.toISOString(),
+            thread_closed_by: input.closedById,
             ...(accepted
               ? {
                   submitted_by: input.closedById,
@@ -1213,20 +1280,24 @@ export class ReportIntakeService implements IReportIntakeService {
         if (!updated) continue;
         return {
           closed: true,
+          ...(toRecord(updated.metadata).reporter_presentation
+            ? { closeVersion: reportCloseVersion(intake, updated) }
+            : {}),
           message: 'The thread is closed. Moderator review remains open.',
           shouldArchiveThread: true,
         };
       }
       if (this.isOpenIntakeStatus(intake.status) && !intake.confirmed_target_user_id) {
-        if (
-          !(await this.closeIntake(intake, {
-            closedById: input.closedById,
-            closedByStaff: !closedByReporter && input.closedByStaff === true,
-          }))
-        )
-          continue;
+        const updated = await this.closeIntake(intake, {
+          closedById: input.closedById,
+          closedByStaff: !closedByReporter && input.closedByStaff === true,
+        });
+        if (!updated) continue;
         return {
           closed: true,
+          ...(toRecord(updated.metadata).reporter_presentation
+            ? { closeVersion: reportCloseVersion(intake, updated) }
+            : {}),
           message: REPORT_INTAKE_CANCELLED_MESSAGE,
           shouldArchiveThread: true,
         };
@@ -1242,21 +1313,26 @@ export class ReportIntakeService implements IReportIntakeService {
             : this.isReviewedIntakeStatus(intake.status)
               ? 'reviewed_thread_close'
               : 'selected_thread_close';
-        if (
-          !(await this.recordThreadClose(intake, {
-            closedById: input.closedById,
-            closedByStaff: !closedByReporter && input.closedByStaff === true,
-            reason,
-          }))
-        )
-          continue;
+        const updated = await this.recordThreadClose(intake, {
+          closedById: input.closedById,
+          closedByStaff: !closedByReporter && input.closedByStaff === true,
+          reason,
+        });
+        if (!updated) continue;
         const message =
           intake.status === ReportIntakeStatus.SUBMITTED
             ? REPORT_INTAKE_SUBMITTED_CLOSEOUT_MESSAGE
             : this.isReviewedIntakeStatus(intake.status)
               ? REPORT_INTAKE_REVIEWED_CLOSEOUT_MESSAGE
               : 'The selected person remains recorded for moderator review.';
-        return { closed: true, message, shouldArchiveThread: true };
+        return {
+          closed: true,
+          ...(toRecord(updated.metadata).reporter_presentation
+            ? { closeVersion: reportCloseVersion(intake, updated) }
+            : {}),
+          message,
+          shouldArchiveThread: true,
+        };
       }
       return {
         closed: true,
@@ -1790,7 +1866,7 @@ export class ReportIntakeService implements IReportIntakeService {
       closedByStaff?: boolean;
       metadata?: Record<string, unknown>;
     }
-  ): Promise<boolean> {
+  ): Promise<ReportIntake | null> {
     const updated = await this.reportIntakeRepository.updateIfCurrent(intake, {
       status: ReportIntakeStatus.CLOSED_BY_REPORTER,
       closedAt: new Date(),
@@ -1802,10 +1878,10 @@ export class ReportIntakeService implements IReportIntakeService {
         ...(input.closedByStaff ? { closed_by_staff: true } : {}),
       },
     });
-    if (!updated) return false;
+    if (!updated) return null;
     await this.retireConfirmationPrompts(updated, getReportConfirmationMessageIds(updated));
     await this.clearReportThreadAttention(intake.id);
-    return true;
+    return updated;
   }
 
   private async recordThreadClose(
@@ -1815,7 +1891,7 @@ export class ReportIntakeService implements IReportIntakeService {
       closedByStaff?: boolean;
       reason: string;
     }
-  ): Promise<boolean> {
+  ): Promise<ReportIntake | null> {
     const now = new Date();
     const updated = await this.reportIntakeRepository.updateIfCurrent(intake, {
       closedAt: intake.closed_at ?? now,
@@ -1827,10 +1903,10 @@ export class ReportIntakeService implements IReportIntakeService {
         ...(input.closedByStaff ? { thread_closed_by_staff: true } : {}),
       },
     });
-    if (!updated) return false;
+    if (!updated) return null;
     await this.retireConfirmationPrompts(updated, getReportConfirmationMessageIds(updated));
     await this.clearReportThreadAttention(intake.id);
-    return true;
+    return updated;
   }
 
   private async clearReportThreadAttention(intakeId: string): Promise<void> {
@@ -1937,6 +2013,7 @@ export function getReportConfirmationUnavailableMessage(intake: ReportIntake): s
     intake.status !== ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION
   )
     return 'This report is closed.';
+  if (isRetryableReportSubmission(projectReportIntakeState(intake))) return null;
   if (intake.confirmed_target_user_id)
     return 'A person is already selected. Submission is not confirmed. No second report was submitted.';
   if (intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION)
@@ -1984,4 +2061,21 @@ function resolveReportHandoff(
         : {}),
     },
   };
+}
+
+function reportCloseVersion(before: ReportIntake, closed: ReportIntake): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify(
+        [before, closed].map((intake) => [
+          intake.id,
+          intake.status,
+          intake.closed_at,
+          intake.evidence_revision,
+          intake.confirmed_target_user_id,
+          intake.metadata,
+        ])
+      )
+    )
+    .digest('hex');
 }

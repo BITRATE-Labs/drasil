@@ -1,3 +1,5 @@
+import { ReportThreadCloseError } from '../../application/adapters/reports';
+import { buildReportIntakeAdminActionCustomId } from '../../utils/reportIntakeAdminActions';
 import { handleSlashCommandConfirmationButton } from '../../utils/slashCommandConfirmations';
 import { buildReportActions, prepareReportClient } from './reportApplicationTestHarness';
 import {
@@ -233,6 +235,7 @@ describe('ReportInteractionHandler (unit)', () => {
       retireReportConfirmationPrompts: jest.fn().mockResolvedValue(undefined),
       createReportIntakeThread: jest.fn().mockResolvedValue({
         id: 'report-thread-1',
+        guildId: 'guild-1',
         url: 'https://discord.com/channels/report-thread-1',
       } as any),
       activateReportIntakeThread: jest.fn().mockResolvedValue(true),
@@ -716,34 +719,50 @@ describe('ReportInteractionHandler (unit)', () => {
     });
   });
 
-  it('reuses an existing open report intake for the same reporter', async () => {
-    const reporter = buildMember('guild-1', 'reporter-1');
-    (client.guilds.fetch as jest.Mock).mockResolvedValue({
-      members: {
-        fetch: jest.fn().mockResolvedValue(reporter),
-      },
-    });
-    const reportIntakeService = createReportIntakeService();
-    reportIntakeService.findOpenIntakeForReporter.mockResolvedValue({
-      id: 'intake-1',
-      thread_id: 'existing-thread-1',
-    } as any);
-    const handler = createHandler(reportIntakeService);
-    const interaction = buildInteraction(REPORT_USER_INITIATE_CUSTOM_ID, 'guild-1', {
-      id: 'reporter-1',
-    } as User);
+  it.each(['admitted', 'refused', 'throw'])(
+    'retains the existing report link and reports admission repair when %s',
+    async (result) => {
+      const reporter = buildMember('guild-1', 'reporter-1');
+      (client.guilds.fetch as jest.Mock).mockResolvedValue({
+        members: {
+          fetch: jest.fn().mockResolvedValue(reporter),
+        },
+      });
+      const reportIntakeService = createReportIntakeService();
+      reportIntakeService.findOpenIntakeForReporter.mockResolvedValue({
+        id: 'intake-1',
+        thread_id: 'existing-thread-1',
+      } as any);
+      const handler = createHandler(reportIntakeService);
+      if (result === 'throw')
+        threadManager.activateReportIntakeThread.mockRejectedValueOnce(
+          new Error('Permission check failed')
+        );
+      else threadManager.activateReportIntakeThread.mockResolvedValueOnce(result === 'admitted');
+      const interaction = buildInteraction(REPORT_USER_INITIATE_CUSTOM_ID, 'guild-1', {
+        id: 'reporter-1',
+      } as User);
 
-    prepareReportClient(client, interaction);
+      prepareReportClient(client, interaction);
+      jest.mocked(client.channels.fetch).mockResolvedValue({
+        id: 'existing-thread-1',
+        guildId: 'guild-1',
+        isThread: () => true,
+      } as never);
 
-    await handler.handleReportUserInitiate(interaction);
+      await handler.handleReportUserInitiate(interaction);
 
-    expect(threadManager.createReportIntakeThread).not.toHaveBeenCalled();
-    expect(reportIntakeService.openIntakeFromThread).not.toHaveBeenCalled();
-    expect(interaction.editReply).toHaveBeenCalledWith({
-      content:
-        'Continue your report here: https://discord.com/channels/guild-1/existing-thread-1\nTo cancel, choose Close Report or send `close report` in that thread.',
-    });
-  });
+      expect(threadManager.createReportIntakeThread).not.toHaveBeenCalled();
+      expect(reportIntakeService.openIntakeFromThread).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith({
+        content:
+          result === 'admitted'
+            ? 'Continue your report here: https://discord.com/channels/guild-1/existing-thread-1\nTo cancel, choose Close Report or send `close report` in that thread.'
+            : 'Could not finish setting up the private report thread. Please ask a server admin to check Drasil thread permissions.\nSaved report: https://discord.com/channels/guild-1/existing-thread-1',
+      });
+      expect(reportIntakeService.markOpenFailed).not.toHaveBeenCalled();
+    }
+  );
 
   it('cleans up the report intake thread when persistence fails', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -781,10 +800,11 @@ describe('ReportInteractionHandler (unit)', () => {
     });
   });
 
-  it('marks the intake failed and deletes the thread when activation fails', async () => {
+  it('preserves the intake and thread when activation fails after admission may have started', async () => {
     const reporter = buildMember('guild-1', 'reporter-1');
     const thread = {
       id: 'report-thread-1',
+      guildId: 'guild-1',
       url: 'https://discord.com/channels/report-thread-1',
       delete: jest.fn().mockResolvedValue(undefined),
     };
@@ -806,16 +826,11 @@ describe('ReportInteractionHandler (unit)', () => {
 
     await handler.handleReportUserInitiate(interaction);
 
-    expect(reportIntakeService.markOpenFailed).toHaveBeenCalledWith({
-      intakeId: 'intake-1',
-      reason: 'thread_activation_failed',
-    });
-    expect(thread.delete).toHaveBeenCalledWith(
-      'Report intake setup failed before reporter activation.'
-    );
+    expect(reportIntakeService.markOpenFailed).not.toHaveBeenCalled();
+    expect(thread.delete).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith({
       content:
-        'Could not prepare the private report thread. Please ask a server admin to check Drasil thread permissions.',
+        'Could not finish setting up the private report thread. Please ask a server admin to check Drasil thread permissions.',
     });
   });
 
@@ -824,6 +839,7 @@ describe('ReportInteractionHandler (unit)', () => {
     const reporter = buildMember('guild-1', 'reporter-1');
     const thread = {
       id: 'report-thread-1',
+      guildId: 'guild-1',
       url: 'https://discord.com/channels/report-thread-1',
       delete: jest.fn().mockResolvedValue(undefined),
     };
@@ -1245,6 +1261,48 @@ describe('ReportInteractionHandler (unit)', () => {
       return { interaction, thread };
     };
 
+    it('keeps the thread open when the confirmation outlives presentation metadata', async () => {
+      const service = createReportIntakeService();
+      service.findIntakeById.mockResolvedValue(buildReportIntake());
+      const { interaction, thread } = buildThreadCloseInteraction('reporter-1');
+      prepareReportClient(client, interaction);
+      await createHandler(service).handleReportIntakeAdminAction(
+        interaction,
+        buildReportIntakeAdminActionCustomId('thread_keep_open', 'intake-1')
+      );
+      expect(service.closeIntakeForThread).not.toHaveBeenCalled();
+      expect(thread.setArchived).not.toHaveBeenCalled();
+    });
+
+    it('shows the specific private error when initial thread closure fails', async () => {
+      const service = createReportIntakeService();
+      service.findIntakeById.mockResolvedValue(buildReportIntake());
+      service.closeIntakeForThread.mockRejectedValue(new ReportThreadCloseError());
+      const { interaction } = buildThreadCloseInteraction('reporter-1');
+      prepareReportClient(client, interaction);
+      await createHandler(service).handleReportIntakeAdminAction(interaction, interaction.customId);
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: "Couldn't close the thread. Try again." })
+      );
+    });
+
+    it('asks before closing a card-based report', async () => {
+      const service = createReportIntakeService();
+      service.findIntakeById.mockResolvedValue(
+        buildReportIntake({
+          metadata: { reporter_presentation: { openingMessageId: 'opening', nextDueAt: null } },
+        })
+      );
+      const { interaction, thread } = buildThreadCloseInteraction('reporter-1');
+      prepareReportClient(client, interaction);
+      await createHandler(service).handleReportIntakeAdminAction(interaction, interaction.customId);
+      expect(service.closeIntakeForThread).not.toHaveBeenCalled();
+      expect(thread.setArchived).not.toHaveBeenCalled();
+      expect(JSON.stringify((interaction.editReply as jest.Mock).mock.calls)).toContain(
+        'Close this report?'
+      );
+    });
+
     it.each([
       'Report cancelled. No report was submitted.',
       'The selected person remains recorded for moderator review.',
@@ -1344,6 +1402,72 @@ describe('ReportInteractionHandler (unit)', () => {
       expect((interaction.message as any).edit).toHaveBeenCalledWith({ components: [] });
     });
   });
+
+  it('rejects an older token when the same confirmation message is reused', async () => {
+    const service = createReportIntakeService();
+    service.findIntakeById.mockResolvedValue(
+      buildReportIntake({
+        status: ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION,
+        thread_id: 'thread-1',
+        metadata: {
+          last_confirmation_prompt_message_id: 'prompt-1',
+          last_confirmation_prompt_token: 'current',
+          last_confirmation_prompt_candidate_ids: ['user-1'],
+          reporter_presentation: { followupMessageId: 'prompt-1', nextDueAt: null },
+        },
+      })
+    );
+    const interaction = buildInteraction('report_intake_confirm:intake-1:user-1:old', 'guild-1', {
+      id: 'reporter-1',
+    } as User);
+    await createHandler(service).handleReportIntakeConfirm(interaction, interaction.customId);
+    expect(service.confirmCandidate).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: 'Use the latest confirmation message in this thread.',
+    });
+  });
+
+  it.each(['submitted', 'status failure', 'rejected'])(
+    'keeps a private %s acknowledgement for shared cards',
+    async (outcome) => {
+      const service = createReportIntakeService();
+      const intake = buildReportIntake({
+        status: ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION,
+        thread_id: 'thread-1',
+      });
+      intake.metadata = {
+        ...(intake.metadata as object),
+        reporter_presentation: { followupMessageId: 'prompt-1', nextDueAt: null },
+      };
+      service.findIntakeById.mockResolvedValue(intake);
+      service.confirmCandidate.mockResolvedValue({
+        confirmed: true,
+        message: 'confirmed',
+        reason: 'reported reason',
+      });
+      service.markSubmitted.mockResolvedValue(outcome !== 'status failure');
+      service.refreshPresentation = jest.fn().mockRejectedValue(new Error('Card edit unavailable'));
+      service.rejectCandidates.mockResolvedValue({ rejected: true, message: 'Answer saved.' });
+      const customId =
+        outcome === 'rejected'
+          ? 'report_intake_reject:intake-1:prompt-token'
+          : 'report_intake_confirm:intake-1:user-1:prompt-token';
+      const interaction = buildInteraction(customId, 'guild-1', { id: 'reporter-1' } as User);
+      const deleteReply = jest.fn().mockRejectedValue(new Error('Cannot delete reply'));
+      Object.assign(interaction, { deleteReply });
+      prepareReportClient(client, interaction);
+      await createHandler(service).handleReportIntakeConfirm(interaction, customId);
+      expect(deleteReply).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith({
+        content:
+          outcome === 'rejected'
+            ? 'Answer saved.'
+            : outcome === 'status failure'
+              ? "Report submitted. Drasil couldn't record its final status. Please ask a moderator to review this thread."
+              : 'Report submitted.',
+      });
+    }
+  );
 
   it('authorized stale legacy click reports submission before looking up a departed target and retires its controls', async () => {
     const service = createReportIntakeService();

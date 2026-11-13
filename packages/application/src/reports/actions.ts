@@ -1,3 +1,4 @@
+import { isRetryableReportSubmission } from './intakeState';
 import {
   hasAuthority,
   hasStaffAuthority,
@@ -69,21 +70,39 @@ export function createReportActions(deps: ReportDependencies): ReportActions {
   }
   async function start(context: ActionContext, channelId: string): Promise<ReportOutcome> {
     const existing = await deps.intakes.findOpen(context);
-    if (existing) return { kind: 'start_report_intake', status: 'existing', intake: existing };
+    if (existing) {
+      // A repair failure must not hide the already-created private thread.
+      const activated = existing.threadId
+        ? await deps.threads
+            .activate(
+              context,
+              existing.threadId,
+              existing.id,
+              existing.staged ? 'resume_staged' : 'resume'
+            )
+            .catch(() => false)
+        : false;
+      return {
+        kind: 'start_report_intake',
+        status: activated ? 'existing' : 'activation_failed',
+        intake: existing,
+      };
+    }
     const thread = await deps.threads.create(context, channelId);
     if (!thread) return { kind: 'start_report_intake', status: 'create_failed', intake: null };
-    let activated = false;
+    let activationAttempted = false;
     try {
       const intake = await deps.intakes.open(context, channelId, thread.id);
-      activated = await deps.threads.activate(context, thread.id, intake.id);
+      // Admission may succeed even if Discord's response is lost; never delete after this point.
+      activationAttempted = true;
+      const activated = await deps.threads.activate(context, thread.id, intake.id);
       if (!activated) {
-        await deps.intakes.markOpenFailed(intake.id);
         return { kind: 'start_report_intake', status: 'activation_failed', intake };
       }
       await deps.threads.notifyOpened(context, thread.id, intake.id);
       return { kind: 'start_report_intake', status: 'opened', intake, threadUrl: thread.url };
     } finally {
-      if (!activated) await deps.threads.deleteFailed(thread.id);
+      if (!activationAttempted) await deps.threads.deleteFailed(thread.id);
     }
   }
   async function confirm(
@@ -192,17 +211,31 @@ export function createReportActions(deps: ReportDependencies): ReportActions {
         outcome: {
           kind: command.kind,
           status: result.closed ? 'closed' : claimed ? 'busy' : 'not_closed',
-          result: { ...result, ...(closed ? { message: closed.message } : {}) },
+          result: {
+            ...result,
+            ...(closed ? { message: closed.message } : {}),
+          },
           intake,
           ...(closed ? { archived: closed.archived } : {}),
         },
       };
     }
+    if (
+      command.kind === 'confirm_intake_candidate' &&
+      command.promptToken !== undefined &&
+      command.promptToken !== intake.promptToken
+    )
+      return { kind: 'denied', code: 'stale_state' };
+    const retry =
+      command.kind === 'confirm_intake_candidate' &&
+      isRetryableReportSubmission(intake) &&
+      command.targetUserId === intake.confirmedTargetUserId;
     if (intake.threadId !== command.threadId) return { kind: 'denied', code: 'binding_mismatch' };
     if (
       (intake.status !== 'needs_reporter_confirmation' &&
-        !(isStaff && intake.status === 'needs_admin_confirmation')) ||
-      intake.confirmedTargetUserId ||
+        !(isStaff && intake.status === 'needs_admin_confirmation') &&
+        !retry) ||
+      (intake.confirmedTargetUserId && !retry) ||
       intake.promptMessageId !== command.promptMessageId
     )
       return { kind: 'denied', code: 'confirmation_required' };

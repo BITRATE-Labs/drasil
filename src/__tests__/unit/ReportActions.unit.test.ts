@@ -19,12 +19,13 @@ function fixture() {
   const intakes = mock<IReportIntakeService>();
   const config = mock<IConfigService>();
   const security = mock<ISecurityActionService>();
+  const threadManager = mock<BotReportDependencies['threadManager']>();
   const deps: BotReportDependencies = {
     client,
     reportIntakeService: intakes,
     configService: config,
     securityActionService: security,
-    threadManager: mock<BotReportDependencies['threadManager']>(),
+    threadManager,
   };
   const intake: ReportIntake = {
     evidence_revision: 0,
@@ -52,8 +53,58 @@ function fixture() {
     updated_at: null,
   };
   intakes.findIntakeById.mockResolvedValue(intake);
-  return { client, intakes, config, security, intake, actions: createBotReportActions(deps) };
+  return {
+    client,
+    intakes,
+    config,
+    security,
+    intake,
+    threadManager,
+    actions: createBotReportActions(deps),
+  };
 }
+it.each(['guild', 'other-guild'])(
+  'activates a persisted report thread only in the requested guild, thread guild=%s',
+  async (threadGuildId) => {
+    const f = fixture();
+    const reporter = {
+      id: 'reporter',
+      permissions: { bitfield: 0n },
+      roles: { cache: new Map() },
+    } as unknown as GuildMember;
+    const guild = {
+      id: 'guild',
+      roles: { fetch: jest.fn() },
+      members: { fetch: jest.fn().mockResolvedValue(reporter) },
+    } as unknown as Guild;
+    const thread = { id: 'thread', guildId: threadGuildId, isThread: (): boolean => true };
+    jest.spyOn(f.client.guilds, 'fetch').mockResolvedValue(guild as never);
+    jest.spyOn(f.client.channels, 'fetch').mockResolvedValue(thread as never);
+    f.intakes.findOpenIntakeForReporter.mockResolvedValue(f.intake);
+    f.threadManager.activateReportIntakeThread.mockResolvedValue(true);
+
+    expect(
+      await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
+    ).toMatchObject({
+      outcome: {
+        status: threadGuildId === 'guild' ? 'existing' : 'activation_failed',
+        intake: { id: 'intake', threadId: 'thread' },
+      },
+    });
+    if (threadGuildId === 'guild')
+      expect(f.threadManager.activateReportIntakeThread).toHaveBeenCalledWith(
+        thread,
+        reporter,
+        'intake',
+        'resume'
+      );
+    else {
+      expect(f.threadManager.activateReportIntakeThread).not.toHaveBeenCalled();
+      expect(guild.members.fetch).toHaveBeenCalledTimes(1);
+    }
+    expect(f.threadManager.createReportIntakeThread).not.toHaveBeenCalled();
+  }
+);
 it('fresh reporter facts are bound before queued submission', async () => {
   const f = fixture();
   const member = {
@@ -188,4 +239,193 @@ it('passes uncached current identity fields to the staged confirmation service',
       },
     })
   );
+});
+
+it.each([
+  { verified: true, restored: true },
+  { verified: true, restored: false },
+  { verified: false, restored: false },
+  { verified: true, restored: 'error' },
+])(
+  'reports failed card closure according to verified rollback: %j',
+  async ({ verified, restored }) => {
+    const f = fixture();
+    f.intake.metadata = { workflow: 'staged', reporter_presentation: { nextDueAt: null } };
+    const before = { ...f.intake };
+    let current = f.intake;
+    f.intakes.findIntakeById.mockImplementation(async () => current);
+    f.intakes.closeIntakeForThread.mockImplementation(async () => {
+      current = {
+        ...current,
+        status: ReportIntakeStatus.CLOSED_BY_REPORTER,
+        closed_at: new Date(),
+      };
+      return {
+        closed: true,
+        shouldArchiveThread: true,
+        message: 'Closed',
+        closeVersion: 'version',
+      };
+    });
+    if (restored === 'error')
+      f.intakes.restoreFailedThreadClose = jest
+        .fn()
+        .mockRejectedValue(new Error('restore unavailable'));
+    else f.intakes.restoreFailedThreadClose = jest.fn().mockResolvedValue(restored === true);
+    const thread = {
+      guildId: 'guild',
+      isThread: () => true,
+      archived: false,
+      setArchived: jest.fn().mockRejectedValue(new Error('archive failed')),
+      fetch: verified
+        ? jest.fn().mockResolvedValue({ archived: false })
+        : jest.fn().mockRejectedValue(new Error('unknown')),
+    };
+    jest.spyOn(f.client.channels, 'fetch').mockResolvedValue(thread as never);
+    const closing = f.actions.execute(context, { kind: 'close_report_intake', intakeId: 'intake' });
+    if (restored === true) await expect(closing).rejects.toThrow("Couldn't close");
+    else
+      await expect(closing).resolves.toMatchObject({
+        outcome: {
+          status: 'closed',
+          archived: false,
+          result: { message: 'Closed Drasil could not confirm that the thread was archived.' },
+        },
+      });
+    if (verified)
+      expect(f.intakes.restoreFailedThreadClose).toHaveBeenCalledWith(before, current, 'version');
+    else expect(f.intakes.restoreFailedThreadClose).not.toHaveBeenCalled();
+  }
+);
+
+it.each(['resolve_submission', 'resolve_review'] as const)(
+  'preserves the saved %s outcome when thread archival fails',
+  async (kind) => {
+    const f = fixture();
+    f.intake.status = ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION;
+    f.intake.confirmed_target_user_id = kind === 'resolve_submission' ? 'target' : null;
+    f.intake.metadata = {
+      workflow: 'staged',
+      reporter_presentation: { nextDueAt: null },
+      admin_review_prompt_revision: 0,
+      admin_review_prompt_message_id: 'review',
+      analysis: {
+        schemaVersion: 1,
+        sources: {},
+        requestReservations: [],
+        coverage: null,
+        outcome: null,
+        handoff: {
+          state: 'delivered',
+          reason: 'no_match',
+          attempts: 1,
+          nextDueAt: null,
+          receipt: 'sent',
+          messageId: 'review',
+          channelId: 'admin',
+        },
+      },
+      ...(kind === 'resolve_submission'
+        ? {
+            submission: {
+              token: 'submission',
+              targetUserId: 'target',
+              state: 'not_dispatched',
+              claimedAt: new Date().toISOString(),
+              settledAt: new Date().toISOString(),
+            },
+          }
+        : {}),
+    };
+    const member = {
+      id: 'moderator',
+      permissions: { bitfield: 8n },
+      roles: { cache: new Map() },
+    } as unknown as GuildMember;
+    const guild = {
+      id: 'guild',
+      roles: { fetch: jest.fn() },
+      members: { fetch: jest.fn(async () => member) },
+    } as unknown as Guild;
+    jest.spyOn(f.client.guilds, 'fetch').mockResolvedValue(guild as never);
+    const message =
+      kind === 'resolve_submission'
+        ? 'Review resolved with your verified outcome.'
+        : 'Moderator review resolved. Saved evidence remains recorded.';
+    f.intakes.closeIntakeForThread.mockResolvedValue({
+      closed: true,
+      shouldArchiveThread: true,
+      message,
+    });
+    f.intakes.restoreFailedThreadClose = jest.fn().mockResolvedValue(false);
+    const thread = {
+      guildId: 'guild',
+      isThread: () => true,
+      archived: false,
+      setArchived: jest.fn().mockRejectedValue(new Error('archive failed')),
+      fetch: jest.fn().mockResolvedValue({ archived: false }),
+    };
+    jest.spyOn(f.client.channels, 'fetch').mockResolvedValue(thread as never);
+    await expect(
+      f.actions.execute(
+        { ...context, actor: { kind: 'user', userId: 'moderator' } },
+        {
+          kind: 'close_report_intake',
+          intakeId: 'intake',
+          expectedEvidenceRevision: 0,
+          promptMessageId: 'review',
+          closeMode:
+            kind === 'resolve_submission'
+              ? { kind, token: 'submission', reason: 'Verified', verifiedOutcome: 'not_applied' }
+              : { kind, reason: 'Reviewed' },
+        }
+      )
+    ).resolves.toMatchObject({
+      outcome: {
+        status: 'closed',
+        archived: false,
+        result: { message: `${message} Drasil could not confirm that the thread was archived.` },
+      },
+    });
+    expect(f.intakes.closeIntakeForThread).toHaveBeenCalledWith(
+      expect.objectContaining({ closedByStaff: true, closeMode: expect.objectContaining({ kind }) })
+    );
+  }
+);
+
+it('does not report closure from an archive proof that predates a failed card repair', async () => {
+  const f = fixture();
+  f.intake.metadata = { workflow: 'staged', reporter_presentation: { nextDueAt: null } };
+  f.intakes.findIntakeById.mockResolvedValue(f.intake);
+  f.intakes.closeIntakeForThread.mockResolvedValue({
+    closed: true,
+    shouldArchiveThread: true,
+    message: 'Closed',
+  });
+  let archived = false;
+  const thread = {
+    guildId: 'guild',
+    isThread: () => true,
+    archived: false,
+    setArchived: jest.fn(async () => {
+      archived = true;
+      throw new Error('response lost');
+    }),
+    fetch: jest.fn(async () => ({ archived })),
+  };
+  f.intakes.refreshPresentation = jest.fn(async () => {
+    archived = false;
+    throw new Error('rearchive failed');
+  });
+  jest.spyOn(f.client.channels, 'fetch').mockResolvedValue(thread as never);
+  await expect(
+    f.actions.execute(context, { kind: 'close_report_intake', intakeId: 'intake' })
+  ).resolves.toMatchObject({
+    outcome: {
+      status: 'closed',
+      archived: false,
+      result: { message: 'Drasil is still closing the thread. Please try again shortly.' },
+    },
+  });
+  expect(f.intakes.restoreFailedThreadClose).not.toHaveBeenCalled();
 });

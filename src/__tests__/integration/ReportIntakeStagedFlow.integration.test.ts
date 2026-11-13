@@ -295,7 +295,6 @@ describeIntegration('staged report journey through persisted boundaries', () => 
           open: async () => {
             throw new Error('not used');
           },
-          markOpenFailed: async () => {},
           confirm: async (ctx, command, staff) =>
             service.confirmCandidate({
               intakeId: command.intakeId,

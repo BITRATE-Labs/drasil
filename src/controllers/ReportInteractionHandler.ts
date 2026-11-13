@@ -1,3 +1,5 @@
+import { buildReportIntakePresentation } from '../utils/reportIntakePresentation';
+import { readReporterPresentation, reportRoot } from '../utils/reportIntakePresentationMetadata';
 import { requestSlashCommandConfirmation } from '../utils/slashCommandConfirmations';
 import {
   reportAnalysisMetadataSchema,
@@ -7,7 +9,7 @@ import {
   type ReportOutcome,
 } from '@drasil/application';
 import { createDiscordActionContext } from '../application/context';
-import { requireReportOutcome } from '../application/adapters/reports';
+import { ReportThreadCloseError, requireReportOutcome } from '../application/adapters/reports';
 import { getDetectionResponseSettings } from '../utils/detectionResponseSettings';
 import {
   ActionRowBuilder,
@@ -43,6 +45,7 @@ import { formatInlineIdentifier } from '../utils/discordUserIdentity';
 import { REPORT_MESSAGE_REASON_FIELD_ID } from '../utils/userReportSettings';
 import { canModerateReportIntake } from '../utils/reportIntakeStaffAuthorization';
 import {
+  buildReportIntakeAdminActionCustomId,
   buildReportIntakeAdminBanCustomId,
   buildReportIntakeReviewCustomId,
   type ParsedReportIntakeAdminActionCustomId,
@@ -141,7 +144,7 @@ export class ReportInteractionHandler {
         outcome.status === 'opened'
           ? `Opened a private report thread: ${outcome.threadUrl}\nAdd what happened there.`
           : outcome.status === 'activation_failed'
-            ? 'Could not prepare the private report thread. Please ask a server admin to check Drasil thread permissions.'
+            ? `Could not finish setting up the private report thread. Please ask a server admin to check Drasil thread permissions.${outcome.intake?.threadId ? `\nSaved report: https://discord.com/channels/${guildId}/${outcome.intake.threadId}` : ''}`
             : 'Could not open a private report thread. Please ask a server admin to check Drasil thread permissions.';
       await interaction.editReply({ content });
     } catch (error) {
@@ -175,7 +178,7 @@ export class ReportInteractionHandler {
         return;
       }
 
-      const [, intakeId, targetUserId] = customId.split(':');
+      const [, intakeId, targetUserId, promptToken] = customId.split(':');
       if (!intakeId || !targetUserId) {
         await interaction.editReply({ content: 'This report confirmation button is invalid.' });
         return;
@@ -187,6 +190,15 @@ export class ReportInteractionHandler {
 
       const context = await this.resolveReportConfirmationContext(interaction, intakeId);
       if (!context) return;
+      if (
+        readReporterPresentation(context.intake) &&
+        promptToken !== reportRoot(context.intake).last_confirmation_prompt_token
+      ) {
+        await interaction.editReply({
+          content: 'Use the latest confirmation message in this thread.',
+        });
+        return;
+      }
       const guild = context.guild;
       const targetMember = await guild.members
         .fetch({ user: targetUserId, force: true })
@@ -200,6 +212,7 @@ export class ReportInteractionHandler {
 
       const outcome = await this.executeReport(interaction, {
         kind: 'confirm_intake_candidate',
+        ...(promptToken ? { promptToken } : {}),
         intakeId,
         targetUserId,
         threadId: interaction.channelId,
@@ -407,10 +420,59 @@ export class ReportInteractionHandler {
         responseMode,
         // The in-thread close button is reporter-facing; closeIntakeForThread applies the
         // reporter-or-staff rule itself, so do not gate the lookup on moderation permissions.
-        { requireModerator: parsed.action !== 'thread_close' }
+        {
+          requireModerator: !['thread_close', 'thread_confirm_close', 'thread_keep_open'].includes(
+            parsed.action
+          ),
+        }
       );
       if (!context) {
         return;
+      }
+
+      if (['thread_close', 'thread_confirm_close', 'thread_keep_open'].includes(parsed.action)) {
+        if (interaction.user.id !== context.intake.reporter_id && !context.canModerate) {
+          await interaction.editReply({
+            content: 'Only the reporter or a moderator can close this report.',
+            components: [],
+          });
+          return;
+        }
+        if (parsed.action === 'thread_keep_open') {
+          await interaction.deleteReply();
+          return;
+        }
+        if (parsed.action === 'thread_close' && readReporterPresentation(context.intake)) {
+          const state = projectReportIntakeState(context.intake);
+          const review =
+            state.status === 'submitted' || state.status === 'needs_admin_confirmation';
+          const payload = buildReportIntakePresentation({
+            kind: review ? 'close_review' : 'close_draft',
+            actions: [
+              {
+                label: 'Keep open',
+                customId: buildReportIntakeAdminActionCustomId(
+                  'thread_keep_open',
+                  context.intake.id
+                ),
+                primary: true,
+              },
+              {
+                label: review ? 'Close thread' : 'Close report',
+                customId: buildReportIntakeAdminActionCustomId(
+                  'thread_confirm_close',
+                  context.intake.id
+                ),
+              },
+            ],
+          });
+          await interaction.editReply({
+            content: payload.content,
+            embeds: payload.embeds,
+            components: payload.components,
+          } as Parameters<ButtonInteraction['editReply']>[0]);
+          return;
+        }
       }
 
       if (parsed.action === 'menu') {
@@ -432,7 +494,10 @@ export class ReportInteractionHandler {
       await this.respondToReportIntakeAdminInteraction(
         interaction,
         {
-          content: 'An error occurred while processing this report admin action.',
+          content:
+            error instanceof ReportThreadCloseError
+              ? error.message
+              : 'An error occurred while processing this report admin action.',
           components: [],
         },
         responseMode

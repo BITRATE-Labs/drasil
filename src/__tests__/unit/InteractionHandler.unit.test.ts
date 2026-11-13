@@ -2921,6 +2921,7 @@ describe('InteractionHandler (unit)', () => {
           threadManager: {
             createReportIntakeThread: async () => ({
               id: 'report-thread',
+              guildId: 'guild-1',
               url: 'https://example.test/thread',
             }),
             activateReportIntakeThread: async () => true,

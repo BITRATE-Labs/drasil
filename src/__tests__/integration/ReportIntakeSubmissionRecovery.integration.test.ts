@@ -342,7 +342,11 @@ describeIntegration('confirmed intake submission recovery', () => {
     });
     expect(await f.saved()).toMatchObject({
       status: 'submitted',
-      metadata: { submission_resolution: { outcome: 'accepted_receipt' } },
+      metadata: {
+        thread_closed_at: expect.any(String),
+        thread_closed_by: staff.actor.kind === 'user' ? staff.actor.userId : '',
+        submission_resolution: { outcome: 'accepted_receipt' },
+      },
     });
     expect(f.security.hasConfirmedReportIntakeReceipt).toHaveBeenCalledWith(
       f.intake.id,

@@ -1,3 +1,7 @@
+import {
+  readReporterPresentation,
+  scheduleReporterChange,
+} from '../../utils/reportIntakePresentationMetadata';
 import { getReportIntakeSettings } from '../../utils/reportIntakeSettings';
 import {
   analysisClaimChange,
@@ -5,6 +9,7 @@ import {
   canAnalyze,
   completeAnalysisChange,
   presentationClaimChange,
+  reporterActionRequiresRollout,
   completePresentationChange,
   evidenceBatchChange,
   ownsAnalysis,
@@ -41,7 +46,10 @@ import {
   type TerminalActionCompletion,
   type VerificationReleaseCompletion,
 } from '../../repositories/VerificationEventRepository';
-import type { IReportIntakeRepository } from '../../repositories/ReportIntakeRepository';
+import {
+  isCompletedBanPresentationUpdate,
+  type IReportIntakeRepository,
+} from '../../repositories/ReportIntakeRepository';
 import type { IModerationOutcomeRepository } from '../../repositories/ModerationOutcomeRepository';
 import type { IRoleQuarantineSnapshotRepository } from '../../repositories/RoleQuarantineSnapshotRepository';
 import { verification_status } from '../../db/prisma';
@@ -1680,6 +1688,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
   private evidence: ReportIntakeEvidence[] = [];
   private intakeIdCounter = 0;
   private evidenceIdCounter = 0;
+  private nextPresentationSource = 0;
 
   async recordEvidenceBatch(
     input: ReportEvidenceBatch
@@ -1707,23 +1716,39 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
             sourceAuthorId: input.sourceAuthorId,
           } as ReportIntakeEvidence['metadata'],
         });
-    Object.assign(intake, result.change);
+    Object.assign(intake, scheduleReporterChange(intake, result.change));
     return result.result;
   }
   async claimPendingPresentation(
     now: Date,
     intakeId?: string
   ): Promise<ReportPresentationClaim | null> {
-    for (const intake of this.intakes.values()) {
+    const first = intakeId ? 0 : this.nextPresentationSource;
+    if (!intakeId) this.nextPresentationSource = (first + 1) % 3;
+    const source = (intake: ReportIntake): number =>
+      intake.analysis_failure_code === 'invalid_metadata'
+        ? 1
+        : readReporterPresentation(intake)?.nextDueAt
+          ? 0
+          : 2;
+    const ordered = [...this.intakes].sort(
+      (a, b) => ((source(a) - first + 3) % 3) - ((source(b) - first + 3) % 3)
+    );
+    for (const intake of ordered) {
       if (intakeId && intake.id !== intakeId) continue;
       if (
+        !readReporterPresentation(intake) &&
         intake.status === ReportIntakeStatus.NEEDS_REPORTER_CONFIRMATION &&
         !(await this.stagedEnabled(intake.server_id))
       )
         continue;
-      const result = presentationClaimChange(intake, now);
+      const allowReporter =
+        !readReporterPresentation(intake) ||
+        !reporterActionRequiresRollout(intake, now) ||
+        (await this.stagedEnabled(intake.server_id));
+      const result = presentationClaimChange(intake, now, allowReporter);
       if (!result) continue;
-      Object.assign(intake, result.change);
+      Object.assign(intake, scheduleReporterChange(intake, result.change));
       return result.claim;
     }
     return null;
@@ -1760,7 +1785,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
       if (scanned++ >= ANALYSIS_CLAIM_SCAN_LIMIT) break;
       const result = analysisClaimChange(intake, now, leaseMs);
       if (result) {
-        Object.assign(intake, result.change);
+        Object.assign(intake, scheduleReporterChange(intake, result.change));
         if (result.claim) return structuredClone(result.claim);
       }
     }
@@ -1854,15 +1879,20 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
         (item.metadata as Record<string, unknown> | null)?.report_ban_operation_id === operationId
     );
     if (index < 0) return null;
-    const metadata = {
-      ...(this.intakes[index].metadata as Record<string, unknown>),
-      ...input.metadata,
-    };
+    const current = this.intakes[index];
+    const metadata = { ...(current.metadata as Record<string, unknown>) };
     if (input.release) delete metadata.report_ban_operation_id;
-    this.intakes[index] = {
-      ...this.intakes[index],
+    Object.assign(metadata, input.metadata);
+    const change: Partial<ReportIntake> = {
       metadata: metadata as ReportIntake['metadata'],
-      ...(input.complete ? { status: ReportIntakeStatus.ACTIONED, closed_at: new Date() } : {}),
+      ...(input.complete
+        ? { status: ReportIntakeStatus.ACTIONED, closed_at: current.closed_at ?? new Date() }
+        : {}),
+      updated_at: new Date(),
+    };
+    this.intakes[index] = {
+      ...current,
+      ...scheduleReporterChange(current, change),
     };
     return { ...this.intakes[index] };
   }
@@ -1970,6 +2000,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
           : existing.metadata,
       updated_at: new Date(),
     };
+    Object.assign(updated, scheduleReporterChange(this.intakes[index], updated));
     this.intakes[index] = updated;
     return { ...updated };
   }
@@ -1988,6 +2019,11 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
       !isDeepStrictEqual(current.metadata, intake.metadata)
     )
       return null;
+    if (isCompletedBanPresentationUpdate(current, data)) {
+      current.metadata = data.metadata as ReportIntake['metadata'];
+      current.updated_at = new Date();
+      return { ...current };
+    }
     return this.update(intake.id, data);
   }
 
@@ -2021,6 +2057,7 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
       metadata: data.metadata as ReportIntake['metadata'],
       updated_at: new Date(),
     };
+    Object.assign(updated, scheduleReporterChange(this.intakes[index], updated));
     this.intakes[index] = updated;
     return { ...updated };
   }

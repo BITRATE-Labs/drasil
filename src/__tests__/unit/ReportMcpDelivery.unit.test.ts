@@ -43,7 +43,6 @@ it('preserves a submitted report when final intake bookkeeping fails', async () 
       load: async () => intake,
       findOpen: async () => null,
       open: async () => intake,
-      markOpenFailed: async () => {},
       confirm: async () => {
         intake.confirmedTargetUserId = 'target';
         return { confirmed: true, message: 'Confirmed', reason: 'Evidence' };

@@ -1,8 +1,15 @@
+import {
+  reporterPresentationSchema,
+  readReporterPresentation,
+  reportRoot,
+  scheduleReporterChange,
+} from '../utils/reportIntakePresentationMetadata';
 import { getReportIntakeSettings } from '../utils/reportIntakeSettings';
 import type { ReportAnalysisOutcome } from '@drasil/application';
 import {
   analysisClaimChange,
   presentationClaimChange,
+  reporterActionRequiresRollout,
   completePresentationChange,
   ANALYSIS_CLAIM_SCAN_LIMIT,
   OPEN_ANALYSIS_STATUSES as OPEN_INTAKE_STATUSES,
@@ -20,6 +27,7 @@ import {
 } from '../db/prisma';
 import { TYPES } from '../di/symbols';
 import { RepositoryError } from './BaseRepository';
+import { isDeepStrictEqual } from 'node:util';
 import {
   ReportIntake,
   ServerSettings,
@@ -42,6 +50,28 @@ export interface ReportBanClaim {
   operationId: string;
   attemptToken?: string;
 }
+
+export function isCompletedBanPresentationUpdate(
+  intake: ReportIntake,
+  data: ReportIntakeUpdate
+): boolean {
+  if (
+    intake.status !== ReportIntakeStatus.ACTIONED ||
+    !intake.closed_at ||
+    !data.metadata ||
+    Object.entries(data).some(([key, value]) => key !== 'metadata' && value !== undefined) ||
+    !reporterPresentationSchema.safeParse(data.metadata.reporter_presentation).success
+  )
+    return false;
+  const before = reportRoot(intake);
+  if (typeof before.report_ban_operation_id !== 'string' || !before.report_ban_operation_id)
+    return false;
+  const after = { ...data.metadata };
+  delete before.reporter_presentation;
+  delete after.reporter_presentation;
+  return isDeepStrictEqual(before, after);
+}
+
 export interface IReportIntakeRepository {
   claimPendingPresentation(now: Date, intakeId?: string): Promise<ReportPresentationClaim | null>;
   completePresentation(
@@ -90,6 +120,8 @@ export interface IReportIntakeRepository {
 export class ReportIntakeRepository implements IReportIntakeRepository {
   // Fairness only; eligibility and ownership are rechecked under the report lock.
   private quarantinePresentationAfter: string | null = null;
+  private reporterPresentationAfter: string | null = null;
+  private nextPresentationSource = 0;
   constructor(@inject(TYPES.PrismaClient) private prisma: PrismaClient) {}
 
   private async lockedIntake(
@@ -107,6 +139,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     intake: ReportIntake,
     change: Partial<ReportIntake>
   ): Promise<void> {
+    change = scheduleReporterChange(intake, change);
     await transaction.report_intakes.update({
       where: { id: intake.id },
       data: {
@@ -177,8 +210,51 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     now: Date,
     intakeId?: string
   ): Promise<ReportPresentationClaim | null> {
-    const quarantined = await this.claimQuarantinedPresentation(now, intakeId);
-    if (quarantined) return quarantined;
+    const sources = [
+      (): Promise<ReportPresentationClaim | null> => this.claimReporterPresentation(now, intakeId),
+      (): Promise<ReportPresentationClaim | null> =>
+        this.claimQuarantinedPresentation(now, intakeId),
+      (): Promise<ReportPresentationClaim | null> => this.claimStaffPresentation(now, intakeId),
+    ];
+    const first = intakeId ? 0 : this.nextPresentationSource;
+    if (!intakeId) this.nextPresentationSource = (first + 1) % sources.length;
+    for (let offset = 0; offset < sources.length; offset++) {
+      const claim = await sources[(first + offset) % sources.length]();
+      if (claim) return claim;
+    }
+    return null;
+  }
+
+  private async claimReporterPresentation(
+    now: Date,
+    intakeId?: string
+  ): Promise<ReportPresentationClaim | null> {
+    const after = intakeId ? null : this.reporterPresentationAfter;
+    return this.prisma.$transaction(async (transaction) => {
+      const rows = await transaction.$queryRaw<ReportIntake[]>`SELECT * FROM report_intakes
+        WHERE (${intakeId ?? null}::uuid IS NULL OR id = ${intakeId ?? null}::uuid)
+        AND (${after}::uuid IS NULL OR id > ${after}::uuid)
+        AND status <> 'expired'
+        AND metadata->'reporter_presentation'->>'nextDueAt' <= ${now.toISOString()}
+        AND (metadata->'analysis'->'presentation'->'lease'->>'until' IS NULL OR metadata->'analysis'->'presentation'->'lease'->>'until' <= ${now.toISOString()})
+        ORDER BY id FOR UPDATE SKIP LOCKED LIMIT ${ANALYSIS_CLAIM_SCAN_LIMIT}`;
+      for (const intake of rows) {
+        if (!intakeId) this.reporterPresentationAfter = intake.id;
+        const result = await this.presentationChange(transaction, intake, now);
+        if (!result) continue;
+        await this.writeProcessing(transaction, intake, result.change);
+        return result.claim;
+      }
+      if (!intakeId && rows.length < ANALYSIS_CLAIM_SCAN_LIMIT)
+        this.reporterPresentationAfter = null;
+      return null;
+    });
+  }
+
+  private async claimStaffPresentation(
+    now: Date,
+    intakeId?: string
+  ): Promise<ReportPresentationClaim | null> {
     return this.prisma.$transaction(async (transaction) => {
       const rows = await transaction.$queryRaw<ReportIntake[]>`
         SELECT * FROM report_intakes WHERE (${intakeId ?? null}::uuid IS NULL OR id = ${intakeId ?? null}::uuid)
@@ -196,7 +272,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
         AND COALESCE(metadata->'analysis'->'handoff'->>'state', '') <> 'resolved'
         ORDER BY updated_at, id FOR UPDATE SKIP LOCKED LIMIT ${ANALYSIS_CLAIM_SCAN_LIMIT}`;
       for (const intake of rows) {
-        const result = presentationClaimChange(intake, now);
+        const result = await this.presentationChange(transaction, intake, now);
         if (!result) continue;
         await this.writeProcessing(transaction, intake, result.change);
         return result.claim;
@@ -225,7 +301,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
       const claim = await this.prisma.$transaction(async (transaction) => {
         const current = await this.lockedIntake(transaction, snapshot.id);
         if (!current || current.analysis_failure_code !== 'invalid_metadata') return null;
-        const result = presentationClaimChange(current, now);
+        const result = await this.presentationChange(transaction, current, now);
         if (!result) return null;
         await this.writeProcessing(transaction, current, result.change);
         return result.claim;
@@ -233,6 +309,24 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
       if (claim) return claim;
     }
     return null;
+  }
+
+  private async presentationChange(
+    transaction: Prisma.TransactionClient,
+    intake: ReportIntake,
+    now: Date
+  ): Promise<ReturnType<typeof presentationClaimChange>> {
+    let allowReporter = true;
+    if (readReporterPresentation(intake) && reporterActionRequiresRollout(intake, now)) {
+      const server = await transaction.servers.findUnique({
+        where: { guild_id: intake.server_id },
+        select: { settings: true },
+      });
+      allowReporter = getReportIntakeSettings(
+        (server?.settings ?? {}) as ServerSettings
+      ).stagedEnabled;
+    }
+    return presentationClaimChange(intake, now, allowReporter);
   }
 
   async completePresentation(
@@ -346,15 +440,28 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     operationId: string,
     input: { release?: boolean; complete?: boolean; metadata?: Record<string, unknown> }
   ): Promise<ReportIntake | null> {
-    const rows = await this.prisma.$queryRaw<ReportIntake[]>`
+    return this.prisma.$transaction(async (transaction) => {
+      const current = await this.lockedIntake(transaction, reportId);
+      if (!current) return null;
+      // Match Date's precision so a fresh closed-at snapshot remains usable by exact CAS.
+      const completedAt = new Date();
+      const rows = await transaction.$queryRaw<ReportIntake[]>`
       update report_intakes
       set metadata = (case when ${input.release === true} then coalesce(metadata, '{}'::jsonb) - 'report_ban_operation_id' else coalesce(metadata, '{}'::jsonb) end) || ${JSON.stringify(input.metadata ?? {})}::jsonb,
         status = case when ${input.complete === true} then 'actioned'::report_intake_status else status end,
-        closed_at = case when ${input.complete === true} then coalesce(closed_at, now()) else closed_at end,
+        closed_at = case when ${input.complete === true} then coalesce(closed_at, ${completedAt}) else closed_at end,
         updated_at = now()
       where id = ${reportId}::uuid and metadata->>'report_ban_operation_id' = ${operationId}
       returning *`;
-    return rows[0] ?? null;
+      const updated = rows.at(0);
+      if (!updated) return null;
+      const scheduled = scheduleReporterChange(current, updated);
+      if (scheduled === updated) return updated;
+      return (await transaction.report_intakes.update({
+        where: { id: reportId },
+        data: { metadata: scheduled.metadata as Prisma.InputJsonValue },
+      })) as ReportIntake;
+    });
   }
 
   async create(data: ReportIntakeCreate): Promise<ReportIntake> {
@@ -433,42 +540,43 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
 
   async update(id: string, data: ReportIntakeUpdate): Promise<ReportIntake | null> {
     try {
-      const updateData: Prisma.report_intakesUpdateManyMutationInput = {
-        updated_at: new Date(),
-      };
-
-      if (data.status !== undefined) {
-        updateData.status = data.status as report_intake_status;
-      }
-      if (data.summary !== undefined) {
-        updateData.summary = data.summary;
-      }
-      if (data.confirmedTargetUserId !== undefined) {
-        updateData.confirmed_target_user_id = data.confirmedTargetUserId;
-      }
-      if (data.closedAt !== undefined) {
-        updateData.closed_at = data.closedAt;
-      }
-      if (data.metadata !== undefined) {
-        updateData.metadata = data.metadata as Prisma.InputJsonValue;
-      }
-
-      const updated = await this.prisma.report_intakes.updateManyAndReturn({
-        where: {
-          id,
-          OR: [
-            { metadata: { path: ['report_ban_operation_id'], equals: Prisma.AnyNull } },
-            { metadata: { path: ['report_ban_operation_id'], equals: '' } },
-          ],
-        },
-        data: updateData,
+      return await this.prisma.$transaction(async (transaction) => {
+        const current = await this.lockedIntake(transaction, id);
+        if (!current) return null;
+        const change: Partial<ReportIntake> = { updated_at: new Date() };
+        if (data.status !== undefined) change.status = data.status;
+        if (data.summary !== undefined) change.summary = data.summary;
+        if (data.confirmedTargetUserId !== undefined)
+          change.confirmed_target_user_id = data.confirmedTargetUserId;
+        if (data.closedAt !== undefined) change.closed_at = data.closedAt;
+        if (data.analysisDueAt !== undefined) change.analysis_due_at = data.analysisDueAt;
+        if (data.analysisLeaseToken !== undefined)
+          change.analysis_lease_token = data.analysisLeaseToken;
+        if (data.analysisLeaseUntil !== undefined)
+          change.analysis_lease_until = data.analysisLeaseUntil;
+        if (data.metadata !== undefined)
+          change.metadata = data.metadata as ReportIntake['metadata'];
+        const scheduled = scheduleReporterChange(current, change);
+        const updated = await transaction.report_intakes.updateManyAndReturn({
+          where: {
+            id,
+            OR: [
+              { metadata: { path: ['report_ban_operation_id'], equals: Prisma.AnyNull } },
+              { metadata: { path: ['report_ban_operation_id'], equals: '' } },
+            ],
+          },
+          data: {
+            ...scheduled,
+            status: scheduled.status as report_intake_status | undefined,
+            metadata:
+              scheduled.metadata === null
+                ? Prisma.JsonNull
+                : (scheduled.metadata as Prisma.InputJsonValue | undefined),
+          },
+        });
+        return (updated[0] as ReportIntake | undefined) ?? null;
       });
-      return (updated[0] as ReportIntake | undefined) ?? null;
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
-        console.warn(`Attempted to update non-existent report intake: ${id}`);
-        return null;
-      }
       this.handleError(error, 'updateReportIntake');
     }
   }
@@ -478,12 +586,27 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     data: ReportIntakeUpdate
   ): Promise<ReportIntake | null> {
     try {
+      const completedBanPresentation = isCompletedBanPresentationUpdate(intake, data);
+      const scheduled = scheduleReporterChange(intake, {
+        ...intake,
+        status: data.status ?? intake.status,
+        closed_at: data.closedAt === undefined ? intake.closed_at : data.closedAt,
+        confirmed_target_user_id:
+          data.confirmedTargetUserId === undefined
+            ? intake.confirmed_target_user_id
+            : data.confirmedTargetUserId,
+        metadata: (data.metadata === undefined
+          ? intake.metadata
+          : data.metadata) as ReportIntake['metadata'],
+      });
+      data = { ...data, metadata: scheduled.metadata as Record<string, unknown> };
       const updated = await this.prisma.report_intakes.updateManyAndReturn({
         where: {
           id: intake.id,
           OR: [
             { metadata: { path: ['report_ban_operation_id'], equals: Prisma.AnyNull } },
             { metadata: { path: ['report_ban_operation_id'], equals: '' } },
+            ...(completedBanPresentation ? [{ status: ReportIntakeStatus.ACTIONED }] : []),
           ],
           status: intake.status,
           evidence_revision: intake.evidence_revision,
@@ -525,6 +648,8 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     }
   ): Promise<ReportIntake | null> {
     try {
+      const reporter = reporterPresentationSchema.safeParse(data.metadata.reporter_presentation);
+      if (data.metadata.reporter_presentation !== undefined && !reporter.success) return null;
       const updated = await this.prisma.report_intakes.updateManyAndReturn({
         where: {
           id,
@@ -540,7 +665,17 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
         },
         data: {
           confirmed_target_user_id: data.targetUserId,
-          metadata: data.metadata as Prisma.InputJsonValue,
+          metadata: {
+            ...data.metadata,
+            ...(reporter.success
+              ? {
+                  reporter_presentation: {
+                    ...reporter.data,
+                    nextDueAt: new Date().toISOString(),
+                  },
+                }
+              : {}),
+          } as Prisma.InputJsonValue,
           updated_at: new Date(),
         },
       });

@@ -57,6 +57,7 @@ export interface ReportConfirmationResult {
   attachments?: ReportAttachment[];
 }
 export interface ReportCloseResult {
+  closeVersion?: string;
   closed: boolean;
   message: string;
   shouldArchiveThread?: boolean;
@@ -72,7 +73,6 @@ export interface ReportDependencies {
     load(intakeId: string): Promise<ReportIntakeState | null>;
     findOpen(context: ActionContext): Promise<ReportIntakeState | null>;
     open(context: ActionContext, channelId: string, threadId: string): Promise<ReportIntakeState>;
-    markOpenFailed(intakeId: string): Promise<void>;
     confirm(
       context: ActionContext,
       command: Extract<ReportCommand, { kind: 'confirm_intake_candidate' }>,
@@ -104,7 +104,12 @@ export interface ReportDependencies {
       finish(result: ReportCloseResult): Promise<{ archived: boolean; message: string }>;
     }>;
     create(context: ActionContext, channelId: string): Promise<{ id: string; url: string } | null>;
-    activate(context: ActionContext, threadId: string, intakeId: string): Promise<boolean>;
+    activate(
+      context: ActionContext,
+      threadId: string,
+      intakeId: string,
+      mode?: 'resume' | 'resume_staged'
+    ): Promise<boolean>;
     deleteFailed(threadId: string): Promise<void>;
     notifyOpened(context: ActionContext, threadId: string, intakeId: string): Promise<void>;
   };

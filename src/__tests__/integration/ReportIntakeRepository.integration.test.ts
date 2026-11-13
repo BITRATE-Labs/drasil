@@ -7,11 +7,110 @@ import { Prisma } from '../../db/prisma';
 import { ReportIntakeRepository } from '../../repositories/ReportIntakeRepository';
 import { ServerRepository } from '../../repositories/ServerRepository';
 import { UserRepository } from '../../repositories/UserRepository';
-import { ReportIntakeStatus } from '../../repositories/types';
+import { ReportIntakeStatus, type ReportIntakeUpdate } from '../../repositories/types';
 import { getPrismaClient } from '../testDb';
+import { InMemoryReportIntakeRepository } from '../fakes/inMemoryRepositories';
 
 const describeIntegration = process.env.JEST_INTEGRATION === '1' ? describe : describe.skip;
 describeIntegration('ReportIntakeRepository conditional state (integration)', () => {
+  it.each(['postgres', 'memory'])(
+    'schedules a settled reporter card when a guarded ban completes (%s)',
+    async (backend) => {
+      const setup = await pending();
+      const repository =
+        backend === 'postgres' ? setup.repository : new InMemoryReportIntakeRepository();
+      const intake = await repository.create({
+        serverId: setup.intake.server_id,
+        reporterId: setup.intake.reporter_id,
+        status: ReportIntakeStatus.SUBMITTED,
+        metadata: {
+          workflow: 'staged',
+          report_ban_operation_id: 'owned-ban',
+          retained: 'evidence',
+          reporter_presentation: { nextDueAt: null, followupMessageId: 'receipt' },
+        },
+      });
+      expect(await repository.updateBan(intake.id, 'other-ban', { complete: true })).toBeNull();
+      expect((await repository.findById(intake.id))?.metadata).toEqual(intake.metadata);
+      expect(
+        await repository.updateIfCurrent(intake, {
+          metadata: {
+            ...(intake.metadata as object),
+            reporter_presentation: { nextDueAt: null, restoreArchive: true },
+          },
+        })
+      ).toBeNull();
+      const closedAt = new Date().toISOString();
+      const finished = await repository.updateBan(intake.id, 'owned-ban', {
+        complete: true,
+        metadata: {
+          observed_action_closed_at: closedAt,
+          observed_action_close_reason: 'observed_ban',
+        },
+      });
+      expect(finished).toMatchObject({
+        status: ReportIntakeStatus.ACTIONED,
+        closed_at: expect.any(Date),
+        metadata: {
+          report_ban_operation_id: 'owned-ban',
+          retained: 'evidence',
+          observed_action_closed_at: closedAt,
+          reporter_presentation: { nextDueAt: expect.any(String), followupMessageId: 'receipt' },
+        },
+      });
+      expect((await repository.findById(intake.id))?.metadata).toEqual(finished!.metadata);
+      expect(
+        (await repository.claimPendingPresentation(new Date(), intake.id))?.intake.status
+      ).toBe(ReportIntakeStatus.ACTIONED);
+      const snapshot = (await repository.findById(intake.id))!;
+      const root = snapshot.metadata as Record<string, unknown>;
+      const presentation = root.reporter_presentation as Record<string, unknown>;
+      const metadata = {
+        ...root,
+        reporter_presentation: { ...presentation, restoreArchive: true },
+      };
+      const presented = await repository.updateIfCurrent(snapshot, { metadata });
+      expect(presented).toMatchObject({
+        metadata: {
+          report_ban_operation_id: 'owned-ban',
+          reporter_presentation: { restoreArchive: true },
+        },
+      });
+      expect(await repository.updateIfCurrent(snapshot, { metadata })).toBeNull();
+      const denied: ReportIntakeUpdate[] = [
+        { status: ReportIntakeStatus.SUBMITTED, metadata },
+        { closedAt: null, metadata },
+        { confirmedTargetUserId: 'another-target', metadata },
+        { metadata: { ...metadata, report_ban_operation_id: '' } },
+        { metadata: { ...metadata, observed_action_closed_at: null } },
+      ];
+      for (const change of denied)
+        expect(await repository.updateIfCurrent(presented!, change)).toBeNull();
+      expect(await repository.update(intake.id, { metadata })).toBeNull();
+    }
+  );
+
+  it.each(['postgres', 'memory'])(
+    'does not schedule reporter work when a ban reservation is only released (%s)',
+    async (backend) => {
+      const setup = await pending();
+      const repository =
+        backend === 'postgres' ? setup.repository : new InMemoryReportIntakeRepository();
+      const intake = await repository.create({
+        serverId: setup.intake.server_id,
+        reporterId: setup.intake.reporter_id,
+        status: ReportIntakeStatus.SUBMITTED,
+        metadata: {
+          report_ban_operation_id: 'owned-ban',
+          reporter_presentation: { nextDueAt: null },
+        },
+      });
+      const released = await repository.updateBan(intake.id, 'owned-ban', { release: true });
+      expect(released?.metadata).toEqual({ reporter_presentation: { nextDueAt: null } });
+      expect(released?.status).toBe(ReportIntakeStatus.SUBMITTED);
+    }
+  );
+
   it('rejects a confirmation after its metadata snapshot changes', async () => {
     const prisma = getPrismaClient();
     await new ServerRepository(prisma).getOrCreateServer('guild-copy');
@@ -56,6 +155,20 @@ describeIntegration('ReportIntakeRepository conditional state (integration)', ()
     });
     return { prisma, repository, intake };
   }
+
+  it('denies malformed reporter metadata without throwing or losing obligations', async () => {
+    const { repository, intake } = await pending();
+    const metadata = { reporter_presentation: { openingMessageId: 123, restoreArchive: true } };
+    await repository.update(intake.id, { metadata });
+    await expect(
+      repository.confirmTargetIfUnset(intake.id, {
+        targetUserId: 'target-copy',
+        expectedMetadata: metadata,
+        metadata,
+      })
+    ).resolves.toBeNull();
+    expect((await repository.findById(intake.id))!.metadata).toEqual(metadata);
+  });
 
   it.each([true, false])(
     'only one of confirmation and rejection commits, confirmation first: %s',
