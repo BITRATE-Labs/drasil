@@ -48,7 +48,7 @@
     "format:check": "prettier --check \"**/*.{ts,js,json,md,mjs}\"",
     "check": "npm run lint:fix && npm run build && npm test",
     "check:full": "npm run format:check && npm run check && npm run test:integration",
-    "check:ci": "npm run application:build && npm --ignore-scripts run build && npm --ignore-scripts run ci:prepared",
+    "check:ci": "npm run prisma:generate && npm run application:build && npm --ignore-scripts run build && npm --ignore-scripts run ci:prepared",
     "prisma:generate": "node scripts/prisma-generate.js",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
