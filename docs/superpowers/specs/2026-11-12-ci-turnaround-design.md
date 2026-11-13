@@ -4,7 +4,7 @@
 
 Deliver one PR that removes repeated setup and then runs independent checks concurrently. Developers should get a complete CI result near 10 minutes instead of the measured 22-25 minutes, while every existing check still runs. The target is an estimate, not an acceptance claim.
 
-The user accepts a modest increase in runner usage and chose to deliver cleanup and parallelization together. Implement the cleanup first, measure it, then add the job split in the same PR. This document proposes the job boundaries, validation and cost limits for approval. Implementation has not started.
+The user accepts a modest increase in runner usage and chose to deliver cleanup and parallelization together. Implement the cleanup first, measure it, then add the job split in the same PR. The user approved these job boundaries, validation and cost limits, including the 25 percent runner-minute threshold. Implementation has not started.
 
 The main tradeoff is repeated dependency installation across jobs. Use four execution jobs, including the existing Docker smoke check, rather than spreading every suite across its own runner. The database job is likely to remain the longest.
 
@@ -22,7 +22,7 @@ Confirmed requirements:
 - Accept a modest increase in total runner minutes for materially faster completion.
 - Retain the existing required `build-test` status and keep deployment dependent on the complete CI result wherever that dependency exists today.
 
-Proposed engineering choices:
+Approved engineering choices:
 
 - Four execution jobs and one small aggregate gate, with no cross-job build artifact transport.
 - A separate disposable Postgres service only for the database job.
@@ -116,7 +116,7 @@ Publish a short timing comparison for the serial baseline, cleanup-only revision
 
 Aim for 10-12 minutes to the final gate, excluding queue delays and separate production deployment. Investigate a result above 12 minutes before claiming the speedup is complete. A slower result is evidence for revisiting the split, not permission to drop checks.
 
-Treat an increase above 25 percent in summed execution-job minutes as exceeding the proposed modest-cost budget. Report that result and revise the split or seek the user's judgment before accepting it. The user approved modest growth, not this exact numeric threshold; 25 percent is a proposed conservative review trigger.
+Treat an increase above 25 percent in summed execution-job minutes as exceeding the approved modest-cost budget. Report that result and revise the split or seek the user's judgment before accepting it. The user explicitly approved this 25 percent review threshold.
 
 Before declaring the PR ready:
 
