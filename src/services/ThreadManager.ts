@@ -156,7 +156,7 @@ export interface IThreadManager {
     thread: ThreadChannel,
     reporter: GuildMember,
     reportIntakeId?: string,
-    mode?: 'resume'
+    mode?: 'resume' | 'resume_staged'
   ): Promise<boolean>;
 
   /**
@@ -1639,12 +1639,18 @@ export class ThreadManager implements IThreadManager {
     thread: ThreadChannel,
     reporter: GuildMember,
     reportIntakeId?: string,
-    mode?: 'resume'
+    mode?: 'resume' | 'resume_staged'
   ): Promise<boolean> {
     try {
-      await thread.members.add(reporter.id);
-
-      await this.addCaseResponderMembers(reporter.guild, thread, [reporter.id]);
+      const membership = mode
+        ? await thread.members.fetch({ member: reporter.id, force: true }).catch(() => null)
+        : null;
+      if (membership?.id !== reporter.id) {
+        await thread.members.add(reporter.id);
+        await this.addCaseResponderMembers(reporter.guild, thread, [reporter.id]);
+      }
+      // Staged opening cards are durably scheduled before admission.
+      if (mode === 'resume_staged') return true;
 
       if (reportIntakeId && this.reporterPresentation) {
         try {

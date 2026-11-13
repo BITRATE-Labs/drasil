@@ -85,15 +85,7 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     if (!claim) return true;
     try {
       await this.presentClaim(claim);
-      const latest = await this.repository.findById(intakeId);
-      const analysis = latest ? presentationMetadata(latest).analysis : null;
-      const staffPending =
-        latest?.status === 'needs_admin_confirmation' &&
-        analysis?.outcome?.kind === 'admin_review' &&
-        analysis.handoff.state === 'pending';
-      await this.repository.completePresentation(claim, {
-        kind: staffPending ? 'failed' : 'published',
-      });
+      await this.repository.completePresentation(claim, { kind: 'published' });
     } catch (error) {
       await this.repository.completePresentation(claim, { kind: 'failed' });
       throw error;
@@ -231,7 +223,11 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
       return this.presentActiveClaim(claim);
     }
     let reporter = readReporterPresentation(intake);
-    if (!channel.archived && !reporter?.restoreArchive) throw new Error('Thread closure pending');
+    if (!channel.archived && !reporter?.restoreArchive) {
+      await this.restoreClosedThread(claim, channel);
+      intake = await this.current(claim);
+      reporter = readReporterPresentation(intake);
+    }
     const view = reporterViewKey(intake);
     if (reporter?.closedCardView === view && channel.archived && !reporter.restoreArchive) return;
     if (

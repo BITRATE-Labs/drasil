@@ -519,17 +519,22 @@ export function completePresentationChange(
         reporter?.threadMissing === true));
   const nextDueAt =
     result.kind === 'published' &&
-    !(
-      intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION &&
-      ['delivered', 'acknowledged'].includes(analysis.handoff.state)
-    )
-      ? null
-      : new Date(
-          now.getTime() +
-            (success
-              ? PRESENTATION_RECONCILE_MS
-              : (PRESENTATION_RETRY_MS[attempts - 1] ?? PRESENTATION_RECONCILE_MS))
-        ).toISOString();
+    intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION &&
+    analysis.outcome?.kind === 'admin_review' &&
+    analysis.handoff.state === 'pending'
+      ? now.toISOString()
+      : result.kind === 'published' &&
+          !(
+            intake.status === ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION &&
+            ['delivered', 'acknowledged'].includes(analysis.handoff.state)
+          )
+        ? null
+        : new Date(
+            now.getTime() +
+              (success
+                ? PRESENTATION_RECONCILE_MS
+                : (PRESENTATION_RETRY_MS[attempts - 1] ?? PRESENTATION_RECONCILE_MS))
+          ).toISOString();
   if (reporter)
     metadata.reporter_presentation = {
       ...reporter,

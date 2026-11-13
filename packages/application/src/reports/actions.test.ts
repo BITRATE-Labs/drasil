@@ -238,16 +238,17 @@ it('a claim acquired during closure is reported as busy without thread effects',
   ).toMatchObject({ outcome: { status: 'busy' } });
   expect(effects).toBe(0);
 });
-it.each([true, false])(
-  'retries admission for an existing intake, admitted=%s',
-  async (admitted) => {
+it.each(['admitted', 'refused', 'throw'])(
+  'preserves the existing thread link when admission repair is %s',
+  async (result) => {
     const f = fixture();
     f.deps.intakes.findOpen = async (): Promise<ReportIntakeState> => f.intake;
     const calls: string[] = [];
     f.deps.threads.activate = async (_context, threadId, intakeId, mode): Promise<boolean> => {
       expect([threadId, intakeId, mode]).toEqual(['thread', 'intake', 'resume']);
       calls.push('admit');
-      return admitted;
+      if (result === 'throw') throw new Error('Membership response unavailable');
+      return result === 'admitted';
     };
     f.deps.threads.create = async (): Promise<null> => {
       calls.push('create');
@@ -261,10 +262,22 @@ it.each([true, false])(
     };
     expect(
       await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
-    ).toMatchObject({ outcome: { status: admitted ? 'existing' : 'activation_failed' } });
+    ).toMatchObject({ outcome: { status: 'existing', intake: { threadId: 'thread' } } });
     expect(calls).toEqual(['admit']);
   }
 );
+it('resumes staged admission without requesting another opening-card publication', async () => {
+  const f = fixture();
+  f.intake.staged = true;
+  f.deps.intakes.findOpen = async (): Promise<ReportIntakeState> => f.intake;
+  f.deps.threads.activate = async (_context, threadId, intakeId, mode): Promise<boolean> => {
+    expect([threadId, intakeId, mode]).toEqual(['thread', 'intake', 'resume_staged']);
+    return true;
+  };
+  expect(
+    await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
+  ).toMatchObject({ outcome: { status: 'existing', intake: { threadId: 'thread' } } });
+});
 it('submission trusts the stored reporter rather than the confirmation payload reporter', async () => {
   const f = fixture();
   let reporter: string | null = null;

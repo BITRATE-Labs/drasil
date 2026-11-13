@@ -374,7 +374,7 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
       context: ActionContext,
       threadId: string,
       intakeId: string,
-      mode?: 'resume'
+      mode?: 'resume' | 'resume_staged'
     ): Promise<boolean> {
       const guild = await deps.client.guilds.fetch(context.guildId);
       return deps.threadManager.activateReportIntakeThread(

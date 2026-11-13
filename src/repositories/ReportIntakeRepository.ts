@@ -1,5 +1,6 @@
 import {
   reporterPresentationSchema,
+  reportRoot,
   scheduleReporterChange,
 } from '../utils/reportIntakePresentationMetadata';
 import { getReportIntakeSettings } from '../utils/reportIntakeSettings';
@@ -24,6 +25,7 @@ import {
 } from '../db/prisma';
 import { TYPES } from '../di/symbols';
 import { RepositoryError } from './BaseRepository';
+import { isDeepStrictEqual } from 'node:util';
 import {
   ReportIntake,
   ServerSettings,
@@ -46,6 +48,28 @@ export interface ReportBanClaim {
   operationId: string;
   attemptToken?: string;
 }
+
+export function isCompletedBanPresentationUpdate(
+  intake: ReportIntake,
+  data: ReportIntakeUpdate
+): boolean {
+  if (
+    intake.status !== ReportIntakeStatus.ACTIONED ||
+    !intake.closed_at ||
+    !data.metadata ||
+    Object.entries(data).some(([key, value]) => key !== 'metadata' && value !== undefined) ||
+    !reporterPresentationSchema.safeParse(data.metadata.reporter_presentation).success
+  )
+    return false;
+  const before = reportRoot(intake);
+  if (typeof before.report_ban_operation_id !== 'string' || !before.report_ban_operation_id)
+    return false;
+  const after = { ...data.metadata };
+  delete before.reporter_presentation;
+  delete after.reporter_presentation;
+  return isDeepStrictEqual(before, after);
+}
+
 export interface IReportIntakeRepository {
   claimPendingPresentation(now: Date, intakeId?: string): Promise<ReportPresentationClaim | null>;
   completePresentation(
@@ -373,15 +397,28 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     operationId: string,
     input: { release?: boolean; complete?: boolean; metadata?: Record<string, unknown> }
   ): Promise<ReportIntake | null> {
-    const rows = await this.prisma.$queryRaw<ReportIntake[]>`
+    return this.prisma.$transaction(async (transaction) => {
+      const current = await this.lockedIntake(transaction, reportId);
+      if (!current) return null;
+      // Match Date's precision so a fresh closed-at snapshot remains usable by exact CAS.
+      const completedAt = new Date();
+      const rows = await transaction.$queryRaw<ReportIntake[]>`
       update report_intakes
       set metadata = (case when ${input.release === true} then coalesce(metadata, '{}'::jsonb) - 'report_ban_operation_id' else coalesce(metadata, '{}'::jsonb) end) || ${JSON.stringify(input.metadata ?? {})}::jsonb,
         status = case when ${input.complete === true} then 'actioned'::report_intake_status else status end,
-        closed_at = case when ${input.complete === true} then coalesce(closed_at, now()) else closed_at end,
+        closed_at = case when ${input.complete === true} then coalesce(closed_at, ${completedAt}) else closed_at end,
         updated_at = now()
       where id = ${reportId}::uuid and metadata->>'report_ban_operation_id' = ${operationId}
       returning *`;
-    return rows[0] ?? null;
+      const updated = rows.at(0);
+      if (!updated) return null;
+      const scheduled = scheduleReporterChange(current, updated);
+      if (scheduled === updated) return updated;
+      return (await transaction.report_intakes.update({
+        where: { id: reportId },
+        data: { metadata: scheduled.metadata as Prisma.InputJsonValue },
+      })) as ReportIntake;
+    });
   }
 
   async create(data: ReportIntakeCreate): Promise<ReportIntake> {
@@ -506,6 +543,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
     data: ReportIntakeUpdate
   ): Promise<ReportIntake | null> {
     try {
+      const completedBanPresentation = isCompletedBanPresentationUpdate(intake, data);
       const scheduled = scheduleReporterChange(intake, {
         ...intake,
         status: data.status ?? intake.status,
@@ -525,6 +563,7 @@ export class ReportIntakeRepository implements IReportIntakeRepository {
           OR: [
             { metadata: { path: ['report_ban_operation_id'], equals: Prisma.AnyNull } },
             { metadata: { path: ['report_ban_operation_id'], equals: '' } },
+            ...(completedBanPresentation ? [{ status: ReportIntakeStatus.ACTIONED }] : []),
           ],
           status: intake.status,
           evidence_revision: intake.evidence_revision,

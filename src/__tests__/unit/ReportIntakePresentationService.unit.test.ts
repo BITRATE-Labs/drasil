@@ -1,3 +1,4 @@
+import { processingMetadata } from '../../repositories/reportIntakeProcessing';
 import { findAuthoredReportMessage } from '../../utils/reportPresentationDiscord';
 import type { IModerationQueueRepository } from '../../repositories/ModerationQueueRepository';
 import type { IConfigService } from '../../config/ConfigService';
@@ -138,6 +139,48 @@ async function suggest(f: Awaited<ReturnType<typeof fixture>>): Promise<void> {
     },
   });
 }
+
+it('keeps pending staff delivery due after repeated successful reporter renders', async () => {
+  const f = await fixture();
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.NEEDS_ADMIN_CONFIRMATION,
+    metadata: {
+      workflow: 'staged',
+      analysis: {
+        schemaVersion: 1,
+        sources: {},
+        requestReservations: [],
+        outcome: {
+          kind: 'admin_review',
+          reason: 'no_match',
+          candidates: [],
+          coverage: { kind: 'unavailable', reason: 'transport' },
+          includedEvidenceIds: [],
+          excludedEvidenceIds: [],
+        },
+        coverage: null,
+        handoff: {
+          state: 'pending',
+          reason: 'no_match',
+          attempts: 0,
+          nextDueAt: new Date().toISOString(),
+          receipt: 'pending',
+        },
+      },
+    },
+  });
+  for (let attempt = 0; attempt < 5; attempt++) await f.service.reconcile(f.intake.id);
+  const saved = (await f.repository.findById(f.intake.id))!;
+  expect(saved.metadata).toMatchObject({ reporter_presentation: { nextDueAt: null } });
+  expect(processingMetadata(saved).analysis.presentation).toMatchObject({
+    attempts: 0,
+    lastFailure: null,
+  });
+  expect(await f.repository.claimPendingPresentation(new Date(), f.intake.id)).not.toBeNull();
+  expect(JSON.stringify([...f.messages.values()].map((message) => message.embeds))).not.toContain(
+    'Sent to moderators'
+  );
+});
 
 describe('durable reporter presentation', () => {
   it('edits the opening card as evidence arrives instead of adding acknowledgments', async () => {
@@ -506,6 +549,29 @@ it.each([
     expect(f.channel.setArchived).not.toHaveBeenCalled();
   }
 );
+it('recovers persisted closure after an unknown initial archive outcome', async () => {
+  const f = await fixture();
+  await f.service.reconcile(f.intake.id);
+  await f.repository.update(f.intake.id, {
+    status: ReportIntakeStatus.CLOSED_BY_REPORTER,
+    closedAt: new Date(),
+  });
+  f.channel.setArchived.mockRejectedValueOnce(new Error('archive outcome unknown'));
+  f.channel.fetch.mockRejectedValueOnce(new Error('verification unavailable'));
+  await expect(f.service.reconcile(f.intake.id)).rejects.toThrow('archive outcome unknown');
+  expect(f.channel.archived).toBe(false);
+  expect(JSON.stringify([...f.messages.values()].map((message) => message.embeds))).not.toContain(
+    'Thread closed'
+  );
+  await f.service.reconcile(f.intake.id);
+  expect(f.channel.archived).toBe(true);
+  expect(JSON.stringify([...f.messages.values()].map((message) => message.embeds))).toContain(
+    'Thread closed'
+  );
+  expect((await f.repository.findById(f.intake.id))?.metadata).toMatchObject({
+    reporter_presentation: { restoreArchive: false, nextDueAt: null },
+  });
+});
 it('recovers a failed rearchive without editing or reopening the finished card again', async () => {
   const f = await fixture();
   await f.service.reconcile(f.intake.id);

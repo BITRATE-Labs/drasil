@@ -1667,6 +1667,7 @@ describe('ThreadManager (unit)', () => {
         createdTimestamp: Date.now(),
       } as Message;
       const history = new Collection<string, Message>();
+      (thread.members.fetch as jest.Mock).mockResolvedValue({ id: reporter.id });
       if (initial !== 'failed') history.set(welcome.id, welcome);
       (thread.messages.fetch as jest.Mock).mockResolvedValue(history);
 
@@ -1680,8 +1681,42 @@ describe('ThreadManager (unit)', () => {
       );
       expect(thread.send).toHaveBeenCalledTimes(initial === 'failed' ? 2 : 1);
       expect(thread.setArchived).not.toHaveBeenCalled();
+      expect(thread.members.add).toHaveBeenCalledTimes(1);
+      expect(configService.getServerConfig).toHaveBeenCalledTimes(1);
       for (const [payload] of (thread.send as jest.Mock).mock.calls)
         expect(payload).toMatchObject({ nonce: thread.id, enforceNonce: true });
+    }
+  );
+
+  it.each(['present', 'absent', 'unavailable'])(
+    'resumes staged reporter admission with %s membership without refreshing cards',
+    async (membership) => {
+      const presentation = { reconcile: jest.fn(), presentClaim: jest.fn() };
+      const manager = new ThreadManager(
+        {} as Client,
+        configService,
+        verificationEventRepository,
+        userRepository,
+        serverRepository,
+        serverMemberRepository,
+        presentation
+      );
+      const reporter = buildMember('guild-1', 'reporter-1');
+      (thread.members.fetch as jest.Mock).mockResolvedValue(
+        membership === 'present' ? { id: reporter.id } : null
+      );
+      if (membership === 'unavailable')
+        (thread.members.fetch as jest.Mock).mockRejectedValue(new Error('Membership unavailable'));
+      expect(
+        await manager.activateReportIntakeThread(thread, reporter, 'intake-1', 'resume_staged')
+      ).toBe(true);
+      expect(thread.members.fetch).toHaveBeenCalledWith({ member: reporter.id, force: true });
+      expect(thread.members.add).toHaveBeenCalledTimes(membership === 'present' ? 0 : 1);
+      expect(configService.getServerConfig).toHaveBeenCalledTimes(membership === 'present' ? 0 : 1);
+      expect(presentation.reconcile).not.toHaveBeenCalled();
+      expect(thread.messages.fetch).not.toHaveBeenCalled();
+      expect(thread.send).not.toHaveBeenCalled();
+      expect(thread.setArchived).not.toHaveBeenCalled();
     }
   );
 

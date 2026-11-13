@@ -71,12 +71,19 @@ export function createReportActions(deps: ReportDependencies): ReportActions {
   async function start(context: ActionContext, channelId: string): Promise<ReportOutcome> {
     const existing = await deps.intakes.findOpen(context);
     if (existing) {
-      const admitted =
-        existing.threadId &&
-        (await deps.threads.activate(context, existing.threadId, existing.id, 'resume'));
+      // A repair failure must not hide the already-created private thread.
+      if (existing.threadId)
+        await deps.threads
+          .activate(
+            context,
+            existing.threadId,
+            existing.id,
+            existing.staged ? 'resume_staged' : 'resume'
+          )
+          .catch(() => false);
       return {
         kind: 'start_report_intake',
-        status: admitted ? 'existing' : 'activation_failed',
+        status: existing.threadId ? 'existing' : 'activation_failed',
         intake: existing,
       };
     }

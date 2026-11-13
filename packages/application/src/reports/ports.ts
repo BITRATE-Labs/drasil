@@ -108,7 +108,7 @@ export interface ReportDependencies {
       context: ActionContext,
       threadId: string,
       intakeId: string,
-      mode?: 'resume'
+      mode?: 'resume' | 'resume_staged'
     ): Promise<boolean>;
     deleteFailed(threadId: string): Promise<void>;
     notifyOpened(context: ActionContext, threadId: string, intakeId: string): Promise<void>;

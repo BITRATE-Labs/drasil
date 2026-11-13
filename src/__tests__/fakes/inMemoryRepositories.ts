@@ -42,7 +42,10 @@ import {
   type TerminalActionCompletion,
   type VerificationReleaseCompletion,
 } from '../../repositories/VerificationEventRepository';
-import type { IReportIntakeRepository } from '../../repositories/ReportIntakeRepository';
+import {
+  isCompletedBanPresentationUpdate,
+  type IReportIntakeRepository,
+} from '../../repositories/ReportIntakeRepository';
 import type { IModerationOutcomeRepository } from '../../repositories/ModerationOutcomeRepository';
 import type { IRoleQuarantineSnapshotRepository } from '../../repositories/RoleQuarantineSnapshotRepository';
 import { verification_status } from '../../db/prisma';
@@ -1855,15 +1858,20 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
         (item.metadata as Record<string, unknown> | null)?.report_ban_operation_id === operationId
     );
     if (index < 0) return null;
-    const metadata = {
-      ...(this.intakes[index].metadata as Record<string, unknown>),
-      ...input.metadata,
-    };
+    const current = this.intakes[index];
+    const metadata = { ...(current.metadata as Record<string, unknown>) };
     if (input.release) delete metadata.report_ban_operation_id;
-    this.intakes[index] = {
-      ...this.intakes[index],
+    Object.assign(metadata, input.metadata);
+    const change: Partial<ReportIntake> = {
       metadata: metadata as ReportIntake['metadata'],
-      ...(input.complete ? { status: ReportIntakeStatus.ACTIONED, closed_at: new Date() } : {}),
+      ...(input.complete
+        ? { status: ReportIntakeStatus.ACTIONED, closed_at: current.closed_at ?? new Date() }
+        : {}),
+      updated_at: new Date(),
+    };
+    this.intakes[index] = {
+      ...current,
+      ...scheduleReporterChange(current, change),
     };
     return { ...this.intakes[index] };
   }
@@ -1990,6 +1998,11 @@ export class InMemoryReportIntakeRepository implements IReportIntakeRepository {
       !isDeepStrictEqual(current.metadata, intake.metadata)
     )
       return null;
+    if (isCompletedBanPresentationUpdate(current, data)) {
+      current.metadata = data.metadata as ReportIntake['metadata'];
+      current.updated_at = new Date();
+      return { ...current };
+    }
     return this.update(intake.id, data);
   }
 
