@@ -91,7 +91,7 @@ If the user says "Reset the database", run `npm run db:reset:local`.
 ## CI
 
 - Workflow: `.github/workflows/ci.yml`
-- Gates: build, format check, lint, tests against Postgres service.
+- Gates: static/unit, serial Postgres acceptance, isolated browsers and Docker smoke run independently; `build-test` requires all four to succeed.
 
 ## Deployment
 

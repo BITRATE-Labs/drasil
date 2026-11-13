@@ -15,9 +15,25 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 jobs:
-  build-test:
-    # Pinned: ubuntu-latest moved to 26.04, where this Playwright version cannot install chromium.
-    # Revert to ubuntu-latest once Playwright is upgraded to a release that supports 26.04.
+  # Keep 24.04 until this Playwright version supports Ubuntu 26.04.
+  static-unit:
+    runs-on: ubuntu-24.04
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build application and bot once
+        run: npm run application:build && npm --ignore-scripts run build
+      - name: Static and unit checks
+        run: npm --ignore-scripts run ci:static:prepared
+
+  database-acceptance:
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -68,12 +84,10 @@ jobs:
             sleep 2
           done
           exit 1
-      - name: Quality gate
-        run: npm run check:ci
-      - name: Production application package smoke
-        run: |
-          docker build -t drasil-action-boundary:ci .
-          docker run --rm --entrypoint node drasil-action-boundary:ci scripts/check-application-imports.mjs
+      - name: Build application and bot once
+        run: npm run application:build && npm --ignore-scripts run build
+      - name: Serial database acceptance
+        run: npm --ignore-scripts run ci:database:prepared
       - name: Log workspace screenshot differences on failure
         if: failure()
         run: node scripts/log-workspace-screenshot-diffs.mjs
@@ -81,15 +95,76 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: web-playwright-artifacts
+          name: database-playwright-artifacts
           if-no-files-found: ignore
           retention-days: 7
           path: |
             apps/web/playwright-report
             apps/web/test-results
             apps/web/workspace-test-results
+
+  isolated-browsers:
+    runs-on: ubuntu-24.04
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Use Ubuntu archive mirror
+        run: |
+          # Azure mirror downloads can stall before Chromium installation.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i -E \
+              's#https?://azure\.archive\.ubuntu\.com/ubuntu([/[:space:]]|$)#https://archive.ubuntu.com/ubuntu\1#g' \
+              /etc/apt/apt-mirrors.txt
+          fi
+      - name: Install Playwright browsers
+        timeout-minutes: 10
+        run: npm exec --workspace apps/web -- playwright install --with-deps chromium
+      - name: Build application once
+        run: npm run application:build
+      - name: Isolated browser and visual checks
+        run: npm --ignore-scripts run ci:browsers:prepared
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: isolated-playwright-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
             apps/web/storybook-test-results
             apps/web/storybook-playwright-report
+
+  package-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Production application package smoke
+        run: |
+          docker build -t drasil-action-boundary:ci .
+          docker run --rm --entrypoint node drasil-action-boundary:ci scripts/check-application-imports.mjs
+
+  build-test:
+    if: always()
+    needs: [static-unit, database-acceptance, isolated-browsers, package-smoke]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Require every execution job to succeed
+        env:
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: node scripts/check-ci-results.mjs
 
   metrics:
     runs-on: ubuntu-latest
