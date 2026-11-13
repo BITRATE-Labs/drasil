@@ -38,7 +38,7 @@ Keep diffs tight. If the PR is doing two things, split it.
 
 ## Local quality gate
 
-CI runs `npm run check:ci`.
+`npm run check:ci` builds prerequisites once and runs the prepared static, database and browser groups sequentially. Standalone commands retain their normal build prerequisites. Hosted CI runs static/unit, serial database acceptance, isolated browser checks and production Docker smoke concurrently. The required `build-test` aggregate succeeds only when all four jobs succeed. Only the database job has Postgres and test database URLs.
 
 Before pushing (when feasible):
 
