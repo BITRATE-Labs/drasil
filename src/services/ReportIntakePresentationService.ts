@@ -490,7 +490,10 @@ export class ReportIntakePresentationService implements IReportIntakePresentatio
     await this.checkRollout(state, intake);
     const edited = buildReportIntakePresentation(state);
     await message.edit({
-      content: edited.content,
+      content:
+        state.kind === 'confirm' && message.content === `<@${intake.reporter_id}>`
+          ? message.content
+          : edited.content,
       embeds: edited.embeds,
       components: edited.components,
       allowedMentions: { parse: [] },

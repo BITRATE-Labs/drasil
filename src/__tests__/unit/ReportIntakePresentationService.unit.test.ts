@@ -38,6 +38,7 @@ async function fixture() {
       author: { id: string };
       guildId: string;
       channelId: string;
+      content?: string;
       createdTimestamp: number;
       embeds: unknown[];
       components: readonly unknown[];
@@ -75,6 +76,7 @@ async function fixture() {
         author: { id: 'bot' },
         guildId: 'guild',
         channelId: 'thread',
+        content: payload.content ?? '',
         createdTimestamp: Date.now(),
         embeds: payload.embeds!.map((x) => (x as EmbedBuilder).toJSON()),
         components: payload.components || [],
@@ -82,6 +84,7 @@ async function fixture() {
       };
       message.edit.mockImplementation(async (next: MessageCreateOptions) => {
         if (channel.archived) throw new Error('Cannot edit archived thread');
+        if (next.content !== undefined) message.content = next.content ?? '';
         if (next.embeds) message.embeds = next.embeds.map((x) => (x as EmbedBuilder).toJSON());
         message.components = next.components || [];
         return message;
@@ -222,6 +225,7 @@ describe('durable reporter presentation', () => {
     await f.service.reconcile(f.intake.id);
     expect(f.messages.size).toBe(2);
     expect(JSON.stringify([...f.messages.values()].at(-1)?.embeds)).toContain('Report submitted');
+    expect(f.messages.get('2')?.content).toBe('');
   });
   it('reuses the confirmation for a new revision and changes its authorization token', async () => {
     const f = await fixture();
@@ -229,7 +233,12 @@ describe('durable reporter presentation', () => {
     await suggest(f);
     await f.service.reconcile(f.intake.id);
     const first = JSON.stringify(f.messages.get('2')?.components);
+    expect(f.messages.get('2')?.content).toBe('<@reporter>');
     await f.service.reconcile(f.intake.id);
+    expect(f.messages.get('2')?.content).toBe('<@reporter>');
+    expect(f.messages.get('2')?.edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowedMentions: { parse: [] } })
+    );
     expect(f.messages.size).toBe(2);
     expect(JSON.stringify(f.messages.get('2')?.components)).not.toBe(first);
     expect(f.channel.send.mock.calls[1][0].allowedMentions).toEqual({
