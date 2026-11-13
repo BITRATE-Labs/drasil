@@ -38,7 +38,7 @@ Keep diffs tight. If the PR is doing two things, split it.
 
 ## Local quality gate
 
-CI runs `npm run check:ci`.
+`npm run check:ci` builds prerequisites once and runs the prepared static, database and browser groups sequentially. Standalone commands retain their normal build prerequisites.
 
 Before pushing (when feasible):
 

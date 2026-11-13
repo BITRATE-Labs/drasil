@@ -80,7 +80,7 @@ If the user says "Reset the database", run `npm run db:reset:local`.
 - Unit tests live in `src/__tests__/unit` and do not require a database.
 - Integration tests live in `src/__tests__/integration` and use a real Postgres DB via Prisma.
 - Integration tests are enabled by `JEST_INTEGRATION=1`.
-- Test setup runs `prisma migrate deploy` and truncates tables between tests.
+- The integration runner prepares migrations once before Jest; test setup truncates tables between tests.
 - Integration tests require identical `TEST_DATABASE_URL`, `DATABASE_URL` and
   `POSTGRES_DB_URL` values. The owned disposable targets are loopback
   `55433/drasil_mcp_test` locally and `5432/drasil_test` in CI. The shared test

@@ -1,6 +1,4 @@
 import { createPrismaClient, PrismaClient } from '../db/prisma';
-import { Client } from 'pg';
-import { execSync } from 'child_process';
 import { ownedTestDatabase } from '../../scripts/owned-test-database.js';
 import * as dotenv from 'dotenv';
 
@@ -25,21 +23,6 @@ export async function disconnectPrismaClient(): Promise<void> {
     await prismaClient.$disconnect();
     prismaClient = null;
   }
-}
-
-export async function ensureExtensions(): Promise<void> {
-  const client = new Client({ connectionString: resolveDatabaseUrl() });
-  await client.connect();
-  await client.query('CREATE SCHEMA IF NOT EXISTS extensions;');
-  await client.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;');
-  await client.end();
-}
-
-export function runMigrations(): void {
-  execSync('npx prisma migrate deploy', {
-    stdio: 'inherit',
-    env: { ...process.env, DATABASE_URL: resolveDatabaseUrl() },
-  });
 }
 
 export async function truncateAllTables(): Promise<void> {
