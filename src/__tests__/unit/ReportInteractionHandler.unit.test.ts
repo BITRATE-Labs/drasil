@@ -235,6 +235,7 @@ describe('ReportInteractionHandler (unit)', () => {
       retireReportConfirmationPrompts: jest.fn().mockResolvedValue(undefined),
       createReportIntakeThread: jest.fn().mockResolvedValue({
         id: 'report-thread-1',
+        guildId: 'guild-1',
         url: 'https://discord.com/channels/report-thread-1',
       } as any),
       activateReportIntakeThread: jest.fn().mockResolvedValue(true),
@@ -792,6 +793,7 @@ describe('ReportInteractionHandler (unit)', () => {
     const reporter = buildMember('guild-1', 'reporter-1');
     const thread = {
       id: 'report-thread-1',
+      guildId: 'guild-1',
       url: 'https://discord.com/channels/report-thread-1',
       delete: jest.fn().mockResolvedValue(undefined),
     };
@@ -826,6 +828,7 @@ describe('ReportInteractionHandler (unit)', () => {
     const reporter = buildMember('guild-1', 'reporter-1');
     const thread = {
       id: 'report-thread-1',
+      guildId: 'guild-1',
       url: 'https://discord.com/channels/report-thread-1',
       delete: jest.fn().mockResolvedValue(undefined),
     };

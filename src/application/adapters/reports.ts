@@ -376,9 +376,12 @@ function createReportThreadPorts(deps: BotReportDependencies): ReportDependencie
       intakeId: string,
       mode?: 'resume' | 'resume_staged'
     ): Promise<boolean> {
+      const loadedThread = await thread(threadId);
+      if (loadedThread.guildId !== context.guildId)
+        throw new Error('Report intake thread does not belong to this server.');
       const guild = await deps.client.guilds.fetch(context.guildId);
       return deps.threadManager.activateReportIntakeThread(
-        await thread(threadId),
+        loadedThread,
         await guild.members.fetch(actorId(context)),
         intakeId,
         ...(mode ? ([mode] as const) : [])

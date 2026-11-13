@@ -19,12 +19,13 @@ function fixture() {
   const intakes = mock<IReportIntakeService>();
   const config = mock<IConfigService>();
   const security = mock<ISecurityActionService>();
+  const threadManager = mock<BotReportDependencies['threadManager']>();
   const deps: BotReportDependencies = {
     client,
     reportIntakeService: intakes,
     configService: config,
     securityActionService: security,
-    threadManager: mock<BotReportDependencies['threadManager']>(),
+    threadManager,
   };
   const intake: ReportIntake = {
     evidence_revision: 0,
@@ -52,8 +53,53 @@ function fixture() {
     updated_at: null,
   };
   intakes.findIntakeById.mockResolvedValue(intake);
-  return { client, intakes, config, security, intake, actions: createBotReportActions(deps) };
+  return {
+    client,
+    intakes,
+    config,
+    security,
+    intake,
+    threadManager,
+    actions: createBotReportActions(deps),
+  };
 }
+it.each(['guild', 'other-guild'])(
+  'activates a persisted report thread only in the requested guild, thread guild=%s',
+  async (threadGuildId) => {
+    const f = fixture();
+    const reporter = {
+      id: 'reporter',
+      permissions: { bitfield: 0n },
+      roles: { cache: new Map() },
+    } as unknown as GuildMember;
+    const guild = {
+      id: 'guild',
+      roles: { fetch: jest.fn() },
+      members: { fetch: jest.fn().mockResolvedValue(reporter) },
+    } as unknown as Guild;
+    const thread = { id: 'thread', guildId: threadGuildId, isThread: (): boolean => true };
+    jest.spyOn(f.client.guilds, 'fetch').mockResolvedValue(guild as never);
+    jest.spyOn(f.client.channels, 'fetch').mockResolvedValue(thread as never);
+    f.intakes.findOpenIntakeForReporter.mockResolvedValue(f.intake);
+    f.threadManager.activateReportIntakeThread.mockResolvedValue(true);
+
+    expect(
+      await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
+    ).toMatchObject({ outcome: { status: 'existing', intake: { threadId: 'thread' } } });
+    if (threadGuildId === 'guild')
+      expect(f.threadManager.activateReportIntakeThread).toHaveBeenCalledWith(
+        thread,
+        reporter,
+        'intake',
+        'resume'
+      );
+    else {
+      expect(f.threadManager.activateReportIntakeThread).not.toHaveBeenCalled();
+      expect(guild.members.fetch).toHaveBeenCalledTimes(1);
+    }
+    expect(f.threadManager.createReportIntakeThread).not.toHaveBeenCalled();
+  }
+);
 it('fresh reporter facts are bound before queued submission', async () => {
   const f = fixture();
   const member = {
