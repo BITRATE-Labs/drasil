@@ -85,7 +85,12 @@ it.each(['guild', 'other-guild'])(
 
     expect(
       await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
-    ).toMatchObject({ outcome: { status: 'existing', intake: { threadId: 'thread' } } });
+    ).toMatchObject({
+      outcome: {
+        status: threadGuildId === 'guild' ? 'existing' : 'activation_failed',
+        intake: { id: 'intake', threadId: 'thread' },
+      },
+    });
     if (threadGuildId === 'guild')
       expect(f.threadManager.activateReportIntakeThread).toHaveBeenCalledWith(
         thread,

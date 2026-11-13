@@ -1682,7 +1682,7 @@ describe('ThreadManager (unit)', () => {
       expect(thread.send).toHaveBeenCalledTimes(initial === 'failed' ? 2 : 1);
       expect(thread.setArchived).not.toHaveBeenCalled();
       expect(thread.members.add).toHaveBeenCalledTimes(1);
-      expect(configService.getServerConfig).toHaveBeenCalledTimes(1);
+      expect(configService.getServerConfig).toHaveBeenCalledTimes(3);
       for (const [payload] of (thread.send as jest.Mock).mock.calls)
         expect(payload).toMatchObject({ nonce: thread.id, enforceNonce: true });
     }
@@ -1712,13 +1712,49 @@ describe('ThreadManager (unit)', () => {
       ).toBe(true);
       expect(thread.members.fetch).toHaveBeenCalledWith({ member: reporter.id, force: true });
       expect(thread.members.add).toHaveBeenCalledTimes(membership === 'present' ? 0 : 1);
-      expect(configService.getServerConfig).toHaveBeenCalledTimes(membership === 'present' ? 0 : 1);
+      expect(configService.getServerConfig).toHaveBeenCalledTimes(1);
       expect(presentation.reconcile).not.toHaveBeenCalled();
       expect(thread.messages.fetch).not.toHaveBeenCalled();
       expect(thread.send).not.toHaveBeenCalled();
       expect(thread.setArchived).not.toHaveBeenCalled();
     }
   );
+
+  it('repairs responder access on resume after reporter admission succeeded', async () => {
+    const guild = {
+      id: 'guild-1',
+      roles: {
+        fetch: jest.fn().mockResolvedValue({ members: new Map([['staff-1', { id: 'staff-1' }]]) }),
+      },
+    } as unknown as Guild;
+    const reporter = { ...buildMember('guild-1', 'reporter-1'), guild } as GuildMember;
+    (configService.getServerConfig as jest.Mock)
+      .mockRejectedValueOnce(new Error('Settings unavailable'))
+      .mockResolvedValue({
+        settings: {
+          case_responder_role_ids: ['123456789012345678'],
+          case_responder_routing_mode: 'ping_and_add_members',
+          case_responder_thread_member_cap: 5,
+        },
+      });
+    const manager = createManager();
+    expect(
+      await manager.activateReportIntakeThread(thread, reporter, 'intake-1', 'resume_staged')
+    ).toBe(true);
+    expect(thread.members.add).toHaveBeenCalledWith(reporter.id);
+    expect(thread.members.add).not.toHaveBeenCalledWith('staff-1');
+    (thread.members.fetch as jest.Mock).mockResolvedValue({ id: reporter.id });
+    (thread.members.add as jest.Mock).mockClear();
+
+    expect(
+      await manager.activateReportIntakeThread(thread, reporter, 'intake-1', 'resume_staged')
+    ).toBe(true);
+
+    expect(thread.members.add).toHaveBeenCalledWith('staff-1');
+    expect(thread.members.add).not.toHaveBeenCalledWith(reporter.id);
+    expect(thread.send).not.toHaveBeenCalled();
+    expect(thread.setArchived).not.toHaveBeenCalled();
+  });
 
   it.each(['archived', 'history unavailable', 'history incomplete'])(
     'does not send a replacement legacy welcome when %s',

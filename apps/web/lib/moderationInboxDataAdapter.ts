@@ -425,18 +425,23 @@ export function parseModerationQueueRow(
         ? row.verification_event_id
         : (row.report_intake_id ?? row.verification_event_id ?? row.source_thread_id ?? row.id);
   if (!sourceId) return null;
+  const recoverySummary =
+    metadata.reporter_delivery_failure === 'history_ambiguous'
+      ? 'Report card recovery blocked: more than one message matches. Review the report thread.'
+      : metadata.reporter_delivery_failure === 'history_incomplete'
+        ? 'Report card recovery blocked: message history could not be fully checked. Review the report thread.'
+        : null;
   const summary =
-    (metadata.reporter_delivery_only !== true
-      ? null
-      : metadata.reporter_delivery_failure === 'history_ambiguous'
-        ? 'Report card recovery blocked: more than one message matches. Review the report thread.'
-        : metadata.reporter_delivery_failure === 'history_incomplete'
-          ? 'Report card recovery blocked: message history could not be fully checked. Review the report thread.'
-          : null) ??
-    row.report_summary ??
-    readString(metadata.latest_message_url) ??
-    compactReason(row.detection_reasons) ??
-    null;
+    metadata.reporter_delivery_only === true && recoverySummary
+      ? recoverySummary
+      : [
+          row.report_summary ??
+            readString(metadata.latest_message_url) ??
+            compactReason(row.detection_reasons),
+          recoverySummary,
+        ]
+          .filter(Boolean)
+          .join('\n') || null;
 
   return moderationInboxItemSchema.parse({
     id:

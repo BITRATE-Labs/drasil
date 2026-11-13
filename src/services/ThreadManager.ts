@@ -1645,10 +1645,8 @@ export class ThreadManager implements IThreadManager {
       const membership = mode
         ? await thread.members.fetch({ member: reporter.id, force: true }).catch(() => null)
         : null;
-      if (membership?.id !== reporter.id) {
-        await thread.members.add(reporter.id);
-        await this.addCaseResponderMembers(reporter.guild, thread, [reporter.id]);
-      }
+      if (membership?.id !== reporter.id) await thread.members.add(reporter.id);
+      await this.addCaseResponderMembers(reporter.guild, thread, [reporter.id]);
       // Staged opening cards are durably scheduled before admission.
       if (mode === 'resume_staged') return true;
 

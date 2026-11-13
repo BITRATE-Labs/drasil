@@ -527,13 +527,18 @@ it.each(['history_ambiguous', 'history_incomplete'])(
   }
 );
 
-it('keeps the identity-review summary when card recovery also needs attention', () => {
-  const view = parseModerationQueueRow({
-    ...baseQueueRow,
-    item_type: 'report_thread_attention',
-    report_intake_id: 'report-1',
-    report_summary: 'Review the reported account and attached evidence.',
-    metadata: { reporter_delivery_failure: 'history_ambiguous' },
-  })!;
-  expect(view.summary).toBe('Review the reported account and attached evidence.');
-});
+it.each(['history_ambiguous', 'history_incomplete'])(
+  'keeps the identity-review summary and %s recovery notice',
+  (reason) => {
+    const view = parseModerationQueueRow({
+      ...baseQueueRow,
+      item_type: 'report_thread_attention',
+      report_intake_id: 'report-1',
+      report_summary: 'Review the reported account and attached evidence.',
+      metadata: { reporter_delivery_failure: reason },
+    })!;
+    expect(view.summary).toContain('Review the reported account and attached evidence.');
+    expect(view.summary).toContain('Report card recovery blocked:');
+    expect(view.summary).toContain('Review the report thread.');
+  }
+);

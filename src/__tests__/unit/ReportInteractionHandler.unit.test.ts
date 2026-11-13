@@ -719,39 +719,50 @@ describe('ReportInteractionHandler (unit)', () => {
     });
   });
 
-  it('reuses an existing open report intake for the same reporter', async () => {
-    const reporter = buildMember('guild-1', 'reporter-1');
-    (client.guilds.fetch as jest.Mock).mockResolvedValue({
-      members: {
-        fetch: jest.fn().mockResolvedValue(reporter),
-      },
-    });
-    const reportIntakeService = createReportIntakeService();
-    reportIntakeService.findOpenIntakeForReporter.mockResolvedValue({
-      id: 'intake-1',
-      thread_id: 'existing-thread-1',
-    } as any);
-    const handler = createHandler(reportIntakeService);
-    const interaction = buildInteraction(REPORT_USER_INITIATE_CUSTOM_ID, 'guild-1', {
-      id: 'reporter-1',
-    } as User);
+  it.each(['admitted', 'refused', 'throw'])(
+    'retains the existing report link and reports admission repair when %s',
+    async (result) => {
+      const reporter = buildMember('guild-1', 'reporter-1');
+      (client.guilds.fetch as jest.Mock).mockResolvedValue({
+        members: {
+          fetch: jest.fn().mockResolvedValue(reporter),
+        },
+      });
+      const reportIntakeService = createReportIntakeService();
+      reportIntakeService.findOpenIntakeForReporter.mockResolvedValue({
+        id: 'intake-1',
+        thread_id: 'existing-thread-1',
+      } as any);
+      const handler = createHandler(reportIntakeService);
+      if (result === 'throw')
+        threadManager.activateReportIntakeThread.mockRejectedValueOnce(
+          new Error('Permission check failed')
+        );
+      else threadManager.activateReportIntakeThread.mockResolvedValueOnce(result === 'admitted');
+      const interaction = buildInteraction(REPORT_USER_INITIATE_CUSTOM_ID, 'guild-1', {
+        id: 'reporter-1',
+      } as User);
 
-    prepareReportClient(client, interaction);
-    jest.mocked(client.channels.fetch).mockResolvedValue({
-      id: 'existing-thread-1',
-      guildId: 'guild-1',
-      isThread: () => true,
-    } as never);
+      prepareReportClient(client, interaction);
+      jest.mocked(client.channels.fetch).mockResolvedValue({
+        id: 'existing-thread-1',
+        guildId: 'guild-1',
+        isThread: () => true,
+      } as never);
 
-    await handler.handleReportUserInitiate(interaction);
+      await handler.handleReportUserInitiate(interaction);
 
-    expect(threadManager.createReportIntakeThread).not.toHaveBeenCalled();
-    expect(reportIntakeService.openIntakeFromThread).not.toHaveBeenCalled();
-    expect(interaction.editReply).toHaveBeenCalledWith({
-      content:
-        'Continue your report here: https://discord.com/channels/guild-1/existing-thread-1\nTo cancel, choose Close Report or send `close report` in that thread.',
-    });
-  });
+      expect(threadManager.createReportIntakeThread).not.toHaveBeenCalled();
+      expect(reportIntakeService.openIntakeFromThread).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith({
+        content:
+          result === 'admitted'
+            ? 'Continue your report here: https://discord.com/channels/guild-1/existing-thread-1\nTo cancel, choose Close Report or send `close report` in that thread.'
+            : 'Could not finish setting up the private report thread. Please ask a server admin to check Drasil thread permissions.\nSaved report: https://discord.com/channels/guild-1/existing-thread-1',
+      });
+      expect(reportIntakeService.markOpenFailed).not.toHaveBeenCalled();
+    }
+  );
 
   it('cleans up the report intake thread when persistence fails', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -819,7 +830,7 @@ describe('ReportInteractionHandler (unit)', () => {
     expect(thread.delete).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith({
       content:
-        'Could not prepare the private report thread. Please ask a server admin to check Drasil thread permissions.',
+        'Could not finish setting up the private report thread. Please ask a server admin to check Drasil thread permissions.',
     });
   });
 

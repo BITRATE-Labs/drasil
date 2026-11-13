@@ -144,7 +144,7 @@ export class ReportInteractionHandler {
         outcome.status === 'opened'
           ? `Opened a private report thread: ${outcome.threadUrl}\nAdd what happened there.`
           : outcome.status === 'activation_failed'
-            ? 'Could not prepare the private report thread. Please ask a server admin to check Drasil thread permissions.'
+            ? `Could not finish setting up the private report thread. Please ask a server admin to check Drasil thread permissions.${outcome.intake?.threadId ? `\nSaved report: https://discord.com/channels/${guildId}/${outcome.intake.threadId}` : ''}`
             : 'Could not open a private report thread. Please ask a server admin to check Drasil thread permissions.';
       await interaction.editReply({ content });
     } catch (error) {

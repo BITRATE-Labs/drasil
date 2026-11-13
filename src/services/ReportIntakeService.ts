@@ -208,8 +208,8 @@ export class ReportIntakeService implements IReportIntakeService {
     const intake = await this.reportIntakeRepository.findById(intakeId);
     if (!intake || !(await this.canPublishSavedConfirmation(intake, claim))) return false;
     if (this.reporterPresentation) {
-      if (claim) await this.reporterPresentation.presentClaim(claim);
-      else await this.reporterPresentation.reconcile(intakeId);
+      if (!claim) return this.reporterPresentation.reconcile(intakeId);
+      await this.reporterPresentation.presentClaim(claim);
       return true;
     }
     const { analysis, metadata } = processingMetadata(intake);

@@ -262,7 +262,12 @@ it.each(['admitted', 'refused', 'throw'])(
     };
     expect(
       await f.actions.execute(context, { kind: 'start_report_intake', channelId: 'channel' })
-    ).toMatchObject({ outcome: { status: 'existing', intake: { threadId: 'thread' } } });
+    ).toMatchObject({
+      outcome: {
+        status: result === 'admitted' ? 'existing' : 'activation_failed',
+        intake: { threadId: 'thread' },
+      },
+    });
     expect(calls).toEqual(['admit']);
   }
 );

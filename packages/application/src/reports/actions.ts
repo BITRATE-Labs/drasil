@@ -72,18 +72,19 @@ export function createReportActions(deps: ReportDependencies): ReportActions {
     const existing = await deps.intakes.findOpen(context);
     if (existing) {
       // A repair failure must not hide the already-created private thread.
-      if (existing.threadId)
-        await deps.threads
-          .activate(
-            context,
-            existing.threadId,
-            existing.id,
-            existing.staged ? 'resume_staged' : 'resume'
-          )
-          .catch(() => false);
+      const activated = existing.threadId
+        ? await deps.threads
+            .activate(
+              context,
+              existing.threadId,
+              existing.id,
+              existing.staged ? 'resume_staged' : 'resume'
+            )
+            .catch(() => false)
+        : false;
       return {
         kind: 'start_report_intake',
-        status: existing.threadId ? 'existing' : 'activation_failed',
+        status: activated ? 'existing' : 'activation_failed',
         intake: existing,
       };
     }

@@ -486,7 +486,7 @@ describe('ReportIntakeService', () => {
       includedEvidenceIds: [],
       excludedEvidenceIds: [],
     };
-    // A completed analysis includes the due time, which ordinary update deliberately cannot change.
+    // Model the persisted completion snapshot, including its confirmation deadline.
     const at = new Date();
     jest.spyOn(setup.reportIntakeRepository, 'findById').mockImplementation(async () => saved);
     let saved = {
@@ -503,6 +503,27 @@ describe('ReportIntakeService', () => {
       });
     return { ...setup, read: () => saved };
   }
+  it.each([true, false])('returns the presenter reconciliation result: %s', async (published) => {
+    const f = await savedCandidate();
+    const presenter = {
+      reconcile: jest.fn().mockResolvedValue(published),
+      presentClaim: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ReportIntakeService(
+      f.reportIntakeRepository,
+      f.serverRepository,
+      new InMemoryUserRepository(),
+      new InMemoryServerMemberRepository(),
+      f.configService,
+      f.candidateService,
+      f.threadManager,
+      f.moderationQueueService,
+      presenter
+    );
+    expect(await service.publishSavedConfirmation(f.intake.id, f.message)).toBe(published);
+    expect(presenter.reconcile).toHaveBeenCalledWith(f.intake.id);
+    expect(f.send).not.toHaveBeenCalled();
+  });
   it('shows the distinct global name and actual match field in saved confirmation', async () => {
     const f = await savedCandidate();
     const saved = f.read();
