@@ -91,14 +91,15 @@ We want each merge to have:
 - Automated CI checks passing.
 - Greptile review completed.
 - Copilot code review requested/completed.
-- Claude's latest sticky review comment checked for every eligible trusted PR. The reviewer
-  retrieves the shared credential through the repository-bound AWS OIDC role described in
+- The latest Basic PR Review (Claude) sticky comment checked for every eligible trusted PR. The
+  shared reviewer retrieves the shared credential through the AWS OIDC role described in
   `docs/dev/claude-review.md`; Drasil has no repository copy.
 
 Practical loop:
 
 1. Open the PR as a Draft early.
-2. Let CI + automated reviews run.
+2. Let CI + automated reviews run. Basic PR Review skips drafts unless you add the
+   `request-pr-review` label; otherwise it runs when the PR is marked ready.
 3. Treat each review cycle as a fresh context window:
    - Put the critical context in the PR description (or a pinned PR comment).
    - Use the PR template's "AI Review Packet" section.
