@@ -122,6 +122,7 @@ export const restrictionThreadFactSchema = z.object({
 export type RestrictionThreadFact = z.infer<typeof restrictionThreadFactSchema>;
 export const restrictionCaseFactSchema = z.object({
   caseId: id,
+  caseRoleId: id.nullable(),
   caseRevision: id,
   userId: id,
   purpose: z.enum(['standard_case', 'compromised_account']),

@@ -281,3 +281,12 @@ test('optional-role combinations preserve capability prerequisites', () => {
   };
   expect(assessRestrictionFacts(hiddenWriter).setup.status).toBe('verified');
 });
+
+test('actual cases retain their persisted case role after the guild configuration changes', () => {
+  const persisted = { ...caseFact({ roleIds: ['persisted'] }), caseRoleId: 'persisted' };
+  const input = facts({ roles: [...facts().roles, role({ id: 'persisted' })], cases: [persisted] });
+  expect(assessRestrictionFacts(input).cases[0].findingCodes).not.toContain(
+    'case_role_not_assigned'
+  );
+  expect(assessRestrictionFacts(input).setup.findingCodes).not.toContain('case_role_missing');
+});

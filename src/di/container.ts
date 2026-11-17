@@ -1,4 +1,9 @@
 import {
+  IRestrictionAuditService,
+  RestrictionAuditService,
+} from '../services/RestrictionAuditService';
+import { DiscordRestrictionAuditReadPort } from '../services/DiscordRestrictionAuditReadPort';
+import {
   IReportIntakePresentationService,
   ReportIntakePresentationService,
 } from '../services/ReportIntakePresentationService';
@@ -428,6 +433,20 @@ function configureServices(container: Container): void {
   container
     .bind<ISetupDiagnosticsService>(TYPES.SetupDiagnosticsService)
     .to(SetupDiagnosticsService)
+    .inSingletonScope();
+
+  container
+    .bind<IRestrictionAuditService>(TYPES.RestrictionAuditService)
+    .toDynamicValue(
+      (context) =>
+        new RestrictionAuditService(
+          new DiscordRestrictionAuditReadPort(
+            context.get<Client>(TYPES.DiscordClient),
+            context.get<IConfigService>(TYPES.ConfigService),
+            context.get<PrismaClient>(TYPES.PrismaClient)
+          )
+        )
+    )
     .inSingletonScope();
 
   container

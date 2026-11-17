@@ -30,6 +30,7 @@ export function channel(input: Partial<RestrictionChannelFact> = {}): Restrictio
 export function caseFact(input: Partial<RestrictionCaseFact> = {}): RestrictionCaseFact {
   return {
     caseId: 'case-id',
+    caseRoleId: null,
     caseRevision: 'revision',
     userId: 'user',
     purpose: 'standard_case',

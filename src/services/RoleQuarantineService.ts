@@ -1,3 +1,4 @@
+import { restrictionRoleFact } from '../utils/restrictionRoleFact';
 import { classifyRestrictionRoles } from '@drasil/application';
 import { GuildMember, PartialGuildMember, Role, User } from 'discord.js';
 import { inject, injectable, optional } from 'inversify';
@@ -934,18 +935,7 @@ export class RoleQuarantineService implements IRoleQuarantineService {
       exemptRoleIds: [...policy.exemptRoleIds],
       manualIntakeRoleId: null,
       botHighestPosition: botMember?.roles.highest.position ?? null,
-      roles: roles.map((role) => ({
-        id: role.id,
-        name: role.name,
-        // Discord breaks equal-position hierarchy ties by role ID.
-        position:
-          botMember && botMember.roles.highest.comparePositionTo(role) > 0
-            ? Math.min(role.position, botMember.roles.highest.position - 1)
-            : role.position,
-        permissions: role.permissions.bitfield.toString(),
-        managed: role.managed,
-        botManaged: this.isBotRole(role),
-      })),
+      roles: roles.map((role) => restrictionRoleFact(role, botMember)),
     });
     return roles.map((role, index) => ({
       role,

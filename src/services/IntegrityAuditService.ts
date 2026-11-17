@@ -1,4 +1,6 @@
+import { IRestrictionAuditService } from './RestrictionAuditService';
 import type {
+  RestrictionAudit,
   IntegrityAuditFindingSeverity,
   IntegrityAuditFinding,
   IntegrityAuditReport,
@@ -107,7 +109,10 @@ export class IntegrityAuditService implements IIntegrityAuditService {
     private readonly integrityAuditRepository: IIntegrityAuditRepository,
     @inject(TYPES.CaseRoleLockdownService)
     @optional()
-    private readonly caseRoleLockdownService?: ICaseRoleLockdownService
+    private readonly caseRoleLockdownService?: ICaseRoleLockdownService,
+    @inject(TYPES.RestrictionAuditService)
+    @optional()
+    private readonly restrictionAuditService?: IRestrictionAuditService
   ) {}
 
   public async auditGuild(
@@ -127,6 +132,41 @@ export class IntegrityAuditService implements IIntegrityAuditService {
       userId: options.userId,
     });
     const findings: IntegrityAuditFinding[] = [];
+    const restrictionAudit =
+      this.restrictionAuditService &&
+      (this.includesCaseChecks(scope) || this.includesCaseRoleChecks(scope))
+        ? await this.restrictionAuditService.auditGuild(guild.id)
+        : undefined;
+    if (restrictionAudit) {
+      for (const assessment of [
+        restrictionAudit.setup,
+        ...restrictionAudit.cases.filter((c) => !options.userId || c.userId === options.userId),
+      ]) {
+        for (const finding of assessment.findings)
+          findings.push({
+            severity: finding.kind === 'limitation' ? 'warning' : 'error',
+            code: `restriction_${finding.code}`,
+            subject: finding.channelId ?? 'restriction scope',
+            detail: `Restriction audit: ${finding.code.replace(/_/g, ' ')}.`,
+            ...(finding.userId ? { userId: finding.userId } : {}),
+            ...('caseId' in assessment && typeof assessment.caseId === 'string'
+              ? { verificationEventId: assessment.caseId }
+              : {}),
+          });
+      }
+      if (
+        restrictionAudit.coverage.some(
+          (c) => c.area !== 'parent_content' && c.state !== 'complete'
+        ) &&
+        !findings.some((f) => f.code === 'restriction_metadata_unavailable')
+      )
+        findings.push({
+          severity: 'error',
+          code: 'restriction_metadata_unavailable',
+          subject: 'restriction scope',
+          detail: 'Required restriction metadata is unavailable.',
+        });
+    }
     const liveUsers = await this.inspectLiveUsers(guild, this.collectUserIds(candidates, scope));
     const caseRoleMemberIds = this.collectCaseRoleMemberIds(candidates.caseRoleMembers);
     this.addLiveUserFetchFindings(liveUsers, findings);
@@ -146,7 +186,8 @@ export class IntegrityAuditService implements IIntegrityAuditService {
         candidates.moderationQueueItems,
         liveUsers,
         serverConfig.case_role_id,
-        findings
+        findings,
+        restrictionAudit
       );
       this.auditResolvedCases(candidates.recentResolvedVerificationEvents, liveUsers, findings);
     }
@@ -193,7 +234,8 @@ export class IntegrityAuditService implements IIntegrityAuditService {
     queueItems: IntegrityAuditModerationQueueItem[],
     liveUsers: Map<string, LiveUserState>,
     caseRoleId: string | null,
-    findings: IntegrityAuditFinding[]
+    findings: IntegrityAuditFinding[],
+    restrictionAudit?: RestrictionAudit
   ): Promise<void> {
     const activeSnapshotCaseIds = new Set(
       snapshots
@@ -250,7 +292,7 @@ export class IntegrityAuditService implements IIntegrityAuditService {
           )
         );
       }
-      if (liveMember?.status === 'found' && this.caseRoleLockdownService) {
+      if (!restrictionAudit && liveMember?.status === 'found' && this.caseRoleLockdownService) {
         try {
           const [lockdownAudit, memberAudit] = await Promise.all([
             this.caseRoleLockdownService.auditGuild(

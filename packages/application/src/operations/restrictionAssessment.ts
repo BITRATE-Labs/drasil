@@ -125,6 +125,7 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
     )
     .map((role) => role.id);
   const assess = (member: RestrictionCaseFact | null): RestrictionAssessment => {
+    const caseRoleId = member?.caseRoleId ?? facts.caseRoleId;
     const findings: RestrictionFinding[] = [];
     const add = (
       code: RestrictionFindingCode,
@@ -146,7 +147,7 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
       !facts.casesComplete ||
       !facts.threadsComplete ||
       (member !== null && !member.metadataAvailable);
-    if (!facts.caseRoleId || !facts.roles.some((role) => role.id === facts.caseRoleId))
+    if (!caseRoleId || !facts.roles.some((role) => role.id === caseRoleId))
       add('case_role_missing');
     const roleIds = member?.roleIds ?? [
       ...setupRoles,
@@ -162,8 +163,7 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
       add('retained_privileged_permissions', null, 'manual');
     }
     if (!facts.roles.some((role) => role.id === facts.guildId)) unknown = true;
-    if (member && facts.caseRoleId && !roleIds.includes(facts.caseRoleId))
-      add('case_role_not_assigned');
+    if (member && caseRoleId && !roleIds.includes(caseRoleId)) add('case_role_not_assigned');
     if (member?.owner) add('owner_bypass', null, 'manual');
     if (
       member &&
