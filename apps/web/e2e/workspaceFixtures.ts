@@ -120,14 +120,16 @@ export function workspaceFixtures(options: WorkspaceFixtureOptions = {}) {
         timestamp: '2026-10-21T14:40:00.000Z',
         attachments: [],
       };
+      const bot = { id: id.bot, username: 'Welcome bot', bot: true, avatar: null };
       let body: unknown;
       if (url.pathname === '/users/@me/guilds') body = unauthorized ? [] : [guild];
       else if (url.pathname === '/users/@me')
         body = request.headers.authorization?.startsWith('Bearer ')
           ? { id: identityId, username: 'Test moderator' }
-          : { id: id.bot, username: 'Test bot' };
+          : bot;
       else if (url.pathname === `/guilds/${id.guild}`)
         body = { ...guild, owner_id: selectedOwner ? id.actor : id.bot };
+      else if (url.pathname === `/users/${id.bot}`) body = bot;
       else if (url.pathname.endsWith('/roles'))
         body = [
           {
@@ -144,10 +146,24 @@ export function workspaceFixtures(options: WorkspaceFixtureOptions = {}) {
             position: 1,
             managed: false,
           },
+          {
+            id: '910000000000000021',
+            name: 'Welcome bot',
+            permissions: '0',
+            position: 2,
+            managed: true,
+            tags: { bot_id: id.bot },
+          },
         ];
+      else if (url.pathname === `/guilds/${id.guild}/members/search`)
+        body = bot.username
+          .toLowerCase()
+          .includes((url.searchParams.get('query') ?? '').toLowerCase())
+          ? [{ user: bot, roles: ['910000000000000021'] }]
+          : [];
       else if (url.pathname.includes('/members/'))
         body = {
-          user: { id: url.pathname.split('/').at(-1) },
+          user: url.pathname.endsWith(id.bot) ? bot : { id: url.pathname.split('/').at(-1) },
           roles: url.pathname.endsWith(id.actor) ? selectedRoleIds : [],
         };
       else if (url.pathname.endsWith('/channels')) body = [channel];

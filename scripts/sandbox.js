@@ -330,12 +330,20 @@ async function main(part = process.argv[2]) {
       browser = await chromium.launchPersistentContext(path.join(root, '.debug/sandbox-browser'), {
         headless: process.argv.includes('--headless'),
       });
+      if (closing) {
+        await browser.close();
+        throw new Error('Sandbox server exited during browser startup.');
+      }
       await fixtures.reset(browser, 'http://localhost:3000');
       const page = browser.pages()[0] ?? (await browser.newPage());
       const deadline = performance.now() + 90000;
       while (true) {
+        if (closing) throw new Error('Sandbox server exited before web readiness.');
         try {
-          await fetch('http://127.0.0.1:3000/admin', { redirect: 'manual' });
+          await fetch('http://127.0.0.1:3000/admin', {
+            redirect: 'manual',
+            signal: AbortSignal.timeout(1000),
+          });
           break;
         } catch (error) {
           if (performance.now() > deadline) throw error;
