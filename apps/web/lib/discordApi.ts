@@ -153,30 +153,18 @@ export async function fetchDiscordUser(accessToken: string): Promise<DiscordUser
 }
 
 export async function fetchDiscordGuilds(accessToken: string): Promise<DiscordGuildSummary[]> {
-  const guilds: DiscordGuildSummary[] = [];
-  let after: string | null = null;
-
-  while (true) {
-    const url = new URL(`${discordApiBaseUrl()}/users/@me/guilds`);
-    url.searchParams.set('limit', String(DISCORD_GUILD_PAGE_LIMIT));
-    if (after) {
-      url.searchParams.set('after', after);
-    }
-
-    const page = await fetchDiscordRead(
-      url,
-      { headers: { authorization: `Bearer ${accessToken}` }, cache: 'no-store' },
-      readDiscordJson<DiscordGuildSummary[]>
-    );
-    guilds.push(...page);
-    if (page.length < DISCORD_GUILD_PAGE_LIMIT) {
+  // Discord caps non-bot users at 200 guilds, so a full page is already complete.
+  const url = new URL(`${discordApiBaseUrl()}/users/@me/guilds`);
+  url.searchParams.set('limit', String(DISCORD_GUILD_PAGE_LIMIT));
+  return fetchDiscordRead(
+    url,
+    { headers: { authorization: `Bearer ${accessToken}` }, cache: 'no-store' },
+    async (response) => {
+      const guilds = await readDiscordJson<DiscordGuildSummary[]>(response);
+      if (!Array.isArray(guilds)) throw new ReadDependencyUnavailableError({});
       return guilds;
     }
-    after = page[page.length - 1]?.id ?? null;
-    if (!after) {
-      return guilds;
-    }
-  }
+  );
 }
 
 async function fetchBotJson<T>(path: string): Promise<T> {

@@ -146,21 +146,30 @@ describe('Discord API helpers', () => {
     );
   });
 
-  it('paginates current user guilds', async () => {
+  it('returns the complete 200-server user directory without a second rate-limited request', async () => {
     vi.stubEnv('DISCORD_API_BASE_URL', 'https://discord.test/api/v10');
-    const firstPage = Array.from({ length: 200 }, (_, index) => guild(String(index + 1)));
-    const secondPage = [guild('201')];
+    const directory = Array.from({ length: 200 }, (_, index) => guild(String(index + 1)));
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(firstPage))
-      .mockResolvedValueOnce(jsonResponse(secondPage));
+      .mockResolvedValueOnce(jsonResponse(directory))
+      .mockImplementation(async () => new Response('{"retry_after":0.001}', { status: 429 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(fetchDiscordGuilds('access-token')).resolves.toHaveLength(201);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(fetchDiscordGuilds('access-token')).resolves.toEqual(directory);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('limit=200');
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('after=200');
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('after=');
   });
+
+  it.each([null, { error: 'unexpected' }, 'unexpected'])(
+    'rejects a non-array user directory at the Discord read boundary (%j)',
+    async (payload) => {
+      vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(payload)));
+      await expect(fetchDiscordGuilds('access-token')).rejects.toMatchObject({
+        name: 'ReadDependencyUnavailableError',
+      });
+    }
+  );
 
   it('paginates bot channel messages and returns oldest first', async () => {
     vi.stubEnv('DISCORD_API_BASE_URL', 'https://discord.test/api/v10');
