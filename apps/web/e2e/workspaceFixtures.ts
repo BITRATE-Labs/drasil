@@ -1,3 +1,8 @@
+import {
+  fixtureRestrictionAudit,
+  fixtureRestrictionAuditSnapshot,
+  fixtureRestrictionResult,
+} from '../lib/restrictionAuditFixtures';
 import type { BrowserContext } from '@playwright/test';
 import { createServer, type Server } from 'node:http';
 import { Pool } from 'pg';
@@ -34,8 +39,12 @@ export const fullSource =
   'Complete channel source.\nSecond paragraph with the original link https://example.invalid/review and the complete closing sentence.';
 const id = workspaceIds;
 export function workspaceFixtures() {
+  const providerPort = Number(process.env.DRASIL_WORKSPACE_PROVIDER_PORT ?? '34568');
+  if (!Number.isInteger(providerPort) || providerPort < 1024 || providerPort > 65535)
+    throw new Error('Invalid workspace provider port');
   const pool = new Pool({ connectionString: ownedTestDatabase() });
   let server: Server | undefined;
+  let restrictionSnapshot: ReturnType<typeof fixtureRestrictionAuditSnapshot> | null = null;
   let unavailable = false;
   let unauthorized = false;
   let selectedOwner = true;
@@ -109,28 +118,53 @@ export function workspaceFixtures() {
       else if (url.pathname === `/guilds/${id.guild}`)
         body = { ...guild, owner_id: selectedOwner ? id.actor : id.bot };
       else if (url.pathname.endsWith('/roles'))
-        body = [
-          {
-            id: id.guild,
-            name: '@everyone',
-            permissions: selectedPermissions,
-            position: 0,
-            managed: false,
-          },
-          {
-            id: '910000000000000020',
-            name: 'Staff',
-            permissions: '0',
-            position: 1,
-            managed: false,
-          },
-        ];
+        body = restrictionSnapshot
+          ? restrictionSnapshot.facts.roles.map((r) => ({
+              ...r,
+              tags: r.botManaged ? { bot_id: id.bot } : undefined,
+              permissions: r.id === id.guild ? selectedPermissions : r.permissions,
+            }))
+          : [
+              {
+                id: id.guild,
+                name: '@everyone',
+                permissions: selectedPermissions,
+                position: 0,
+                managed: false,
+              },
+              {
+                id: '910000000000000020',
+                name: 'Staff',
+                permissions: '0',
+                position: 1,
+                managed: false,
+              },
+            ];
       else if (url.pathname.includes('/members/'))
         body = {
           user: { id: url.pathname.split('/').at(-1) },
-          roles: url.pathname.endsWith(id.actor) ? selectedRoleIds : [],
+          roles: url.pathname.endsWith(id.actor)
+            ? selectedRoleIds
+            : restrictionSnapshot
+              ? url.pathname.endsWith(id.bot)
+                ? ['910000000000000022']
+                : ['910000000000000021', '910000000000000024']
+              : [],
+          ...(restrictionSnapshot ? { joined_at: restrictionSnapshot.observedAt } : {}),
         };
-      else if (url.pathname.endsWith('/channels')) body = [channel];
+      else if (url.pathname.endsWith('/channels'))
+        body = restrictionSnapshot
+          ? restrictionSnapshot.facts.channels.map((c) => ({
+              id: c.id,
+              guild_id: id.guild,
+              name: c.name,
+              type: 0,
+              permission_overwrites: c.overwrites.map((o) => ({
+                ...o,
+                type: o.type === 'role' ? 0 : 1,
+              })),
+            }))
+          : [channel];
       else if (url.pathname.startsWith('/channels/')) {
         if (unavailable) {
           response.writeHead(404);
@@ -150,11 +184,12 @@ export function workspaceFixtures() {
     });
     await new Promise<void>((resolve, reject) => {
       server!.once('error', reject);
-      server!.listen(34568, '127.0.0.1', resolve);
+      server!.listen(providerPort, '127.0.0.1', resolve);
     });
   }
   async function reset(context: BrowserContext, origin: string) {
     ownedTestDatabase();
+    restrictionSnapshot = null;
     unavailable = false;
     unauthorized = false;
     calls.length = 0;
@@ -321,6 +356,47 @@ export function workspaceFixtures() {
     pool,
     calls,
     finishCase,
+    async seedRestrictionAudit() {
+      const audit = fixtureRestrictionAudit();
+      const snapshot = fixtureRestrictionAuditSnapshot(new Date(audit.observedAt));
+      restrictionSnapshot = snapshot;
+      selectedPermissions = '0';
+      await pool.query(
+        `update servers set settings=settings || '{"case_role_lockdown_allowed_channel_ids":["910000000000000007"]}'::jsonb where guild_id=$1`,
+        [id.guild]
+      );
+      await pool.query(
+        'update verification_events set thread_id=null,case_revision=1,quarantine_case_role_id=$2 where id=$1',
+        [id.case, snapshot.facts.caseRoleId]
+      );
+      await pool.query('update servers set case_role_id=$2 where guild_id=$1', [
+        id.guild,
+        snapshot.facts.caseRoleId,
+      ]);
+      await pool.query(
+        `insert into moderation_action_requests(id,server_id,action_type,actor_id,actor_surface,status,idempotency_key,metadata,result,completed_at) values($1,$2,'audit_case_role_lockdown',$3,'web','completed',$4,$5,$6,now())`,
+        [
+          audit.auditRequestId,
+          id.guild,
+          id.actor,
+          `restriction-fixture:${audit.auditRequestId}`,
+          JSON.stringify({ restriction_schema_version: 1 }),
+          JSON.stringify({ restriction_audit: snapshot }),
+        ]
+      );
+      return audit;
+    },
+    async finishRestrictionApply() {
+      const result = fixtureRestrictionResult();
+      const row = await pool.query(
+        `update moderation_action_requests set status='completed',completed_at=now(),updated_at=now(),result=$2 where id=(select id from moderation_action_requests where server_id=$1 and action_type='apply_case_role_lockdown' order by requested_at desc limit 1) returning id`,
+        [
+          id.guild,
+          JSON.stringify({ restriction_apply: result, restriction_progress: result.progress }),
+        ]
+      );
+      return row.rows[0]?.id as string;
+    },
     setMalformedResponse: (source: 'identity' | 'roles', enabled: boolean) => {
       if (enabled) malformedResponses.add(source);
       else malformedResponses.delete(source);

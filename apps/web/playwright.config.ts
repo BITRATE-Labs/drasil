@@ -34,6 +34,7 @@ export default defineConfig({
     'case-flow.spec.ts',
     'report-ban.spec.ts',
     'message-cleanup.spec.ts',
+    'restriction-audit.spec.ts',
   ],
   globalSetup: './e2e/globalSetup.ts',
   fullyParallel: true,
