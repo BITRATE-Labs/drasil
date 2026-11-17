@@ -1,6 +1,6 @@
 # Restriction audit wizard
 
-Status: proposed design for approval. The interaction and visual direction were reviewed in a fictional prototype; production behavior has not been implemented.
+Status: approved by the user on 2026-11-17, including the author recommendations below. Production behavior has not been implemented. Implementation-plan review is the next step.
 
 ## Review brief
 
@@ -10,9 +10,9 @@ The intended access is the member's own private case thread, with no other commu
 
 Deliver the corrected assessment and guided repair workflow together. Reuse the shared application actions, moderation request processing, role quarantine, and web foundation. Do not introduce another permission engine for each interface or a general workflow framework.
 
-Approval is requested for this design, including the author recommendations below. It does not authorize production permission changes or implementation.
+Design approval authorizes implementation planning. It does not authorize production permission changes or begin implementation.
 
-One deliberate limit needs judgment: V1 checks permissions and thread membership without reading message history. It cannot certify what existing messages in a readable recovery parent contain. Report that content scope as unchecked and do not claim verified information isolation, even when permission checks pass. This avoids expanding a permission audit into a content inspection workflow.
+The approved scope includes one deliberate limit: V1 checks permissions and thread membership without reading message history. It cannot certify what existing messages in a readable recovery parent contain. Report that content scope as unchecked and do not claim verified information isolation, even when permission checks pass. This avoids expanding a permission audit into a content inspection workflow.
 
 | Decision                                                                                                 | Status                                                   |
 | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
@@ -21,7 +21,7 @@ One deliberate limit needs judgment: V1 checks permissions and thread membership
 | Explain exact changes and affected people before applying; broader repairs are permitted when reviewed   | Confirmed                                                |
 | Compact selectable rows, closed details, Select all/Clear all, then a bullet-point approval summary      | Confirmed through prototype review                       |
 | Original Drasil tree icon, dark-mode presentation, and `#rules (read-only)` text without a badge         | Confirmed visual direction; channel name is illustrative |
-| Conservative selection defaults, stop-on-first-failure batches, and no parent-message content inspection | Author recommendations for this review                   |
+| Conservative selection defaults, stop-on-first-failure batches, and no parent-message content inspection | Accepted with design approval                            |
 
 ## Why the assessment must change
 
