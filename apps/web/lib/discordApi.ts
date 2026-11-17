@@ -159,7 +159,11 @@ export async function fetchDiscordGuilds(accessToken: string): Promise<DiscordGu
   return fetchDiscordRead(
     url,
     { headers: { authorization: `Bearer ${accessToken}` }, cache: 'no-store' },
-    readDiscordJson<DiscordGuildSummary[]>
+    async (response) => {
+      const guilds = await readDiscordJson<DiscordGuildSummary[]>(response);
+      if (!Array.isArray(guilds)) throw new ReadDependencyUnavailableError({});
+      return guilds;
+    }
   );
 }
 

@@ -161,6 +161,16 @@ describe('Discord API helpers', () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('after=');
   });
 
+  it.each([null, { error: 'unexpected' }, 'unexpected'])(
+    'rejects a non-array user directory at the Discord read boundary (%j)',
+    async (payload) => {
+      vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(payload)));
+      await expect(fetchDiscordGuilds('access-token')).rejects.toMatchObject({
+        name: 'ReadDependencyUnavailableError',
+      });
+    }
+  );
+
   it('paginates bot channel messages and returns oldest first', async () => {
     vi.stubEnv('DISCORD_API_BASE_URL', 'https://discord.test/api/v10');
     vi.stubEnv('DRASIL_WEB_BOT_TOKEN', 'bot-token');
