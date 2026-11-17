@@ -175,7 +175,9 @@ test('idle approval expires without another interaction', async ({ page }) => {
   await approval.check();
   await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
   await page.clock.fastForward(10 * 60 * 1000 + 1000);
-  await expect(page.getByRole('alert')).toContainText('This review expired');
+  await expect(
+    page.getByRole('region', { name: 'Review selected changes' }).getByRole('alert')
+  ).toContainText('This review expired');
   await expect(approval).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
 });

@@ -13,15 +13,17 @@ import {
   applyRestrictionSelection,
   readRestrictionDiagnostics,
 } from './actions';
-export default async function RestrictionsPage({
-  params,
-  searchParams,
-}: {
+interface RestrictionPageQuery {
+  readonly audit?: string;
+  readonly apply?: string;
+}
+interface RestrictionPageProps {
   readonly params: Promise<{ readonly guildId: string }>;
-  readonly searchParams: Promise<{ readonly audit?: string; readonly apply?: string }>;
-}) {
-  const { guildId } = await params;
-  const query = await searchParams;
+  readonly searchParams: Promise<RestrictionPageQuery>;
+}
+export default async function RestrictionsPage(props: RestrictionPageProps) {
+  const { guildId } = await props.params;
+  const query = await props.searchParams;
   const path = `/admin/guild/${guildId}/operations/restrictions`;
   const returnTo = `${path}?${new URLSearchParams({ ...(typeof query.audit === 'string' ? { audit: query.audit } : {}), ...(typeof query.apply === 'string' ? { apply: query.apply } : {}) })}`;
   try {
@@ -38,6 +40,9 @@ export default async function RestrictionsPage({
       />
     );
   }
+  return loadRestrictions(guildId, query);
+}
+async function loadRestrictions(guildId: string, query: RestrictionPageQuery) {
   try {
     const adapter = createRestrictionAuditDataAdapter();
     const recent = !query.audit

@@ -245,6 +245,13 @@ const defaultAccountQuarantinePreview = {
   caseRoleId: 'case-role-1',
   enabled: true,
   lockdown: {
+    assessment: {
+      status: 'verified',
+      scope: 'permissions_and_membership',
+      findingCodes: [],
+      findings: [],
+      coverage: [],
+    },
     enabled: true,
     errorCount: 0,
     issues: [],

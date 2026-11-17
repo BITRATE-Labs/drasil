@@ -860,6 +860,47 @@ function createExecutionStore(
           .catch(() => undefined);
     }
   }
+  async function admitQueue(
+    client: DelegationQueryClient,
+    execution: ExecutionRecord,
+    queue: DelegatedQueueAdmission
+  ): Promise<WorkerAdmission | null> {
+    const admission = await validateQueuedAdmission(client, execution, queue);
+    if (admission) {
+      if (
+        admission.kind === 'denied' &&
+        !admission.persistence &&
+        queue.request.metadata?.restriction_schema_version === 1 &&
+        !execution.startedAt &&
+        !execution.completedAt
+      ) {
+        if (await terminalizeUnstartedRestrictionDenial(client, execution, queue, admission.code))
+          await finish(client, execution.executionId, { state: 'denied', code: admission.code });
+        else
+          return {
+            kind: 'denied',
+            code: 'uncertain_prior_effect',
+            persistence: 'observe_only',
+          };
+      }
+      return admission;
+    }
+    return null;
+  }
+  async function denyAdmission(
+    client: DelegationQueryClient,
+    execution: ExecutionRecord,
+    queue: DelegatedQueueAdmission | undefined,
+    denial: string
+  ): Promise<WorkerAdmission> {
+    if (
+      queue?.request.metadata?.restriction_schema_version === 1 &&
+      !(await terminalizeUnstartedRestrictionDenial(client, execution, queue, denial))
+    )
+      return { kind: 'denied', code: 'uncertain_prior_effect', persistence: 'observe_only' };
+    await finish(client, execution.executionId, { state: 'denied', code: denial });
+    return { kind: 'denied', code: denial };
+  }
   async function admit(
     executionId: string,
     authorize: ExecutionAuthorization,
@@ -884,28 +925,8 @@ function createExecutionStore(
       if (!matchesConsumedIntent(saved, execution))
         return { kind: 'denied', code: 'binding_mismatch' };
       if (queue) {
-        const admission = await validateQueuedAdmission(client, execution, queue);
-        if (admission) {
-          if (
-            admission.kind === 'denied' &&
-            !admission.persistence &&
-            queue.request.metadata?.restriction_schema_version === 1 &&
-            !execution.startedAt &&
-            !execution.completedAt
-          ) {
-            if (
-              await terminalizeUnstartedRestrictionDenial(client, execution, queue, admission.code)
-            )
-              await finish(client, executionId, { state: 'denied', code: admission.code });
-            else
-              return {
-                kind: 'denied',
-                code: 'uncertain_prior_effect',
-                persistence: 'observe_only',
-              };
-          }
-          return admission;
-        }
+        const admission = await admitQueue(client, execution, queue);
+        if (admission) return admission;
       } else if (
         execution.authorizedDelivery.kind !== 'direct' ||
         execution.queueRequestId !== null
@@ -945,15 +966,7 @@ function createExecutionStore(
             persistence: 'observe_only',
           };
       }
-      if (denial) {
-        if (
-          queue?.request.metadata?.restriction_schema_version === 1 &&
-          !(await terminalizeUnstartedRestrictionDenial(client, execution, queue, denial))
-        )
-          return { kind: 'denied', code: 'uncertain_prior_effect', persistence: 'observe_only' };
-        await finish(client, executionId, { state: 'denied', code: denial });
-        return { kind: 'denied', code: denial };
-      }
+      if (denial) return denyAdmission(client, execution, queue, denial);
       await client.query(
         'update mcp_executions set started_at=clock_timestamp() where id=$1::uuid',
         [executionId]

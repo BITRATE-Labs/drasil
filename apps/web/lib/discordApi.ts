@@ -42,7 +42,6 @@ export interface DiscordGuildSummary {
 }
 
 export interface DiscordRole {
-  readonly tags?: { readonly bot_id?: string };
   readonly id: string;
   readonly name: string;
   readonly permissions: string;

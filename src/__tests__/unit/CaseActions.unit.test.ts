@@ -2,7 +2,6 @@ import { mock } from 'jest-mock-extended';
 import type { IProductAnalyticsService } from '../../services/ProductAnalyticsService';
 import type { ISetupDiagnosticsService } from '../../services/SetupDiagnosticsService';
 import type { IIntegrityAuditService } from '../../services/IntegrityAuditService';
-import type { ICaseRoleLockdownService } from '../../services/CaseRoleLockdownService';
 import type { ICaseThreadClosureSweepService } from '../../services/CaseThreadClosureSweepService';
 import { queuedCommandSchema, encodeQueuedAction, type CaseCommand } from '@drasil/application';
 import type { Client, GuildMember, User } from 'discord.js';
@@ -132,7 +131,6 @@ async function arrange() {
     setupDiagnosticsService: mock<ISetupDiagnosticsService>(),
     reportIntakeService: {} as any,
     integrityAuditService: mock<IIntegrityAuditService>(),
-    caseRoleLockdownService: mock<ICaseRoleLockdownService>(),
     caseThreadClosureSweepService: mock<ICaseThreadClosureSweepService>(),
     messageDeletionJobs: {} as never,
     messageCleanupService: {} as never,

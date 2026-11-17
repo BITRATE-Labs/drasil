@@ -942,6 +942,7 @@ describe('RoleQuarantineService (unit)', () => {
     const newMember = createMember([], [caseRole]);
     (newMember.roles.add as jest.Mock).mockRejectedValue(new Error('Missing permissions'));
     const verificationEventRepository = {
+      update: jest.fn().mockResolvedValue(createVerificationEvent()),
       markParkedContainmentIncomplete: jest.fn().mockResolvedValue(null),
     };
     const service = new RoleQuarantineService(
@@ -1024,6 +1025,7 @@ describe('RoleQuarantineService (unit)', () => {
     const newMember = createMember([caseRole, managedRole], [caseRole, managedRole]);
     const snapshots = new InMemoryRoleQuarantineSnapshotRepository();
     const verificationEventRepository = {
+      update: jest.fn().mockResolvedValue(createVerificationEvent()),
       markParkedContainmentIncomplete: jest.fn().mockResolvedValue({
         ...createVerificationEvent(),
         attention_state: CaseAttentionState.REVIEW_REQUIRED,
@@ -1075,6 +1077,7 @@ describe('RoleQuarantineService (unit)', () => {
     const newMember = createMember([caseRole, managedRole], [caseRole, managedRole]);
     const snapshots = new InMemoryRoleQuarantineSnapshotRepository();
     const verificationEventRepository = {
+      update: jest.fn().mockResolvedValue(createVerificationEvent()),
       markParkedContainmentIncomplete: jest.fn().mockImplementation(async (_id, metadata) => ({
         ...createVerificationEvent(),
         attention_state: CaseAttentionState.REVIEW_REQUIRED,

@@ -639,6 +639,10 @@ describe('AccountQuarantineService', () => {
 
     expect(harness.notificationManager.updateNotificationButtons).toHaveBeenCalled();
     expect(harness.moderationQueue.deleteCaseMirror).toHaveBeenCalledWith(event.id);
+    expect(errorSpy).toHaveBeenCalledWith(
+      `Failed to audit quarantine attempt ${event.id}:`,
+      expect.objectContaining({ message: 'Audit unavailable' })
+    );
     errorSpy.mockRestore();
   });
 });

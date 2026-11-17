@@ -1,7 +1,6 @@
 import { mock } from 'jest-mock-extended';
 import type { EnqueueInput } from '@drasil/application';
 import type { IIntegrityAuditService } from '../../services/IntegrityAuditService';
-import type { ICaseRoleLockdownService } from '../../services/CaseRoleLockdownService';
 import type { ICaseThreadClosureSweepService } from '../../services/CaseThreadClosureSweepService';
 import { ModerationCommandHandler } from '../../controllers/ModerationCommandHandler';
 import { handleSlashCommandConfirmationButton } from '../../utils/slashCommandConfirmations';
@@ -236,7 +235,6 @@ async function fixture(withReport = true, quarantine?: IRoleQuarantineService) {
     setupDiagnosticsService: {} as never,
     reportIntakeService: {} as any,
     integrityAuditService: mock<IIntegrityAuditService>(),
-    caseRoleLockdownService: mock<ICaseRoleLockdownService>(),
     caseThreadClosureSweepService: mock<ICaseThreadClosureSweepService>(),
     messageDeletionJobs: {} as never,
     messageCleanupService: {} as never,

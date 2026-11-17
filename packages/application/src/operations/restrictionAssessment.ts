@@ -175,65 +175,73 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
       add('administrator_bypass', null, 'manual');
     let checkedChannels = 0;
     const permissionsByChannel = new Map<string, readonly bigint[]>();
-    for (const channel of facts.channels) {
-      const candidates = member
-        ? [effective(facts, channel, roleIds, member.userId, member.owner)]
-        : setupPermissionCandidates(facts, channel, setupRoles);
-      if (candidates.some((permissions) => permissions === null)) unknown = true;
-      const known = candidates.filter((permissions): permissions is bigint => permissions !== null);
-      if (known.length === 0) continue;
-      checkedChannels++;
-      permissionsByChannel.set(channel.id, known);
-      for (const permissions of known) {
-        if (channel.type === 'category' || (permissions & VIEW) === 0n) continue;
-        const exception = facts.exceptionChannelIds.includes(channel.id);
-        const recovery = channel.id === facts.recoveryParentId;
-        if (!exception && !recovery) add('unexpected_channel_access', channel.id);
-        const interactions = usableInteractions(channel, permissions);
-        if (
-          (exception || recovery) &&
-          (recovery ? interactions & ~THREAD_REPLY : interactions) !== 0n
-        )
-          add('exception_write_access', channel.id);
-        // Denying Add Reactions cannot prevent joining an existing reaction.
-        if (exception) add('reaction_limitation', channel.id, 'limitation');
+    const checkChannels = (): void => {
+      for (const channel of facts.channels) {
+        const candidates = member
+          ? [effective(facts, channel, roleIds, member.userId, member.owner)]
+          : setupPermissionCandidates(facts, channel, setupRoles);
+        if (candidates.some((permissions) => permissions === null)) unknown = true;
+        const known = candidates.filter(
+          (permissions): permissions is bigint => permissions !== null
+        );
+        if (known.length === 0) continue;
+        checkedChannels++;
+        permissionsByChannel.set(channel.id, known);
+        for (const permissions of known) {
+          if (channel.type === 'category' || (permissions & VIEW) === 0n) continue;
+          const exception = facts.exceptionChannelIds.includes(channel.id);
+          const recovery = channel.id === facts.recoveryParentId;
+          if (!exception && !recovery) add('unexpected_channel_access', channel.id);
+          const interactions = usableInteractions(channel, permissions);
+          if (
+            (exception || recovery) &&
+            (recovery ? interactions & ~THREAD_REPLY : interactions) !== 0n
+          )
+            add('exception_write_access', channel.id);
+          // Denying Add Reactions cannot prevent joining an existing reaction.
+          if (exception) add('reaction_limitation', channel.id, 'limitation');
+        }
       }
-    }
+    };
+    checkChannels();
     if (facts.knownParentContentExposure) add('parent_content_exposure', facts.recoveryParentId);
     let checkedThreads = 0;
-    for (const thread of facts.threads) {
-      const candidates = permissionsByChannel.get(thread.parentId);
-      if (!thread.metadataAvailable || candidates === undefined) {
+    const checkThreads = (): void => {
+      for (const thread of facts.threads) {
+        const candidates = permissionsByChannel.get(thread.parentId);
+        if (!thread.metadataAvailable || candidates === undefined) {
+          unknown = true;
+          continue;
+        }
+        checkedThreads++;
+        for (const permissions of candidates) {
+          const manager = (permissions & MANAGE_THREADS) !== 0n;
+          const visible =
+            (permissions & VIEW) !== 0n &&
+            (!thread.private ||
+              manager ||
+              (member !== null && thread.memberIds.includes(member.userId)));
+          if (member && thread.id === member.threadId) {
+            if (
+              !thread.private ||
+              !visible ||
+              (permissions & THREAD_REPLY) === 0n ||
+              (permissions & (1n << 16n)) === 0n ||
+              (thread.locked && !manager)
+            )
+              add('case_thread_access_missing', thread.id);
+          } else if (visible) add('sibling_thread_access', thread.id);
+        }
+      }
+      if (
+        member &&
+        (!member.threadId || !facts.threads.some((thread) => thread.id === member.threadId))
+      ) {
+        add('case_thread_unavailable', null, 'coverage');
         unknown = true;
-        continue;
       }
-      checkedThreads++;
-      for (const permissions of candidates) {
-        const manager = (permissions & MANAGE_THREADS) !== 0n;
-        const visible =
-          (permissions & VIEW) !== 0n &&
-          (!thread.private ||
-            manager ||
-            (member !== null && thread.memberIds.includes(member.userId)));
-        if (member && thread.id === member.threadId) {
-          if (
-            !thread.private ||
-            !visible ||
-            (permissions & THREAD_REPLY) === 0n ||
-            (permissions & (1n << 16n)) === 0n ||
-            (thread.locked && !manager)
-          )
-            add('case_thread_access_missing', thread.id);
-        } else if (visible) add('sibling_thread_access', thread.id);
-      }
-    }
-    if (
-      member &&
-      (!member.threadId || !facts.threads.some((thread) => thread.id === member.threadId))
-    ) {
-      add('case_thread_unavailable', null, 'coverage');
-      unknown = true;
-    }
+    };
+    checkThreads();
     if (unknown) add('metadata_unavailable', null, 'coverage');
     const coverage = (
       area: RestrictionCoverage['area'],

@@ -30,22 +30,6 @@ exports[`decodes and dispatches the shipped apply_captcha_pass row with its rece
 }
 `;
 
-exports[`decodes and dispatches the shipped apply_case_role_lockdown row with its receipt: receipt 1`] = `
-{
-  "action_type": "apply_case_role_lockdown",
-  "applied_writes": 0,
-  "enabled": true,
-  "error_count": 0,
-  "failed_writes": 0,
-  "issues": [],
-  "planned_writes": 0,
-  "server_id": "guild",
-  "synced_allowed_channel_blockers": 0,
-  "unsynced_allowed_channels": 0,
-  "warning_count": 0,
-}
-`;
-
 exports[`decodes and dispatches the shipped apply_case_role_lockdown row with its receipt: storage 1`] = `
 {
   "actionType": "apply_case_role_lockdown",
@@ -54,27 +38,18 @@ exports[`decodes and dispatches the shipped apply_case_role_lockdown row with it
   "idempotencyKey": "web:operation:apply_case_role_lockdown:guild:request",
   "metadata": {
     "operation_action": "apply_case_role_lockdown",
+    "operation_command": {
+      "auditRequestId": "audit",
+      "auditRevision": "r1",
+      "kind": "apply_case_role_lockdown",
+      "selectedFixIds": [
+        "repair",
+      ],
+    },
     "requested_surface": "web",
-    "unsync_allowed_channels": true,
   },
   "serverId": "guild",
   "targetUserId": null,
-}
-`;
-
-exports[`decodes and dispatches the shipped audit_case_role_lockdown row with its receipt: receipt 1`] = `
-{
-  "action_type": "audit_case_role_lockdown",
-  "applied_writes": 0,
-  "enabled": true,
-  "error_count": 0,
-  "failed_writes": 0,
-  "issues": [],
-  "planned_writes": 0,
-  "server_id": "guild",
-  "synced_allowed_channel_blockers": 0,
-  "unsynced_allowed_channels": 0,
-  "warning_count": 0,
 }
 `;
 
@@ -86,7 +61,11 @@ exports[`decodes and dispatches the shipped audit_case_role_lockdown row with it
   "idempotencyKey": "web:operation:audit_case_role_lockdown:guild:request",
   "metadata": {
     "operation_action": "audit_case_role_lockdown",
+    "operation_command": {
+      "kind": "audit_case_role_lockdown",
+    },
     "requested_surface": "web",
+    "restriction_schema_version": 1,
   },
   "serverId": "guild",
   "targetUserId": null,

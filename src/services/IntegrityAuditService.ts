@@ -44,7 +44,6 @@ import {
   normalizeIntegrityAuditScope,
 } from '../utils/integrityAuditSettings';
 import { getModerationQueueSettings } from '../utils/moderationQueueSettings';
-import { ICaseRoleLockdownService } from './CaseRoleLockdownService';
 import {
   getResolutionAdminActionType,
   getResolutionModerationOutcomeType,
@@ -106,9 +105,6 @@ export class IntegrityAuditService implements IIntegrityAuditService {
     @inject(TYPES.ConfigService) private readonly configService: IConfigService,
     @inject(TYPES.IntegrityAuditRepository)
     private readonly integrityAuditRepository: IIntegrityAuditRepository,
-    @inject(TYPES.CaseRoleLockdownService)
-    @optional()
-    private readonly caseRoleLockdownService?: ICaseRoleLockdownService,
     @inject(TYPES.RestrictionAuditService)
     @optional()
     private readonly restrictionAuditService?: IRestrictionAuditService

@@ -1,3 +1,4 @@
+import { fixture } from '../../../packages/application/src/operations/restrictionExecutionTestData';
 import { Guild } from 'discord.js';
 import { IntegrityAuditService } from '../../services/IntegrityAuditService';
 import {
@@ -547,7 +548,7 @@ describe('IntegrityAuditService (unit)', () => {
     expect(findingCodes).toContain('case_role_member_role_missing');
   });
 
-  it('reports live permission and privileged-role drift for a parked quarantine', async () => {
+  it('maps shared restriction findings to a parked quarantine', async () => {
     const parkedCase = {
       id: 'parked-1',
       server_id: 'guild-1',
@@ -608,28 +609,9 @@ describe('IntegrityAuditService (unit)', () => {
       roles: { cache: { has: jest.fn().mockReturnValue(true) } },
     };
     (guild.members.fetch as jest.Mock).mockResolvedValue(member);
-    const caseRoleLockdownService = {
-      auditGuild: jest.fn().mockResolvedValue({
-        errorCount: 1,
-        warningCount: 0,
-        plannedActions: [{ scope: 'channel', channelId: 'channel-2', channelName: 'general' }],
-      }),
-      auditMemberBypasses: jest.fn().mockResolvedValue({
-        memberId: member.id,
-        bypasses: [
-          {
-            channelId: 'channel-1',
-            channelName: 'general',
-            subjectType: 'member',
-            subjectId: member.id,
-            permissions: ['Send Messages'],
-          },
-        ],
-        retainedPrivilegedRoleIds: ['privileged-role'],
-        retainedAdministratorRoleIds: [],
-        unremovablePrivilegeReasons: [],
-      }),
-    };
+    const audit = fixture().audit;
+    audit.cases = [{ ...audit.setup, caseId: parkedCase.id, caseRevision: '0', userId: member.id }];
+    const shared = { auditGuild: jest.fn().mockResolvedValue(audit) };
     const service = new IntegrityAuditService(
       { channels: { fetch: jest.fn() } } as any,
       {
@@ -639,27 +621,21 @@ describe('IntegrityAuditService (unit)', () => {
         }),
       } as any,
       { listCandidates: jest.fn().mockResolvedValue(candidates) },
-      caseRoleLockdownService as any
+      shared
     );
     const report = await service.auditGuild(guild, { scope: 'cases' });
 
-    expect(caseRoleLockdownService.auditGuild).toHaveBeenCalledWith(
-      guild,
-      null,
-      'persisted-case-role'
-    );
-    expect(caseRoleLockdownService.auditMemberBypasses).toHaveBeenCalledWith(
-      member,
-      new Set(),
-      null,
-      'persisted-case-role'
-    );
-    expect(report.findings.map((finding) => finding.code)).toEqual(
-      expect.arrayContaining([
-        'parked_quarantine_lockdown_drift',
-        'parked_quarantine_permission_bypass',
-        'parked_quarantine_privileged_role',
-      ])
+    expect(shared.auditGuild).toHaveBeenCalledWith(guild.id);
+    expect(audit.cases[0].findings.length).toBeGreaterThan(0);
+    expect(report.findings).toEqual(
+      expect.arrayContaining(
+        audit.cases[0].findings.map((finding) =>
+          expect.objectContaining({
+            code: `restriction_${finding.code}`,
+            verificationEventId: parkedCase.id,
+          })
+        )
+      )
     );
   });
 });

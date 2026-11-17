@@ -164,7 +164,6 @@ it('runs one shared audit for integrity checks without repeating legacy lockdown
   const input = facts({ channels: [{ ...facts().channels[0], metadataAvailable: false }] });
   const audit = await new RestrictionAuditService(readPort(input)).auditGuild('guild');
   const shared = { auditGuild: jest.fn().mockResolvedValue(audit) };
-  const legacy = { auditGuild: jest.fn(), auditMemberBypasses: jest.fn(), applyGuild: jest.fn() };
   const service = new IntegrityAuditService(
     {} as import('discord.js').Client,
     {
@@ -179,11 +178,9 @@ it('runs one shared audit for integrity checks without repeating legacy lockdown
         moderationQueueItems: [],
       }),
     },
-    legacy,
     shared
   );
   const report = await service.auditGuild({ id: 'guild' } as import('discord.js').Guild);
   expect(shared.auditGuild).toHaveBeenCalledTimes(1);
-  expect(legacy.auditGuild).not.toHaveBeenCalled();
   expect(report.findings.some((f) => f.code === 'restriction_metadata_unavailable')).toBe(true);
 });
