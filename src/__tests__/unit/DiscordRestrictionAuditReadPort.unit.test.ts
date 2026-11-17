@@ -256,3 +256,80 @@ it('keeps coverage partial when the all-private archive route is denied', async 
     false
   );
 });
+
+it('derives unsynced child access and parent identity from the same raw overwrite snapshot', async () => {
+  const staleChild = {
+    id: 'child',
+    name: 'Child',
+    type: ChannelType.GuildText,
+    parentId: 'parent',
+    permissionsLocked: true,
+    isThread: () => false,
+    permissionOverwrites: { cache: new Map() },
+  };
+  const staleParent = {
+    ...staleChild,
+    id: 'parent',
+    type: ChannelType.GuildCategory,
+    parentId: null,
+  };
+  const roles = new Map(
+    facts().roles.map((role) => [
+      role.id,
+      { ...role, permissions: { bitfield: role.id === 'guild' ? 1024n : 0n }, tags: null },
+    ])
+  );
+  const raw = [
+    {
+      id: 'parent',
+      type: ChannelType.GuildCategory,
+      parent_id: null,
+      permission_overwrites: [{ id: 'case', type: 0, allow: '0', deny: '1024' }],
+    },
+    {
+      id: 'child',
+      type: ChannelType.GuildText,
+      parent_id: 'parent',
+      permission_overwrites: [{ id: 'case', type: 0, allow: '1024', deny: '0' }],
+    },
+  ];
+  const guild = {
+    roles: { fetch: jest.fn().mockResolvedValue(roles) },
+    channels: {
+      fetch: jest.fn().mockResolvedValue(
+        new Map<string, typeof staleParent | typeof staleChild>([
+          ['parent', staleParent],
+          ['child', staleChild],
+        ])
+      ),
+    },
+    members: { fetchMe: jest.fn().mockResolvedValue(null) },
+  };
+  const get = jest.fn().mockResolvedValue(raw);
+  const port = new DiscordRestrictionAuditReadPort(
+    { guilds: { fetch: jest.fn().mockResolvedValue(guild) }, rest: { get } } as unknown as Client,
+    {
+      getServerConfig: jest
+        .fn()
+        .mockResolvedValue({ settings: {}, case_role_id: 'case', verification_channel_id: null }),
+    },
+    {} as PrismaClient
+  );
+  const collected = await port.readBase('guild');
+  expect(collected.channels.find((c) => c.id === 'child')).toMatchObject({
+    parentId: 'parent',
+    permissionsLocked: false,
+    metadataAvailable: true,
+  });
+  const { assessRestrictionFacts } = await import('@drasil/application');
+  expect(
+    assessRestrictionFacts({ ...collected, casesComplete: true, threadsComplete: true }).setup
+      .findingCodes
+  ).toContain('unexpected_channel_access');
+  raw[1].permission_overwrites = [...raw[0].permission_overwrites];
+  staleChild.parentId = 'old-parent';
+  expect((await port.readBase('guild')).channels.find((c) => c.id === 'child')).toMatchObject({
+    parentId: 'parent',
+    permissionsLocked: true,
+  });
+});

@@ -76,19 +76,34 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
         raw && 'permission_overwrites' in raw && Array.isArray(raw.permission_overwrites)
           ? raw.permission_overwrites
           : null;
+      const parentId = raw && 'parent_id' in raw ? (raw.parent_id ?? null) : null;
+      const parent = rawChannels.find((item) => item.id === parentId);
+      const parentOverwrites =
+        parent && 'permission_overwrites' in parent && Array.isArray(parent.permission_overwrites)
+          ? parent.permission_overwrites
+          : null;
+      const overwriteKey = (entries: NonNullable<typeof overwrites>): string =>
+        JSON.stringify(
+          entries
+            .map((entry) => [entry.id, entry.type, entry.allow, entry.deny])
+            .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+        );
       channelFacts.push({
         id: channel.id,
         name: channel.name,
         type,
-        parentId: channel.parentId,
-        permissionsLocked: channel.permissionsLocked ?? false,
+        parentId,
+        permissionsLocked:
+          overwrites !== null &&
+          parentOverwrites !== null &&
+          overwriteKey(overwrites) === overwriteKey(parentOverwrites),
         overwrites: (overwrites ?? []).map((o) => ({
           id: o.id,
           type: o.type === OverwriteType.Member ? 'member' : 'role',
           allow: o.allow,
           deny: o.deny,
         })),
-        metadataAvailable: overwrites !== null,
+        metadataAvailable: overwrites !== null && (parentId === null || parentOverwrites !== null),
       });
     }
     return {
