@@ -5,7 +5,15 @@ import type {
   RestrictionFacts,
   RestrictionThreadFact,
 } from '@drasil/application';
-import { ChannelType, Client, Guild, OverwriteType, ThreadChannel } from 'discord.js';
+import {
+  ChannelType,
+  Client,
+  Guild,
+  OverwriteType,
+  ThreadChannel,
+  Routes,
+  type RESTGetAPIGuildChannelsResult,
+} from 'discord.js';
 import { IConfigService } from '../config/ConfigService';
 import { PrismaClient } from '../db/prisma';
 import { CaseKind, VerificationStatus } from '../repositories/types';
@@ -42,6 +50,10 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
     const guild = await this.client.guilds.fetch({ guild: guildId, force: true });
     const settings = await this.config.getServerConfig(guildId);
     const [roles, channels] = await Promise.all([guild.roles.fetch(), guild.channels.fetch()]);
+    // Discord.js retains cached overwrites when the raw response omits them.
+    const rawChannels = (await this.client.rest.get(
+      Routes.guildChannels(guildId)
+    )) as RESTGetAPIGuildChannelsResult;
     const bot = await guild.members.fetchMe().catch(() => null);
     const lockdown = getCaseRoleLockdownSettings(settings.settings);
     const quarantine = getRoleQuarantineSettings(settings.settings);
@@ -59,19 +71,24 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
       if (!channel || channel.isThread()) continue;
       const type = types.get(channel.type);
       if (!type || !('permissionOverwrites' in channel)) continue;
+      const raw = rawChannels.find((item) => item.id === channel.id);
+      const overwrites =
+        raw && 'permission_overwrites' in raw && Array.isArray(raw.permission_overwrites)
+          ? raw.permission_overwrites
+          : null;
       channelFacts.push({
         id: channel.id,
         name: channel.name,
         type,
         parentId: channel.parentId,
         permissionsLocked: channel.permissionsLocked ?? false,
-        overwrites: [...channel.permissionOverwrites.cache.values()].map((o) => ({
+        overwrites: (overwrites ?? []).map((o) => ({
           id: o.id,
           type: o.type === OverwriteType.Member ? 'member' : 'role',
-          allow: o.allow.bitfield.toString(),
-          deny: o.deny.bitfield.toString(),
+          allow: o.allow,
+          deny: o.deny,
         })),
-        metadataAvailable: true,
+        metadataAvailable: overwrites !== null,
       });
     }
     return {
@@ -174,7 +191,12 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
     if (state.index >= parents.length) return { items: [], next: null };
     const parent = parents[state.index];
     const page = await parent.threads.fetchArchived(
-      { type: state.type, limit, ...(state.before ? { before: new Date(state.before) } : {}) },
+      {
+        type: state.type,
+        ...(state.type === 'private' ? { fetchAll: true } : {}),
+        limit,
+        ...(state.before ? { before: new Date(state.before) } : {}),
+      },
       false
     );
     const items = [...page.threads.values()];

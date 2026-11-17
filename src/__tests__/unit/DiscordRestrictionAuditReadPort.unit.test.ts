@@ -1,3 +1,5 @@
+import { RestrictionAuditService } from '../../services/RestrictionAuditService';
+import { facts, channel } from '../../../packages/application/src/operations/restrictionTestData';
 import { ChannelType, Client, GuildMember, Role } from 'discord.js';
 import { IConfigService } from '../../config/ConfigService';
 import { PrismaClient } from '../../db/prisma';
@@ -119,4 +121,138 @@ it('preserves Discord equal-position ordering for quarantine policy', () => {
     roles: { highest: { position: 10, comparePositionTo: () => 1 } },
   } as unknown as GuildMember;
   expect(restrictionRoleFact(role, bot).position).toBe(9);
+});
+
+it('requests all archived private threads, including unjoined threads, on every timestamp page', async () => {
+  const unjoined = {
+    id: 'unjoined',
+    parentId: 'parent',
+    type: ChannelType.PrivateThread,
+    archiveTimestamp: 1000,
+    archived: true,
+    locked: false,
+  };
+  const fetchArchived = jest
+    .fn()
+    .mockImplementation(async (options: { fetchAll?: boolean; before?: Date }) =>
+      options.fetchAll
+        ? { threads: new Map([['unjoined', unjoined]]), hasMore: !options.before }
+        : { threads: new Map(), hasMore: false }
+    );
+  const parent = {
+    id: 'parent',
+    type: ChannelType.GuildText,
+    isThread: () => false,
+    threads: { fetchArchived },
+  };
+  const port = new DiscordRestrictionAuditReadPort(
+    {
+      guilds: {
+        fetch: jest.fn().mockResolvedValue({ channels: { cache: new Map([['parent', parent]]) } }),
+      },
+    } as unknown as Client,
+    {} as IConfigService,
+    {} as PrismaClient
+  );
+  const first = await port.readThreads(
+    'guild',
+    JSON.stringify({ index: 0, type: 'private', before: null }),
+    100
+  );
+  expect(first.items.map((t) => t.id)).toContain('unjoined');
+  expect(first.next).not.toBeNull();
+  const second = await port.readThreads('guild', first.next, 100);
+  expect(fetchArchived).toHaveBeenLastCalledWith(
+    { type: 'private', fetchAll: true, limit: 100, before: new Date(1000) },
+    false
+  );
+  expect(second.next).toBeNull();
+});
+it('marks omitted raw overwrites unavailable instead of trusting retained Discord cache', async () => {
+  const cached = {
+    id: 'channel',
+    name: 'Community',
+    type: ChannelType.GuildText,
+    parentId: null,
+    permissionsLocked: false,
+    isThread: () => false,
+    permissionOverwrites: {
+      cache: new Map([
+        ['case', { id: 'case', type: 0, allow: { bitfield: 0n }, deny: { bitfield: 1024n } }],
+      ]),
+    },
+  };
+  const get = jest
+    .fn()
+    .mockResolvedValue([{ id: 'channel', type: ChannelType.GuildText, name: 'Community' }]);
+  const guild = {
+    roles: { fetch: jest.fn().mockResolvedValue(new Map()) },
+    channels: { fetch: jest.fn().mockResolvedValue(new Map([['channel', cached]])) },
+    members: { fetchMe: jest.fn().mockResolvedValue(null) },
+  };
+  const port = new DiscordRestrictionAuditReadPort(
+    { guilds: { fetch: jest.fn().mockResolvedValue(guild) }, rest: { get } } as unknown as Client,
+    {
+      getServerConfig: jest
+        .fn()
+        .mockResolvedValue({ settings: {}, case_role_id: 'case', verification_channel_id: null }),
+    },
+    {} as PrismaClient
+  );
+  const unavailable = await port.readBase('guild');
+  expect(get).toHaveBeenCalledWith('/guilds/guild/channels');
+  expect(unavailable.channels[0]).toMatchObject({ metadataAvailable: false, overwrites: [] });
+  get.mockResolvedValue([
+    { id: 'channel', type: ChannelType.GuildText, permission_overwrites: [] },
+  ]);
+  expect((await port.readBase('guild')).channels[0]).toMatchObject({
+    metadataAvailable: true,
+    overwrites: [],
+  });
+});
+
+it('keeps coverage partial when the all-private archive route is denied', async () => {
+  const fetchArchived = jest.fn().mockImplementation(async (options: { fetchAll?: boolean }) => {
+    if (options.fetchAll) throw new Error('Missing permissions');
+    return { threads: new Map(), hasMore: false };
+  });
+  const parent = {
+    id: 'parent',
+    type: ChannelType.GuildText,
+    isThread: () => false,
+    threads: { fetchArchived },
+  };
+  const guild = {
+    channels: {
+      cache: new Map([['parent', parent]]),
+      fetchActiveThreads: jest.fn().mockResolvedValue({
+        threads: new Map([
+          [
+            'known',
+            {
+              id: 'known',
+              parentId: 'parent',
+              type: ChannelType.PublicThread,
+              archived: false,
+              locked: false,
+            },
+          ],
+        ]),
+      }),
+    },
+  };
+  const port = new DiscordRestrictionAuditReadPort(
+    { guilds: { fetch: jest.fn().mockResolvedValue(guild) } } as unknown as Client,
+    {} as IConfigService,
+    {} as PrismaClient
+  );
+  jest.spyOn(port, 'readBase').mockResolvedValue(facts({ channels: [channel({ id: 'parent' })] }));
+  jest.spyOn(port, 'readCases').mockResolvedValue({ items: [], next: null });
+  const audit = await new RestrictionAuditService(port).auditGuild('guild');
+  expect(audit.coverage.find((c) => c.area === 'threads')?.state).toBe('partial');
+  expect(audit.setup.status).not.toBe('verified');
+  expect(fetchArchived).toHaveBeenLastCalledWith(
+    { type: 'private', fetchAll: true, limit: 100 },
+    false
+  );
 });

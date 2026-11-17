@@ -117,3 +117,45 @@ it('does not default-check corrections when required metadata is incomplete', ()
     proposeRestrictionFixes(input, assessRestrictionFacts(input)).every((f) => !f.defaultSelected)
   ).toBe(true);
 });
+
+it('groups an assumed quarantine policy with dependent channel repairs, unchecked', () => {
+  const input = facts({
+    quarantineMode: 'off',
+    roles: facts().roles.map((r) => (r.id === 'guild' ? { ...r, permissions: '1024' } : r)),
+    channels: [channel({ overwrites: [{ id: 'member', type: 'role', allow: '1024', deny: '0' }] })],
+  });
+  const fixes = proposeRestrictionFixes(input, assessRestrictionFacts(input));
+  const channelRepair = fixes.find((f) => f.effects.some((e) => e.kind === 'edit_overwrite'))!;
+  expect(channelRepair.defaultSelected).toBe(false);
+  expect(channelRepair.effects.some((e) => e.kind === 'update_quarantine_policy')).toBe(true);
+  expect(fixes.filter((f) => f.effects.some((e) => e.kind === 'edit_overwrite'))).toHaveLength(1);
+});
+it.each(['channel', 'thread'] as const)(
+  'withholds defaults when individual %s evidence is missing despite complete collections',
+  (area) => {
+    const input = facts({
+      roles: facts().roles.map((r) => (r.id === 'guild' ? { ...r, permissions: '1024' } : r)),
+      channels: [
+        channel(),
+        ...(area === 'channel' ? [channel({ id: 'unknown', metadataAvailable: false })] : []),
+      ],
+      threads:
+        area === 'thread'
+          ? [
+              {
+                id: 'unknown',
+                parentId: 'channel',
+                private: true,
+                archived: true,
+                locked: false,
+                memberIds: [],
+                metadataAvailable: false,
+              },
+            ]
+          : [],
+    });
+    expect(
+      proposeRestrictionFixes(input, assessRestrictionFacts(input)).every((f) => !f.defaultSelected)
+    ).toBe(true);
+  }
+);

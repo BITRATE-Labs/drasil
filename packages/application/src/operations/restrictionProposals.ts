@@ -144,7 +144,12 @@ export function proposeRestrictionFixes(
         facts.channelsComplete &&
         facts.casesComplete &&
         facts.threadsComplete &&
-        facts.cases.every((member) => member.metadataAvailable),
+        facts.cases.every((member) => member.metadataAvailable) &&
+        facts.channels.every((channel) => channel.metadataAvailable) &&
+        facts.threads.every((thread) => thread.metadataAvailable) &&
+        assessment.setup.coverage.every(
+          (coverage) => coverage.area === 'parent_content' || coverage.state === 'complete'
+        ),
       selectable: effects.length > 0,
       effects: [...normalizeRestrictionEffects(effects)],
     });
@@ -277,6 +282,32 @@ export function proposeRestrictionFixes(
         scope,
         effects,
         !(inherited && mixed)
+      );
+    }
+  }
+  const policy = fixes.find((fix) => fix.id === 'policy:quarantine');
+  if (policy) {
+    const dependent = fixes.filter((fix) =>
+      fix.effects.some((effect) => effect.kind === 'edit_overwrite')
+    );
+    if (dependent.length) {
+      const scope = [...new Set(dependent.flatMap((fix) => fix.affectedScope))];
+      fixes.splice(
+        0,
+        fixes.length,
+        ...fixes.filter((fix) => fix !== policy && !dependent.includes(fix)),
+        {
+          ...policy,
+          summary: 'Enable ordinary-role quarantine and correct case-role channel access together',
+          affectedScope: scope,
+          affectedCount: scope.length,
+          effects: [
+            ...normalizeRestrictionEffects([
+              ...policy.effects,
+              ...dependent.flatMap((fix) => fix.effects),
+            ]),
+          ],
+        }
       );
     }
   }
