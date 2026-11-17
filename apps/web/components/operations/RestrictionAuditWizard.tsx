@@ -60,6 +60,17 @@ export function RestrictionAuditWizard(props: RestrictionAuditWizardProps) {
   );
   const [review, setReview] = useState<RestrictionReview | null>(props.initialReview ?? null);
   const [approved, setApproved] = useState(false);
+  const [reviewExpired, setReviewExpired] = useState(false);
+  useEffect(() => {
+    const remaining = review ? Date.parse(review.expiresAt) - Date.now() : Infinity;
+    setReviewExpired(remaining <= 0);
+    if (!review || remaining <= 0) return;
+    const timer = window.setTimeout(() => {
+      setReviewExpired(true);
+      setApproved(false);
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [review]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState(audit);
@@ -258,10 +269,16 @@ export function RestrictionAuditWizard(props: RestrictionAuditWizardProps) {
                     </li>
                   ))}
                 </ul>
+                {reviewExpired && (
+                  <p role="alert">
+                    This review expired. Run a fresh audit and review the changes again.
+                  </p>
+                )}
                 <label className={styles.consent}>
                   <input
                     type="checkbox"
                     checked={approved}
+                    disabled={reviewExpired}
                     onChange={(e) => setApproved(e.target.checked)}
                   />
                   I approve these changes and their access effects.
@@ -412,10 +429,10 @@ export function RestrictionAuditWizard(props: RestrictionAuditWizardProps) {
                   </ActionButton>
                   <ActionButton
                     tone="positive"
-                    disabled={!approved || pending || Date.parse(review.expiresAt) <= Date.now()}
+                    disabled={!approved || pending || reviewExpired}
                     onClick={() =>
                       void run(async () => {
-                        if (!approved) return;
+                        if (!approved || Date.parse(review.expiresAt) <= Date.now()) return;
                         navigateRequest('apply', unwrap(await props.onApply(review.reference)).id);
                       })
                     }

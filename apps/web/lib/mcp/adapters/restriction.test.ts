@@ -1,4 +1,5 @@
 import { beforeEach, expect, test, vi } from 'vitest';
+import { fixtureRestrictionAudit } from '../../restrictionAuditFixtures';
 import { readWebRestrictionFacts } from './restriction';
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -20,27 +21,24 @@ vi.mock('../../discordApi', () => ({
   fetchDiscordChannel: mocks.channel,
   fetchDiscordThreadMembers: mocks.members,
 }));
+const serverRecord = {
+  guild_id: 'guild',
+  case_role_id: 'case',
+  admin_channel_id: null,
+  verification_channel_id: null,
+  admin_notification_role_id: null,
+  heuristic_message_threshold: 5,
+  heuristic_message_timeframe_seconds: 60,
+  heuristic_suspicious_keywords: [],
+  created_at: null,
+  updated_at: null,
+  updated_by: null,
+  settings: {},
+  is_active: true,
+};
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.query.mockResolvedValue({
-    rows: [
-      {
-        guild_id: 'guild',
-        case_role_id: 'case',
-        admin_channel_id: null,
-        verification_channel_id: null,
-        admin_notification_role_id: null,
-        heuristic_message_threshold: 5,
-        heuristic_message_timeframe_seconds: 60,
-        heuristic_suspicious_keywords: [],
-        created_at: null,
-        updated_at: null,
-        updated_by: null,
-        settings: {},
-        is_active: true,
-      },
-    ],
-  });
+  mocks.query.mockResolvedValue({ rows: [serverRecord] });
   mocks.guild.mockResolvedValue({ id: 'guild', owner_id: 'owner' });
   mocks.bot.mockResolvedValue({ id: 'bot' });
   mocks.roles.mockResolvedValue([
@@ -76,4 +74,86 @@ test('missing overwrite evidence stays unavailable and foreign guild identity re
   expect((await readWebRestrictionFacts('guild', [])).channels[0].metadataAvailable).toBe(false);
   mocks.guild.mockResolvedValue({ id: 'foreign', owner_id: 'owner' });
   await expect(readWebRestrictionFacts('guild', [])).rejects.toThrow('binding_mismatch');
+});
+
+function selectedCase() {
+  const fix = fixtureRestrictionAudit('guild').fixes.find((f) => f.id === 'member')!;
+  const effect = fix.effects[0];
+  if (effect.kind !== 'quarantine_case_roles') throw new Error('Expected member fixture');
+  mocks.query
+    .mockResolvedValueOnce({
+      rows: [
+        {
+          ...serverRecord,
+        },
+      ],
+    })
+    .mockResolvedValueOnce({
+      rows: [
+        {
+          id: effect.caseId,
+          user_id: effect.memberId,
+          case_revision: 4,
+          case_kind: 'compromised_account',
+          thread_id: 'thread',
+          quarantine_case_role_id: 'original-case',
+        },
+      ],
+    });
+  mocks.member.mockImplementation(async (_guild, user) =>
+    user === 'bot'
+      ? { roles: ['bot-role'] }
+      : { roles: ['case', 'community'], joined_at: '2026-11-01T00:00:00.000Z' }
+  );
+  mocks.channel.mockResolvedValue({
+    id: 'thread',
+    guild_id: 'guild',
+    parent_id: 'child',
+    type: 12,
+    thread_metadata: { archived: true, locked: true },
+  });
+  mocks.members.mockResolvedValue([{ user_id: effect.memberId }]);
+  return fix;
+}
+test('selected actual case refresh binds persisted role, revision, join and private archived membership', async () => {
+  const fix = selectedCase();
+  const facts = await readWebRestrictionFacts('guild', [fix]);
+  expect(facts.cases[0]).toMatchObject({
+    caseRoleId: 'original-case',
+    caseRevision: '4',
+    joinedAt: '2026-11-01T00:00:00.000Z',
+    purpose: 'compromised_account',
+    roleIds: ['guild', 'case', 'community'],
+  });
+  expect(facts.threads[0]).toMatchObject({
+    id: 'thread',
+    private: true,
+    archived: true,
+    locked: true,
+    memberIds: [facts.cases[0].userId],
+  });
+  expect(mocks.query).toHaveBeenLastCalledWith(
+    expect.stringContaining("server_id=$2 and status='pending'"),
+    [facts.cases[0].caseId, 'guild']
+  );
+});
+test('missing membership identity refuses selected case admission', async () => {
+  const fix = selectedCase();
+  mocks.member.mockResolvedValue({ roles: ['bot-role'] });
+  await expect(readWebRestrictionFacts('guild', [fix])).rejects.toThrow('metadata_unavailable');
+  expect(mocks.channel).not.toHaveBeenCalled();
+});
+test('foreign thread and failed paginated membership reads refuse admission', async () => {
+  let fix = selectedCase();
+  mocks.channel.mockResolvedValue({
+    id: 'thread',
+    guild_id: 'foreign',
+    parent_id: 'child',
+    type: 12,
+    thread_metadata: { archived: false, locked: false },
+  });
+  await expect(readWebRestrictionFacts('guild', [fix])).rejects.toThrow('metadata_unavailable');
+  fix = selectedCase();
+  mocks.members.mockRejectedValue(new Error('Restriction thread coverage incomplete.'));
+  await expect(readWebRestrictionFacts('guild', [fix])).rejects.toThrow('coverage incomplete');
 });

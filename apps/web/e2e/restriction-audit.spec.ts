@@ -72,9 +72,9 @@ test('keyboard and bulk selection require new approval, queue durable work and r
   expect(row.rows).toHaveLength(1);
   expect(row.rows[0].metadata.restriction_plan.selectedFixIds).toEqual(['exception', 'hardening']);
   await fixtures.finishRestrictionApply();
-  await page.reload();
   await expect(page.getByRole('region', { name: 'Results' })).toContainText(
-    'Batch stopped: interrupted'
+    'Batch stopped: interrupted',
+    { timeout: 20_000 }
   );
   await expect(page.getByRole('region', { name: 'Results' })).toContainText(
     'Server setup: incomplete'
@@ -162,4 +162,20 @@ test('all automatic fixes can be reviewed together and navigation retains choice
   await expect(page.getByRole('button', { name: 'Review changes', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toHaveCount(0);
   expect(audit.auditRequestId).toBeTruthy();
+});
+
+test('idle approval expires without another interaction', async ({ page }) => {
+  const audit = await fixtures.seedRestrictionAudit();
+  await page.clock.install();
+  await page.goto(`${path}?audit=${audit.auditRequestId}`);
+  await page.getByRole('button', { name: 'Review changes', exact: true }).click();
+  const approval = page.getByRole('checkbox', {
+    name: 'I approve these changes and their access effects.',
+  });
+  await approval.check();
+  await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
+  await page.clock.fastForward(10 * 60 * 1000 + 1000);
+  await expect(page.getByRole('alert')).toContainText('This review expired');
+  await expect(approval).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
 });

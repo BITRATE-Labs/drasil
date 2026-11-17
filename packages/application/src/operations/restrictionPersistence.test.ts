@@ -7,26 +7,24 @@ test('malformed versions and wrong stored plan bindings fail closed', async () =
   jest.mocked(db.query).mockResolvedValue({ rows: [{ value: { schemaVersion: 2 } }] });
   expect(await store.load('id', 'guild')).toBeNull();
   expect(await store.loadProgress('id')).toBeNull();
-  jest
-    .mocked(db.query)
-    .mockResolvedValue({
-      rows: [
-        {
-          server_id: 'other',
-          actor_id: 'actor',
-          value: {
-            auditRequestId: 'audit',
-            auditRevision: 'revision',
-            selectedFixIds: ['fix'],
-            actorId: 'actor',
-            guildId: 'guild',
-            effects: [],
-            materialStateFingerprint: 'hash',
-            expiresAt: new Date().toISOString(),
-          },
+  jest.mocked(db.query).mockResolvedValue({
+    rows: [
+      {
+        server_id: 'other',
+        actor_id: 'actor',
+        value: {
+          auditRequestId: 'audit',
+          auditRevision: 'revision',
+          selectedFixIds: ['fix'],
+          actorId: 'actor',
+          guildId: 'guild',
+          effects: [],
+          materialStateFingerprint: 'hash',
+          expiresAt: new Date().toISOString(),
         },
-      ],
-    });
+      },
+    ],
+  });
   expect(await store.loadPlan('id')).toBeNull();
 });
 test('invalid revision never issues a write', async () => {
