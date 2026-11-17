@@ -483,6 +483,8 @@ export interface RoleQuarantineSnapshotCreate {
 }
 
 export interface RoleQuarantineSnapshotUpdate {
+  /** Compare the completed restoration workset under the snapshot row lock. */
+  expectedRestorationRoleIds?: readonly string[];
   verificationEventId?: string | null;
   status?: RoleQuarantineSnapshotStatus;
   purpose?: RoleQuarantineSnapshotPurpose;

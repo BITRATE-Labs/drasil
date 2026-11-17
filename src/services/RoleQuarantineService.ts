@@ -615,6 +615,7 @@ export class RoleQuarantineService implements IRoleQuarantineService {
     const restoreCompleted = restoreStatus === 'restored';
 
     const updated = await updateSnapshot({
+      expectedRestorationRoleIds: attemptedRoleIds,
       status: restoreCompleted
         ? RoleQuarantineSnapshotStatus.RESTORED
         : RoleQuarantineSnapshotStatus.ACTIVE,
@@ -631,7 +632,7 @@ export class RoleQuarantineService implements IRoleQuarantineService {
 
     return {
       status:
-        updated && unsettledRestrictionRoleIds(updated).length
+        updated?.status === RoleQuarantineSnapshotStatus.ACTIVE
           ? 'partially_restored'
           : restoreStatus,
       snapshotId: snapshot.id,

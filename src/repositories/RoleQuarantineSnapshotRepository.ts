@@ -325,10 +325,19 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
     const current = rows.at(0);
     if (!current) return null;
     const update = this.toUpdateData(data);
+    const restorationWorksetChanged =
+      data.expectedRestorationRoleIds !== undefined &&
+      JSON.stringify(
+        [
+          ...new Set(
+            current.removed_role_ids.filter((id) => current.original_role_ids.includes(id))
+          ),
+        ].sort()
+      ) !== JSON.stringify([...data.expectedRestorationRoleIds].sort());
     if (
       current.status === RoleQuarantineSnapshotStatus.ACTIVE &&
       data.status === RoleQuarantineSnapshotStatus.RESTORED &&
-      unsettledRestrictionRoleIds(current).length
+      (unsettledRestrictionRoleIds(current).length || restorationWorksetChanged)
     ) {
       update.status = RoleQuarantineSnapshotStatus.ACTIVE;
       update.restored_at = undefined;

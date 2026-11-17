@@ -173,4 +173,43 @@ integration('restriction repair restoration', () => {
       (await f.prisma.role_quarantine_snapshots.findUnique({ where: { id: f.prior.id } }))!.status
     ).toBe('active');
   });
+  it('keeps reconciliation active when a newly appended removal settles after the restoration read', async () => {
+    const f = await fixture();
+    (f.member.roles.add as jest.Mock).mockImplementationOnce(async (role: { id: string }) => {
+      const repository = new RoleQuarantineSnapshotRepository(f.prisma);
+      const appended = await repository.appendRestrictionRepairRoles({
+        caseId: f.event.id,
+        caseRevision: 0,
+        requestId: f.fence.requestId,
+        attemptToken: f.fence.attemptToken,
+        userId: 'member',
+        roleIds: ['ordinary'],
+      });
+      expect(appended).not.toBeNull();
+      f.member.roles.cache.delete('ordinary');
+      const recorded = await repository.recordRestrictionRepairOutcome({
+        snapshotId: f.prior.id,
+        requestId: f.fence.requestId,
+        attemptToken: f.fence.attemptToken,
+        roleId: 'ordinary',
+        state: 'applied',
+      });
+      expect(recorded!.removed_role_ids).toEqual(['earlier', 'ordinary']);
+      await f.prisma.verification_events.update({
+        where: { id: f.event.id },
+        data: { status: 'verified', case_revision: 1 },
+      });
+      f.member.roles.cache.set(role.id, f.earlier);
+    });
+    const result = await f.service.restoreMemberRoles(f.member, f.actor);
+    expect(result.status).toBe('partially_restored');
+    expect(f.member.roles.cache.has('ordinary')).toBe(false);
+    expect(
+      (await f.prisma.role_quarantine_snapshots.findUnique({ where: { id: f.prior.id } }))!.status
+    ).toBe('active');
+    const reconciled = await f.service.restoreMemberRoles(f.member, f.actor);
+    expect(reconciled.status).toBe('restored');
+    expect(f.member.roles.cache.has('ordinary')).toBe(true);
+    expect(f.member.roles.add).toHaveBeenCalledTimes(2);
+  });
 });
