@@ -97,3 +97,7 @@ export * from './reports/analysis';
 export * from './reports/intakeState';
 
 export * from './moderation/automaticResponse';
+
+export * from './operations/restrictionTypes';
+export * from './operations/restrictionPolicy';
+export * from './operations/restrictionAssessment';

@@ -1,3 +1,4 @@
+import { classifyRestrictionRoles } from '@drasil/application';
 import { GuildMember, PartialGuildMember, Role, User } from 'discord.js';
 import { inject, injectable, optional } from 'inversify';
 import { IConfigService } from '../config/ConfigService';
@@ -163,7 +164,6 @@ interface QuarantinePolicy {
   readonly purpose: RoleQuarantineSnapshotPurpose;
   readonly exemptRoleIds: ReadonlySet<string>;
   readonly privilegedPermissions: readonly bigint[];
-  readonly skipPrivilegedRoles: boolean;
 }
 
 @injectable()
@@ -896,7 +896,6 @@ export class RoleQuarantineService implements IRoleQuarantineService {
         purpose,
         exemptRoleIds: new Set(),
         privilegedPermissions: COMPROMISED_ACCOUNT_PRIVILEGED_ROLE_PERMISSIONS,
-        skipPrivilegedRoles: false,
       };
     }
 
@@ -910,7 +909,6 @@ export class RoleQuarantineService implements IRoleQuarantineService {
       purpose,
       exemptRoleIds,
       privilegedPermissions: STANDARD_QUARANTINE_PRIVILEGED_ROLE_PERMISSIONS,
-      skipPrivilegedRoles: true,
     };
   }
 
@@ -928,9 +926,30 @@ export class RoleQuarantineService implements IRoleQuarantineService {
     policy: QuarantinePolicy
   ): Promise<ClassifiedRole[]> {
     const botMember = await this.getBotMember(member);
-    return roles.map((role) => ({
+    const dispositions = classifyRestrictionRoles({
+      guildId: member.guild.id,
+      caseRoleId: null,
+      purpose: policy.purpose,
+      quarantineMode: 'on',
+      exemptRoleIds: [...policy.exemptRoleIds],
+      manualIntakeRoleId: null,
+      botHighestPosition: botMember?.roles.highest.position ?? null,
+      roles: roles.map((role) => ({
+        id: role.id,
+        name: role.name,
+        // Discord breaks equal-position hierarchy ties by role ID.
+        position:
+          botMember && botMember.roles.highest.comparePositionTo(role) > 0
+            ? Math.min(role.position, botMember.roles.highest.position - 1)
+            : role.position,
+        permissions: role.permissions.bitfield.toString(),
+        managed: role.managed,
+        botManaged: this.isBotRole(role),
+      })),
+    });
+    return roles.map((role, index) => ({
       role,
-      skipReason: this.getQuarantineSkipReason(member, role, botMember, policy),
+      skipReason: dispositions[index].skipReason ?? undefined,
     }));
   }
 
@@ -955,37 +974,6 @@ export class RoleQuarantineService implements IRoleQuarantineService {
         role.id !== caseRoleId &&
         !oldMember.roles.cache.has(role.id)
     );
-  }
-
-  private getQuarantineSkipReason(
-    member: GuildMember,
-    role: Role,
-    botMember: GuildMember | null,
-    policy: QuarantinePolicy
-  ): string | undefined {
-    if (policy.exemptRoleIds.has(role.id)) {
-      return 'configured exempt role';
-    }
-    if (this.isBotRole(role)) {
-      return 'bot-managed role';
-    }
-    if (role.managed) {
-      return 'managed role';
-    }
-    if (
-      policy.skipPrivilegedRoles &&
-      this.hasPrivilegedPermissions(role, policy.privilegedPermissions)
-    ) {
-      return 'privileged role';
-    }
-    if (!botMember) {
-      return 'Drasil member could not be loaded';
-    }
-    if (botMember.roles.highest.comparePositionTo(role) <= 0) {
-      return 'role is at or above Drasil role';
-    }
-
-    return undefined;
   }
 
   private getRestoreSkipReason(

@@ -40,6 +40,7 @@ const createRole = (options: FakeRoleOptions): Role => {
     position: options.position ?? 1,
     tags: options.botId ? { botId: options.botId } : {},
     permissions: {
+      bitfield: [...permissionSet].reduce((bits, permission) => bits | permission, 0n),
       has: jest.fn((permission: bigint) => permissionSet.has(permission)),
     },
   } as unknown as Role;
@@ -85,6 +86,7 @@ const createMember = (
   const botMember = {
     roles: {
       highest: {
+        position: 100,
         comparePositionTo: jest.fn(
           (role: Role) => 100 - (role as Role & { position: number }).position
         ),
