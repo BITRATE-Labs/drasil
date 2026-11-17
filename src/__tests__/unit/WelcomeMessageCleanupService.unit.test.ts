@@ -109,6 +109,11 @@ describe('welcome cleanup', () => {
     expect(f.gpt.extractWelcomeRecipient).not.toHaveBeenCalled();
     await f.service.collect({ ...f.message, channelId: 'elsewhere' } as Message);
     await f.service.collect({ ...f.message, author: { id: 'other', bot: true } } as Message);
+    await f.service.collect({
+      ...f.message,
+      attachments: new Collection(),
+      mentions: { users: new Collection([['target', f.user]]) },
+    } as Message);
     expect(f.repository.collect).toHaveBeenCalledTimes(1);
   });
 

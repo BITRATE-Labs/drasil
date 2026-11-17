@@ -73,7 +73,7 @@ export class WelcomeMessageCleanupService {
       settings.welcome_cleanup_channel_id !== message.channelId
     )
       return;
-    if (welcomeImageUrls(message).length === 0 && message.mentions.users.size === 0) return;
+    if (welcomeImageUrls(message).length === 0) return;
     const snapshots: Record<string, WelcomeMemberSnapshot> = {};
     for (const member of message.guild.members.cache.values()) {
       if (member.user.bot || member.joinedTimestamp === null) continue;
