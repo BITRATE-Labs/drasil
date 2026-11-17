@@ -1,19 +1,20 @@
 import type { GuildMember, Role, User } from 'discord.js';
 import type { IConfigService } from '../../config/ConfigService';
 import { VerificationStatus, type VerificationEvent } from '../../repositories/types';
+export const createRestrictionRole = (id: string, permissions = 0n): Role =>
+  ({
+    id,
+    name: id,
+    position: 1,
+    managed: false,
+    tags: {},
+    permissions: { bitfield: permissions, has: (bit: bigint) => (permissions & bit) !== 0n },
+  }) as Role;
+
 export function repairFixture() {
-  const makeRole = (id: string, permissions = 0n): Role =>
-    ({
-      id,
-      name: id,
-      position: 1,
-      managed: false,
-      tags: {},
-      permissions: { bitfield: permissions, has: (bit: bigint) => (permissions & bit) !== 0n },
-    }) as Role;
-  const ordinary = makeRole('ordinary'),
-    earlier = makeRole('earlier'),
-    caseRole = makeRole('case-role');
+  const ordinary = createRestrictionRole('ordinary'),
+    earlier = createRestrictionRole('earlier'),
+    caseRole = createRestrictionRole('case-role');
   const roles = new Map([ordinary, earlier, caseRole].map((r) => [r.id, r]));
   const held = new Map([ordinary, caseRole].map((r) => [r.id, r]));
   const bot = {

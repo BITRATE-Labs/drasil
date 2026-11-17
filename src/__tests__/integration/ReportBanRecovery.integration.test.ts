@@ -1,3 +1,4 @@
+import { createRestrictionRole } from '../fixtures/restrictionRepair';
 import { mock } from 'jest-mock-extended';
 import type { EnqueueInput } from '@drasil/application';
 import type { IIntegrityAuditService } from '../../services/IntegrityAuditService';
@@ -823,13 +824,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
         snapshots
       );
       const f = await fixture(true, quarantine);
-      const role = {
-        id: 'community-role',
-        name: 'Community',
-        managed: false,
-        tags: {},
-        permissions: { has: () => false },
-      } as unknown as Role;
+      const role = createRestrictionRole('community-role');
       const cache = new Map([[role.id, role]]);
       const caseRole = { id: 'case-role' } as Role;
       f.roles.assignCaseRole.mockImplementation(async () => {
@@ -840,7 +835,7 @@ integration('report-ban stale worker recovery with real services and Postgres', 
         cache.delete(caseRole.id);
         return true;
       });
-      const bot = { roles: { highest: { comparePositionTo: () => 100 } } };
+      const bot = { roles: { highest: { position: 100, comparePositionTo: () => 100 } } };
       Object.assign(f.guild, {
         roles: { cache, fetch: jest.fn(async (id) => (id === role.id ? role : null)) },
       });
@@ -888,7 +883,12 @@ integration('report-ban stale worker recovery with real services and Postgres', 
       const applying = f.moderation
         .applyCaseRole(f.member, f.moderator)
         .catch((error: unknown) => error);
-      await paused;
+      await Promise.race([
+        paused,
+        applying.then(() => {
+          throw new Error('Role removal did not start');
+        }),
+      ]);
       try {
         await f.moderation.verifyUser(f.member, f.moderator);
         expect(await snapshots.findActiveByServerAndUser('guild', 'target')).toBeNull();
