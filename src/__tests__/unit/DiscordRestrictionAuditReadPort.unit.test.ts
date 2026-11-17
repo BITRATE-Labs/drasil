@@ -33,6 +33,7 @@ it('pages guild-scoped pending cases in fixed batches of 50', async () => {
   expect(page.next).toBe('49');
   expect(page.items[0]).toMatchObject({
     caseRevision: '0',
+    joinedAt: null,
     caseRoleId: 'persisted',
     metadataAvailable: false,
   });

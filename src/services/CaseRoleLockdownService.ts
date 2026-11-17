@@ -1324,6 +1324,7 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
           caseId: collected?.caseId ?? `member:${member.id}`,
           caseRoleId: caseRoleId === undefined ? (collected?.caseRoleId ?? null) : caseRoleId,
           caseRevision: collected?.caseRevision ?? 'prospective',
+          joinedAt: collected?.joinedAt ?? member.joinedAt?.toISOString() ?? null,
           userId: member.id,
           purpose: collected?.purpose ?? ('standard_case' as const),
           roleIds: roles,

@@ -258,16 +258,20 @@ export function proposeRestrictionFixes(
           channelId: channel.id,
           parentId: parent.id,
           expected: source,
-          desired: source,
+          desired: [
+            ...source.filter((o) => !(o.id === role.id && o.type === 'role')),
+            { id: role.id, type: 'role', ...desired },
+          ],
         });
-      effects.push({
-        kind: 'edit_overwrite',
-        guildId: facts.guildId,
-        channelId: target.id,
-        roleId: role.id,
-        expected,
-        desired,
-      });
+      else
+        effects.push({
+          kind: 'edit_overwrite',
+          guildId: facts.guildId,
+          channelId: target.id,
+          roleId: role.id,
+          expected,
+          desired,
+        });
       const scope = [
         target.id,
         ...facts.channels
@@ -315,6 +319,7 @@ export function proposeRestrictionFixes(
     const memberAssessment = assessment.cases.find((c) => c.caseId === member.caseId);
     if (
       !member.metadataAvailable ||
+      !member.joinedAt ||
       member.owner ||
       !memberAssessment?.findings.some((f) => f.kind === 'access_failure')
     )
@@ -339,6 +344,7 @@ export function proposeRestrictionFixes(
             guildId: facts.guildId,
             caseId: member.caseId,
             caseRevision: member.caseRevision,
+            joinedAt: member.joinedAt,
             memberId: member.userId,
             roleIds: removable,
             expected: member.roleIds,

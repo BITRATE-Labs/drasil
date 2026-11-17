@@ -78,7 +78,11 @@ it('freezes unsync and permission correction as an unchecked inseparable proposa
     (f) => f.selectable
   )!;
   expect(fix.defaultSelected).toBe(false);
-  expect(fix.effects.map((e) => e.kind)).toEqual(['unsync_channel', 'edit_overwrite']);
+  expect(fix.effects.map((e) => e.kind)).toEqual(['unsync_channel']);
+  const effect = fix.effects[0];
+  expect(effect.kind === 'unsync_channel' && effect.desired).not.toEqual(
+    effect.kind === 'unsync_channel' && effect.expected
+  );
 });
 it('keeps protected staff roles out of current-case quarantine proposals', () => {
   const input = facts({
@@ -88,6 +92,7 @@ it('keeps protected staff roles out of current-case quarantine proposals', () =>
         caseId: 'case-id',
         caseRoleId: null,
         caseRevision: '2',
+        joinedAt: '2020-01-01T00:00:00.000Z',
         userId: 'user',
         purpose: 'compromised_account',
         roleIds: ['case', 'staff', 'member'],

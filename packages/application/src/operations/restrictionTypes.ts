@@ -124,6 +124,7 @@ export const restrictionCaseFactSchema = z.object({
   caseId: id,
   caseRoleId: id.nullable(),
   caseRevision: id,
+  joinedAt: timestamp.nullable(),
   userId: id,
   purpose: z.enum(['standard_case', 'compromised_account']),
   roleIds: z.array(id),
@@ -190,6 +191,7 @@ export const restrictionEffectSchema = z.discriminatedUnion('kind', [
     guildId: id,
     caseId: id,
     caseRevision: id,
+    joinedAt: timestamp,
     memberId: id,
     roleIds: z.array(id).min(1),
     expected: z.array(id),
@@ -267,6 +269,9 @@ export interface RestrictionApplyResult {
   readonly progress: RestrictionProgress;
   readonly stopReason:
     | 'completed'
+    | 'stale_state'
+    | 'fence_lost'
+    | 'interrupted'
     | 'write_failed'
     | 'precondition_changed'
     | 'unknown_outcome'

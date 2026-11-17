@@ -107,3 +107,6 @@ export type {
   RestrictionAuditStore,
   RestrictionExecutionStore,
 } from './operations/restrictionPersistence';
+
+export * from './operations/restrictionActions';
+export * from './operations/restrictionExecution';

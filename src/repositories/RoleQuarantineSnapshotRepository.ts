@@ -22,6 +22,20 @@ import {
   VerificationStatus,
 } from './types';
 
+/** Unsettled ownership can still finish removing a role after case resolution. */
+export function unsettledRestrictionRoleIds(snapshot: RoleQuarantineSnapshot): string[] {
+  const metadata = snapshot.metadata as Prisma.JsonObject | null;
+  const owners = metadata?.restriction_role_owners as Prisma.JsonObject | undefined;
+  return snapshot.planned_role_ids.filter((id) => {
+    const owner = owners?.[id] as Prisma.JsonObject | undefined;
+    return (
+      snapshot.original_role_ids.includes(id) &&
+      !!owner &&
+      (owner.state === 'started' || owner.state === 'unknown')
+    );
+  });
+}
+
 export interface RestrictionRepairAppend {
   caseId: string;
   caseRevision: number;
@@ -311,6 +325,15 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
     const current = rows.at(0);
     if (!current) return null;
     const update = this.toUpdateData(data);
+    if (
+      current.status === RoleQuarantineSnapshotStatus.ACTIVE &&
+      data.status === RoleQuarantineSnapshotStatus.RESTORED &&
+      unsettledRestrictionRoleIds(current).length
+    ) {
+      update.status = RoleQuarantineSnapshotStatus.ACTIVE;
+      update.restored_at = undefined;
+      update.restored_by = undefined;
+    }
     if (data.metadata !== undefined) {
       const incoming = data.metadata;
       const currentMetadata = (current.metadata ?? {}) as Prisma.JsonObject;

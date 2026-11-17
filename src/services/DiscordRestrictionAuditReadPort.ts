@@ -153,6 +153,7 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
           caseId: row.id,
           caseRoleId: row.quarantine_case_role_id,
           caseRevision: String(row.case_revision),
+          joinedAt: null,
           userId: row.user_id,
           purpose:
             row.case_kind === CaseKind.COMPROMISED_ACCOUNT
@@ -177,6 +178,7 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
     return {
       ...item,
       roleIds: [...member.roles.cache.keys()],
+      joinedAt: member.joinedAt?.toISOString() ?? null,
       owner: member.id === guild.ownerId,
       metadataAvailable: true,
     };

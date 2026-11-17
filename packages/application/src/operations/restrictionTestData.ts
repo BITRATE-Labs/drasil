@@ -32,6 +32,7 @@ export function caseFact(input: Partial<RestrictionCaseFact> = {}): RestrictionC
     caseId: 'case-id',
     caseRoleId: null,
     caseRevision: 'revision',
+    joinedAt: '2020-01-01T00:00:00.000Z',
     userId: 'user',
     purpose: 'standard_case',
     roleIds: ['case'],
