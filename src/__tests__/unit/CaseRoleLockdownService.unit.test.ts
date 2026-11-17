@@ -22,3 +22,23 @@ test('member assessment keeps staff privilege diagnostics while ignoring removed
   const audit = await service.auditMemberBypasses(member);
   expect(audit.retainedAdministratorRoleIds).toEqual(['case']);
 });
+
+test.each(['case', 'guild'])(
+  'member containment projection retains dangerous global powers from %s',
+  async (target) => {
+    const f = fixture();
+    f.state.roles.forEach((r) => {
+      r.permissions = r.id === target ? '4' : '0';
+    });
+    const member = {
+      id: 'member',
+      guild: { id: 'guild', ownerId: 'owner' },
+      roles: { cache: new Collection([['case', {}]]) },
+      joinedAt: new Date(),
+    } as unknown as GuildMember;
+    const service = new CaseRoleLockdownService({} as never, { auditGuild: async () => f.audit });
+    const audit = await service.auditMemberBypasses(member);
+    expect(audit.retainedPrivilegedRoleIds).toContain(target);
+    expect(audit.assessment?.findingCodes).toContain('retained_privileged_permissions');
+  }
+);

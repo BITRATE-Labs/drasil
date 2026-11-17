@@ -1,6 +1,7 @@
 import {
   classifyRestrictionRoles,
   STANDARD_RESTRICTION_PRIVILEGED_PERMISSIONS,
+  COMPROMISED_RESTRICTION_PRIVILEGED_PERMISSIONS,
 } from './restrictionPolicy';
 import type {
   RestrictionAssessment,
@@ -156,8 +157,8 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
     if (
       facts.roles.some(
         (role) =>
-          roleIds.includes(role.id) &&
-          (BigInt(role.permissions) & STANDARD_RESTRICTION_PRIVILEGED_PERMISSIONS) !== 0n
+          (role.id === facts.guildId || roleIds.includes(role.id)) &&
+          (BigInt(role.permissions) & COMPROMISED_RESTRICTION_PRIVILEGED_PERMISSIONS) !== 0n
       )
     ) {
       add('retained_privileged_permissions', null, 'manual');

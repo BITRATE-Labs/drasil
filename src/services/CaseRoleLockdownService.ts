@@ -1,7 +1,7 @@
 import {
   assessRestrictionFacts,
   proposeRestrictionFixes,
-  STANDARD_RESTRICTION_PRIVILEGED_PERMISSIONS,
+  COMPROMISED_RESTRICTION_PRIVILEGED_PERMISSIONS,
   type RestrictionAudit,
   type RestrictionFacts,
   type CaseRoleLockdownIssue,
@@ -212,8 +212,8 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
     const assessment = assessRestrictionFacts(facts).cases[0];
     const privileged = base.roles.filter(
       (role) =>
-        roles.includes(role.id) &&
-        (BigInt(role.permissions) & STANDARD_RESTRICTION_PRIVILEGED_PERMISSIONS) !== 0n
+        (role.id === base.guildId || roles.includes(role.id)) &&
+        (BigInt(role.permissions) & COMPROMISED_RESTRICTION_PRIVILEGED_PERMISSIONS) !== 0n
     );
     return {
       assessment,

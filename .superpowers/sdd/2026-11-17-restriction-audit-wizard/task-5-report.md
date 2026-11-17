@@ -108,3 +108,28 @@ Skipped full repository CI and live Discord acceptance, which remain Task 7. No 
 - `src/services/IntegrityAuditService.ts`
 
 Final self-review follow-up: selected-ID tampering now produces an explicit terminal binding-mismatch denial on both queue and public execution receipt, instead of leaving a no-effect request processing. The existing tamper DB test asserts status/result and zero writes. The same no-send proof helper handles grant revocation; substantive prior receipts retain read-only uncertain evidence.
+
+
+## Review fix round 1 of 5
+
+Review base: `fc26813`. Read `task-5-review.md`; addressed both Important findings.
+
+1. Stored plan-envelope mismatch now enters the existing exact no-send terminalization proof for an unstarted execution. It no longer unconditionally selects observation-only handling. Current queue/execution identity, actor/guild, delegated binding, token/live lease and absence of substantive receipts remain required. Started or completed executions remain observation-only, and an unstarted execution with prior substantive receipts still fails the no-send proof and retains `uncertain_prior_effect`. The new real-DB regression mutates only `metadata.restriction_plan.effects`, asserts zero adapter writes, and requires terminal `binding_mismatch` in both queue and public execution receipt.
+2. Shared permission assessment and the existing containment projection now use the broader compromised-account privilege set, including ban, kick and the other existing compromised-account safeguards. Both explicitly include the everyone role even if it is absent from the member's supplied role-ID list. Case-role privileges are assessed as well. The existing root compromised enforcement array now aliases the shared flag list so it cannot drift from diagnostics. `STANDARD_RESTRICTION_PRIVILEGED_PERMISSIONS`, role classification, staff protection, exemptions and role-removal decisions remain unchanged. Broader diagnostic findings do not silently expand the existing case-role permission-edit proposal mask; newly detected powers can remain manual repairs. No automatic moderation readiness gate was introduced.
+
+Red evidence:
+
+- `npm run application:test -- --runInBand --runTestsByPath src/operations/restrictionAssessment.test.ts src/operations/restrictionPolicy.test.ts`: nine failed and 35 passed. Valid private recovery/full-coverage fixtures with dangerous global powers lacked `retained_privileged_permissions` findings. Tests cover case and everyone roles, including a member role list that omits everyone.
+- `npx jest --runInBand --runTestsByPath src/__tests__/unit/CaseRoleLockdownService.unit.test.ts src/__tests__/unit/AccountQuarantineService.unit.test.ts --silent`: two failed and 20 passed. The retained-privilege projection omitted the case/everyone role with Ban Members.
+- Guarded `npx jest --runInBand --runTestsByPath src/__tests__/integration/McpLockdownConfiguration.integration.test.ts --testNamePattern 'plan-envelope' --silent`: both pg/Prisma regressions failed. Expected terminal denial, received processing with an empty result. Eighteen unrelated tests were deliberately filtered in this red run.
+
+Green evidence:
+
+- The focused application assessment/policy command above: two suites, 45 passed in 4.482 seconds, including the added combined staff/global-power protection regression.
+- The focused containment command above: two suites, 22 passed in 3.68 seconds.
+- Guarded `npx jest --runInBand --runTestsByPath src/__tests__/integration/McpLockdownConfiguration.integration.test.ts --silent`: one suite, all 20 passed in 21.093 seconds. This includes both adapters, envelope and selected-ID tampering, valid reviewed execution, revocation, substantive-receipt preservation and interrupted read-only recovery.
+- Application build, touched-file ESLint, root no-emit TypeScript and `git diff --check` passed. The final added policy test was formatted and included in the 45-test green run.
+
+Database environment remained the identical guarded owned loopback URL for `TEST_DATABASE_URL`, `DATABASE_URL` and `POSTGRES_DB_URL`, with `JEST_INTEGRATION=1` only for direct serialized DB Jest. No live provider call, new dependency, broad suite, workflow publication or deployment was performed.
+
+Contract addition: `COMPROMISED_RESTRICTION_PRIVILEGED_PERMISSION_FLAGS` and its combined mask are exported with the existing restriction-policy exports. They describe containment risk, independently of the unchanged standard role-removal policy. Existing skipped full CI/live acceptance and Task 7 minor-test/noisy-mock follow-ups remain unchanged.

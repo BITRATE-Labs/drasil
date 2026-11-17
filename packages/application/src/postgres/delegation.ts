@@ -797,7 +797,13 @@ async function validateQueuedAdmission(
       execution.preconditions.kind !== 'restriction_plan' ||
       canonicalDigest(plan.data) !== canonicalDigest(execution.preconditions.plan)
     )
-      return { kind: 'denied', code: 'binding_mismatch', persistence: 'observe_only' };
+      return {
+        kind: 'denied',
+        code: 'binding_mismatch',
+        ...(execution.startedAt || execution.completedAt
+          ? { persistence: 'observe_only' as const }
+          : {}),
+      };
   }
   // A stale owner cannot admit new work after its queue lease expires.
   // Already-admitted executions remain read-only observations, including after revocation.

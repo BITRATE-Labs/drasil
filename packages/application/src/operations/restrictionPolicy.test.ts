@@ -57,3 +57,12 @@ test('rejects duplicate selected IDs and client-authored effects', () => {
     restrictionFactsSchema.safeParse(facts({ roles: [role({ permissions: '-1' })] })).success
   ).toBe(false);
 });
+
+test('broader containment diagnostics preserve standard staff removal safeguards', () => {
+  const input = facts({
+    roles: [role({ id: 'staff', permissions: String((1n << 28n) | (1n << 2n)) })],
+  });
+  expect(classifyRestrictionRoles({ ...input, purpose: 'standard_case' })).toEqual([
+    { roleId: 'staff', removable: false, skipReason: 'privileged role' },
+  ]);
+});

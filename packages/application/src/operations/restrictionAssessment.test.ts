@@ -290,3 +290,38 @@ test('actual cases retain their persisted case role after the guild configuratio
   );
   expect(assessRestrictionFacts(input).setup.findingCodes).not.toContain('case_role_missing');
 });
+
+test.each([1, 2, 4, 13, 29, 30, 33, 43, 44])(
+  'dangerous global permission bit %s prevents compromised containment on case or everyone role',
+  (bit) => {
+    const parentPermissions = view | (1n << 16n) | (1n << 38n);
+    for (const target of ['case', 'guild']) {
+      const input = facts({
+        recoveryParentId: 'channel',
+        roles: [
+          role({ id: 'guild', permissions: target === 'guild' ? String(1n << BigInt(bit)) : '0' }),
+          role({
+            id: 'case',
+            permissions: String(parentPermissions | (target === 'case' ? 1n << BigInt(bit) : 0n)),
+          }),
+        ],
+        cases: [caseFact({ purpose: 'compromised_account', roleIds: ['case'], threadId: 'own' })],
+        threads: [
+          {
+            id: 'own',
+            parentId: 'channel',
+            private: true,
+            archived: false,
+            locked: false,
+            memberIds: ['user'],
+            metadataAvailable: true,
+          },
+        ],
+      });
+      const result = assessRestrictionFacts(input);
+      expect(result.setup.findingCodes).toContain('retained_privileged_permissions');
+      expect(result.cases[0].findingCodes).toContain('retained_privileged_permissions');
+      expect(result.cases[0].status).toBe('incomplete');
+    }
+  }
+);

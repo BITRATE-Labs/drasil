@@ -289,6 +289,24 @@ integration.each(['pg', 'prisma'] as const)('MCP lockdown configuration via %s',
       code: 'binding_mismatch',
     });
   });
+  it('terminally rejects plan-envelope effect tampering without writes', async () => {
+    const f = await fixture(['drasil:read', 'drasil:configure'], false, true);
+    const receipt = await f.accept();
+    await pool.query(
+      "update moderation_action_requests set metadata=jsonb_set(metadata,'{restriction_plan,effects}',$2::jsonb) where id=$1::uuid",
+      [receipt.requestId, JSON.stringify([])]
+    );
+    await f.worker.processPendingRequests(1);
+    expect(f.setPermissions).not.toHaveBeenCalled();
+    expect(await f.repository.findById(receipt.requestId!)).toMatchObject({
+      status: 'completed',
+      result: { action_type: 'delegated_admission', state: 'denied', code: 'binding_mismatch' },
+    });
+    expect(await f.service.status(f.principal, receipt.executionId!)).toMatchObject({
+      state: 'denied',
+      code: 'binding_mismatch',
+    });
+  });
   it('rechecks connection revocation before worker writes', async () => {
     const f = await fixture(['drasil:read', 'drasil:configure'], false, true);
     const receipt = await f.accept();
