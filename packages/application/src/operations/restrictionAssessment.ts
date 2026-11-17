@@ -20,18 +20,10 @@ const MANAGE_THREADS = 1n << 34n;
 const THREAD_REPLY = 1n << 38n;
 const SEND = 1n << 11n;
 const CONNECT = 1n << 20n;
+const ADMINISTRATIVE_MUTATIONS =
+  (1n << 4n) | (1n << 13n) | (1n << 29n) | MANAGE_THREADS | (1n << 51n);
 const TEXT_INTERACTIONS =
-  SEND |
-  (1n << 6n) |
-  (1n << 13n) |
-  (1n << 30n) |
-  (1n << 31n) |
-  (1n << 35n) |
-  (1n << 36n) |
-  THREAD_REPLY |
-  (1n << 46n) |
-  (1n << 49n) |
-  (1n << 51n);
+  SEND | (1n << 6n) | (1n << 31n) | (1n << 35n) | (1n << 36n) | THREAD_REPLY;
 const VOICE_INTERACTIONS =
   CONNECT |
   (1n << 21n) |
@@ -79,6 +71,47 @@ function effective(
   return permissions;
 }
 
+function setupPermissionCandidates(
+  facts: RestrictionFacts,
+  channel: RestrictionChannelFact,
+  optionalRoleIds: readonly string[]
+): readonly (bigint | null)[] {
+  const fixedRoleIds = facts.caseRoleId ? [facts.caseRoleId] : [];
+  const overwrites = channel.permissionsLocked
+    ? (facts.channels.find((item) => item.id === channel.parentId)?.overwrites ?? [])
+    : channel.overwrites;
+  const candidates = new Map<string, readonly string[]>([['baseline', fixedRoleIds]]);
+  const capabilities = TEXT_INTERACTIONS | VOICE_INTERACTIONS | ADMINISTRATIVE_MUTATIONS;
+  for (let bit = 0n; bit <= 51n; bit++) {
+    const capability = 1n << bit;
+    if ((capabilities & capability) === 0n && capability !== VIEW) continue;
+    const required = VIEW | capability;
+    // A deny on an optional role cannot protect members who do not hold that role.
+    // For each possible allow combination, retain every role that cannot block it.
+    for (const allowed of [0n, VIEW, capability, required]) {
+      const roleIds = optionalRoleIds.filter((roleId) => {
+        const overwrite = overwrites.find((entry) => entry.type === 'role' && entry.id === roleId);
+        if (!overwrite) return true;
+        return ((BigInt(overwrite.allow) | BigInt(overwrite.deny)) & required & ~allowed) === 0n;
+      });
+      candidates.set(roleIds.join(','), [...fixedRoleIds, ...roleIds]);
+    }
+  }
+  return [...candidates.values()].map((roleIds) => effective(facts, channel, roleIds, null, false));
+}
+
+function usableInteractions(channel: RestrictionChannelFact, permissions: bigint): bigint {
+  // EmbedLinks and AttachFiles modify a permitted send; neither permits posting by itself.
+  const threadCreation = channel.type === 'text' ? (1n << 35n) | (1n << 36n) : 0n;
+  let interactions =
+    permissions &
+    (SEND | (1n << 6n) | (1n << 31n) | threadCreation | THREAD_REPLY | ADMINISTRATIVE_MUTATIONS);
+  if (channel.type === 'voice' || channel.type === 'stage') {
+    if ((permissions & CONNECT) !== 0n) interactions |= permissions & VOICE_INTERACTIONS;
+  }
+  return interactions;
+}
+
 export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAssessmentSet {
   const dispositions = classifyRestrictionRoles({ ...facts, purpose: 'standard_case' });
   const setupRoles = facts.roles
@@ -98,6 +131,8 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
       channelId: string | null = null,
       kind: RestrictionFinding['kind'] = 'access_failure'
     ): void => {
+      if (findings.some((finding) => finding.code === code && finding.channelId === channelId))
+        return;
       findings.push({
         code,
         channelId,
@@ -138,61 +173,58 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
     )
       add('administrator_bypass', null, 'manual');
     let checkedChannels = 0;
-    const permissionsByChannel = new Map<string, bigint>();
+    const permissionsByChannel = new Map<string, readonly bigint[]>();
     for (const channel of facts.channels) {
-      const permissions = effective(
-        facts,
-        channel,
-        roleIds,
-        member?.userId ?? null,
-        member?.owner ?? false
-      );
-      if (permissions === null) {
-        unknown = true;
-        continue;
-      }
+      const candidates = member
+        ? [effective(facts, channel, roleIds, member.userId, member.owner)]
+        : setupPermissionCandidates(facts, channel, setupRoles);
+      if (candidates.some((permissions) => permissions === null)) unknown = true;
+      const known = candidates.filter((permissions): permissions is bigint => permissions !== null);
+      if (known.length === 0) continue;
       checkedChannels++;
-      permissionsByChannel.set(channel.id, permissions);
-      if (channel.type === 'category' || (permissions & VIEW) === 0n) continue;
-      const exception = facts.exceptionChannelIds.includes(channel.id);
-      const recovery = channel.id === facts.recoveryParentId;
-      if (!exception && !recovery) add('unexpected_channel_access', channel.id);
-      const interactionMask =
-        TEXT_INTERACTIONS |
-        (channel.type === 'voice' || channel.type === 'stage' ? VOICE_INTERACTIONS : 0n);
-      if (
-        (exception || recovery) &&
-        (permissions & (recovery ? interactionMask & ~THREAD_REPLY : interactionMask)) !== 0n
-      )
-        add('exception_write_access', channel.id);
-      // Denying Add Reactions cannot prevent joining an existing reaction.
-      if (exception) add('reaction_limitation', channel.id, 'limitation');
+      permissionsByChannel.set(channel.id, known);
+      for (const permissions of known) {
+        if (channel.type === 'category' || (permissions & VIEW) === 0n) continue;
+        const exception = facts.exceptionChannelIds.includes(channel.id);
+        const recovery = channel.id === facts.recoveryParentId;
+        if (!exception && !recovery) add('unexpected_channel_access', channel.id);
+        const interactions = usableInteractions(channel, permissions);
+        if (
+          (exception || recovery) &&
+          (recovery ? interactions & ~THREAD_REPLY : interactions) !== 0n
+        )
+          add('exception_write_access', channel.id);
+        // Denying Add Reactions cannot prevent joining an existing reaction.
+        if (exception) add('reaction_limitation', channel.id, 'limitation');
+      }
     }
     if (facts.knownParentContentExposure) add('parent_content_exposure', facts.recoveryParentId);
     let checkedThreads = 0;
     for (const thread of facts.threads) {
-      const permissions = permissionsByChannel.get(thread.parentId);
-      if (!thread.metadataAvailable || permissions === undefined) {
+      const candidates = permissionsByChannel.get(thread.parentId);
+      if (!thread.metadataAvailable || candidates === undefined) {
         unknown = true;
         continue;
       }
       checkedThreads++;
-      const manager = (permissions & MANAGE_THREADS) !== 0n;
-      const visible =
-        (permissions & VIEW) !== 0n &&
-        (!thread.private ||
-          manager ||
-          (member !== null && thread.memberIds.includes(member.userId)));
-      if (member && thread.id === member.threadId) {
-        if (
-          !thread.private ||
-          !visible ||
-          (permissions & THREAD_REPLY) === 0n ||
-          (permissions & (1n << 16n)) === 0n ||
-          (thread.locked && !manager)
-        )
-          add('case_thread_access_missing', thread.id);
-      } else if (visible) add('sibling_thread_access', thread.id);
+      for (const permissions of candidates) {
+        const manager = (permissions & MANAGE_THREADS) !== 0n;
+        const visible =
+          (permissions & VIEW) !== 0n &&
+          (!thread.private ||
+            manager ||
+            (member !== null && thread.memberIds.includes(member.userId)));
+        if (member && thread.id === member.threadId) {
+          if (
+            !thread.private ||
+            !visible ||
+            (permissions & THREAD_REPLY) === 0n ||
+            (permissions & (1n << 16n)) === 0n ||
+            (thread.locked && !manager)
+          )
+            add('case_thread_access_missing', thread.id);
+        } else if (visible) add('sibling_thread_access', thread.id);
+      }
     }
     if (
       member &&

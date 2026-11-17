@@ -196,3 +196,88 @@ test('protected administrative permissions remain a manual case concern without 
   expect(result.setup.status).toBe('verified');
   expect(result.cases[0].findingCodes).toContain('retained_privileged_permissions');
 });
+
+test('optional role denies cannot hide baseline setup access', () => {
+  const result = assessRestrictionFacts(
+    facts({
+      quarantineMode: 'off',
+      roles: [role({ id: 'guild', permissions: String(view) }), role({ id: 'case' }), role()],
+      channels: [
+        channel({ overwrites: [{ id: 'member', type: 'role', allow: '0', deny: String(view) }] }),
+      ],
+    })
+  );
+  expect(result.setup.status).toBe('incomplete');
+  expect(result.setup.findingCodes).toContain('unexpected_channel_access');
+});
+test('inert embed and attachment permissions do not permit parent posting', () => {
+  const result = assessRestrictionFacts(
+    facts({
+      recoveryParentId: 'channel',
+      roles: [
+        role({ id: 'guild', permissions: String(view | (1n << 14n) | (1n << 15n)) }),
+        role({ id: 'case' }),
+      ],
+      channels: [
+        channel({ overwrites: [{ id: 'case', type: 'role', allow: '0', deny: String(send) }] }),
+      ],
+    })
+  );
+  expect(result.setup.status).toBe('verified');
+  expect(result.setup.findingCodes).not.toContain('exception_write_access');
+});
+test.each([4n, 13n, 29n])('retained parent administrative mutation bit %s is incomplete', (bit) => {
+  const permissions = view | (1n << 16n) | (1n << 38n);
+  const result = assessRestrictionFacts(
+    facts({
+      recoveryParentId: 'channel',
+      roles: [
+        role({ id: 'guild' }),
+        role({ id: 'case', permissions: String(permissions) }),
+        role({ managed: true, permissions: String(1n << bit) }),
+      ],
+      cases: [caseFact({ roleIds: ['case', 'member'], threadId: 'own' })],
+      threads: [
+        {
+          id: 'own',
+          parentId: 'channel',
+          private: true,
+          archived: false,
+          locked: false,
+          memberIds: ['user'],
+          metadataAvailable: true,
+        },
+      ],
+    })
+  );
+  expect(result.setup.findingCodes).toContain('exception_write_access');
+  expect(result.cases[0].findingCodes).toContain('exception_write_access');
+  expect(result.cases[0].status).toBe('incomplete');
+});
+
+test('optional-role combinations preserve capability prerequisites', () => {
+  const parentPermissions = view | (1n << 16n) | (1n << 38n);
+  const input = facts({
+    quarantineMode: 'off',
+    recoveryParentId: 'channel',
+    roles: [
+      role({ id: 'guild' }),
+      role({ id: 'case', permissions: String(parentPermissions) }),
+      role({ id: 'writer', permissions: String(send) }),
+      role({ id: 'optional-deny' }),
+    ],
+    channels: [
+      channel({
+        overwrites: [{ id: 'optional-deny', type: 'role', allow: '0', deny: String(send) }],
+      }),
+    ],
+  });
+  expect(assessRestrictionFacts(input).setup.findingCodes).toContain('exception_write_access');
+  const hiddenWriter = {
+    ...input,
+    channels: [
+      channel({ overwrites: [{ id: 'writer', type: 'role', allow: '0', deny: String(view) }] }),
+    ],
+  };
+  expect(assessRestrictionFacts(hiddenWriter).setup.status).toBe('verified');
+});
