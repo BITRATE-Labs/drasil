@@ -171,9 +171,14 @@ test('guild setup exposes moderation, report, role gate, and review policy contr
   await expect(page.getByLabel('Enable manual intake')).toBeChecked();
   await expect(page.getByLabel('Manual intake trigger role')).toHaveValue('manual-intake-role');
   await expect(page.getByLabel('Grace period seconds')).toHaveValue('30');
-  await expect(page.getByRole('heading', { name: 'Case Role Lockdown' })).toBeVisible();
-  await expect(page.getByLabel('Allowed lockdown channels')).toHaveValues(['rules-channel-1']);
-  await expect(page.getByLabel('Allowed lockdown categories')).toHaveValues(['public-category-1']);
+  await expect(page.getByRole('heading', { name: 'Restriction settings' })).toBeVisible();
+  await expect(page.getByLabel('Read-only exception channels')).toHaveValues(['rules-channel-1']);
+  await expect(page.getByLabel('Allowed lockdown categories')).toHaveCount(0);
+  await expect(page.getByText(/Existing category-derived exceptions are preserved:/)).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Review restriction setup' })).toHaveAttribute(
+    'href',
+    '/admin/guild/guild-1/operations/restrictions'
+  );
   await expect(
     page.getByRole('heading', { name: 'Verification Prompt And Context' })
   ).toBeVisible();
@@ -229,17 +234,13 @@ test('operations queues moderation queue maintenance through the shared action p
   await closeThreadsAction.getByRole('button', { name: 'Queue Close Threads' }).click();
   await expect(page.getByRole('heading', { name: 'Operations', exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Audit Lockdown' }).click();
-  await expect(page.getByRole('heading', { name: 'Operations', exact: true })).toBeVisible();
-
-  const applyLockdownAction = page.locator('details.destructive-action').filter({
-    hasText: 'Apply Lockdown',
-  });
-  await applyLockdownAction.getByText('Apply Lockdown', { exact: true }).click();
-  await applyLockdownAction.getByLabel('Unsync Allowed Channels').check();
-  await applyLockdownAction.getByLabel('Confirm Apply Lockdown').check();
-  await applyLockdownAction.getByRole('button', { name: 'Queue Apply Lockdown' }).click();
-  await expect(page.getByRole('heading', { name: 'Operations', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Review restriction setup' })).toHaveAttribute(
+    'href',
+    '/admin/guild/guild-1/operations/restrictions'
+  );
+  await expect(page.getByRole('button', { name: 'Audit Lockdown' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Queue Apply Lockdown' })).toHaveCount(0);
+  await expect(page.getByLabel('Unsync Allowed Channels')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Dry Run Role Intake' }).click();
   await expect(page.getByRole('heading', { name: 'Operations', exact: true })).toBeVisible();
