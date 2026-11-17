@@ -41,6 +41,7 @@ function setup() {
   const user = { id: 'target' } as User;
   const message = {
     id: 'message',
+    content: 'Welcome!',
     guild,
     channelId: 'welcome',
     author: { id: 'bot', bot: true },
@@ -300,6 +301,29 @@ describe('welcome cleanup', () => {
     await Promise.all([first, second]);
     expect(f.gpt.extractWelcomeRecipient).toHaveBeenCalledTimes(1);
     expect(f.message.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache provider failures and can verify on a later ban', async () => {
+    const f = setup();
+    f.gpt.extractWelcomeRecipient.mockResolvedValueOnce(null);
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.repository.recordRecipient).not.toHaveBeenCalled();
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.message.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an unrelated image post even with an exact user mention', async () => {
+    const f = setup();
+    f.message.mentions.users.set('target', f.user);
+    f.gpt.extractWelcomeRecipient.mockResolvedValue({
+      is_welcome: false,
+      recipient_name: null,
+      confidence: 1,
+    });
+    f.fetchMessage.mockResolvedValue({ ...f.message, content: 'Goodbye!' });
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.gpt.extractWelcomeRecipient).toHaveBeenCalledTimes(1);
+    expect(f.message.delete).not.toHaveBeenCalled();
   });
 
   it('shares concurrent cleanup for the same ban', async () => {

@@ -67,6 +67,7 @@ export class WelcomeMessageCleanupService {
 
   async collect(message: Message): Promise<void> {
     if (!message.guild || !message.author.bot || !welcomeImageUrls(message).length) return;
+    if (message.author.id === message.guild.members.me?.id) return;
     const cached = this.config.getCachedServerConfig(message.guild.id);
     if (
       cached &&
@@ -182,28 +183,30 @@ export class WelcomeMessageCleanupService {
         const mentions = [...message.mentions.users.keys()];
         let recipientId: string | null = null;
         const editedAt = message.editedAt ?? null;
-        if (mentions.length === 1) recipientId = mentions[0];
-        else if (mentions.length === 0) {
-          if (
-            candidate.verification_attempted &&
-            (candidate.verified_edited_at?.getTime() ?? null) === (message.editedTimestamp ?? null)
-          ) {
-            recipientId = candidate.recipient_id;
-          } else if (candidate.snapshots_complete) {
-            const urls = welcomeImageUrls(message);
-            if (urls.length) {
-              const recipient = await this.gpt.extractWelcomeRecipient(urls);
-              if (
-                recipient?.is_welcome &&
-                recipient.confidence >= MIN_WELCOME_CONFIDENCE &&
-                recipient.recipient_name
-              ) {
-                const name = recipient.recipient_name;
-                recipientId =
-                  Object.keys(candidate.member_snapshots).find((id) =>
-                    welcomeNameMatches(name, id, candidate.member_snapshots)
-                  ) ?? null;
-              }
+        const cachedVerdict =
+          candidate.verification_attempted &&
+          (candidate.verified_edited_at?.getTime() ?? null) === (message.editedTimestamp ?? null);
+        const welcomeText = [
+          message.content,
+          ...message.embeds.flatMap((embed) => [embed.title, embed.description]),
+        ].join(' ');
+        if (cachedVerdict) recipientId = candidate.recipient_id;
+        else if (mentions.length === 1 && /\bwelcome\b/iu.test(welcomeText))
+          recipientId = mentions[0];
+        else if (mentions.length <= 1 && (mentions.length === 1 || candidate.snapshots_complete)) {
+          const urls = welcomeImageUrls(message);
+          if (!urls.length) continue;
+          const recipient = await this.gpt.extractWelcomeRecipient(urls);
+          // A failed provider read is not a negative verdict. End this run without caching it.
+          if (recipient === null) return;
+          if (recipient.is_welcome && recipient.confidence >= MIN_WELCOME_CONFIDENCE) {
+            if (mentions.length === 1) recipientId = mentions[0];
+            else if (recipient.recipient_name) {
+              const name = recipient.recipient_name;
+              recipientId =
+                Object.keys(candidate.member_snapshots).find((id) =>
+                  welcomeNameMatches(name, id, candidate.member_snapshots)
+                ) ?? null;
             }
           }
         }

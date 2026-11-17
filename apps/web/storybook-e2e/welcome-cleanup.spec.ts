@@ -41,5 +41,6 @@ test('bot typeahead finds bots outside the initial known-role list', async ({ pa
   await page.locator('summary').filter({ hasText: 'Choose welcome bot' }).click();
   await page.getByRole('searchbox', { name: 'Search welcome bot' }).fill('other');
   await page.getByRole('button', { name: 'Other Bot @other' }).click();
+  await expect(page.locator('summary').filter({ hasText: 'Other Bot' })).toBeVisible();
   await expect(page.locator('input[name="welcomeCleanupBotId"]')).toHaveValue('123456789012345670');
 });

@@ -297,13 +297,21 @@ export async function saveGuildSetup(guildId: string, formData: FormData): Promi
   );
   const storedWelcome = (await createSetupDataAdapter().getServer(guildId))?.settings;
   if (welcomeBotId && welcomeBotId !== storedWelcome?.welcome_cleanup_bot_id) {
-    const member = await fetchDiscordGuildMember(guildId, welcomeBotId);
-    if (!member.user?.bot) throw new Error('Choose a bot that belongs to this server.');
+    try {
+      const member = await fetchDiscordGuildMember(guildId, welcomeBotId);
+      if (!member.user?.bot) throw new Error('Invalid bot');
+    } catch {
+      throw new Error('Choose a bot that Drasil can access in this server.');
+    }
   }
   if (welcomeChannelId && welcomeChannelId !== storedWelcome?.welcome_cleanup_channel_id) {
-    const channel = await fetchDiscordChannel(welcomeChannelId);
-    if (channel.guild_id !== guildId || ![0, 5].includes(channel.type))
-      throw new Error('Choose a text channel in this server.');
+    try {
+      const channel = await fetchDiscordChannel(welcomeChannelId);
+      if (channel.guild_id !== guildId || ![0, 5].includes(channel.type))
+        throw new Error('Invalid channel');
+    } catch {
+      throw new Error('Choose a text channel that Drasil can access in this server.');
+    }
   }
   const update = guildSetupUpdateSchema.parse({
     guildId,

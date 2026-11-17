@@ -30,3 +30,5 @@ Server-wide discovery and bot-specific setup instructions were rejected. Automat
 ## Review corrections
 
 Hosted checks exposed two additional field-count assertions and changed setup screenshots. Review also prompted caching each image result, serializing guild cleanup, respecting the existing retention policy, refusing incomplete-cache image matching, and validating only changed source selections. The bot picker loads known bot IDs directly and uses authenticated name search for other bots instead of enumerating all members. Unavailable saved selections appear as field warnings, including sources supplied through MCP. These corrections retain the approved collection-then-verification design.
+
+Provider failures do not create cached verdicts and stop the current cleanup run. Bot-option member reads are sequential. Mention-based deletion requires visible welcome text or a successful welcome-image check. Changed-source validation uses field-specific generic errors and keeps the existing atomic form-save behavior. The setup copy explains incomplete member information.

@@ -296,16 +296,16 @@ export async function fetchGuildBots(
   ];
   if (!ids.length) return [];
   assertDiscordId(guildId);
-  const users = await Promise.all(
-    ids.map(async (id) => {
-      try {
-        return (await fetchDiscordGuildMember(guildId, id)).user;
-      } catch (error) {
-        if (error instanceof DiscordApiError && error.status === 404) return undefined;
-        throw error;
-      }
-    })
-  );
+  const users: DiscordUser[] = [];
+  for (const id of ids) {
+    assertDiscordId(id);
+    try {
+      const user = (await fetchDiscordGuildMember(guildId, id)).user;
+      if (user?.bot) users.push(user);
+    } catch (error) {
+      if (!(error instanceof DiscordApiError && error.status === 404)) throw error;
+    }
+  }
   return users
     .filter((user): user is DiscordUser => user?.bot === true)
     .sort((a, b) => (a.global_name ?? a.username).localeCompare(b.global_name ?? b.username));

@@ -24,6 +24,7 @@ function SourcePicker({
   const id = useId();
   const [selected, setSelected] = useState(savedId ?? '');
   const [search, setSearch] = useState('');
+  const [chosenOption, setChosenOption] = useState<WelcomeSourceOption>();
   const [remote, setRemote] = useState<readonly WelcomeSourceOption[]>([]);
   const [searchFailed, setSearchFailed] = useState(false);
   useEffect(() => {
@@ -52,7 +53,9 @@ function SourcePicker({
   const available = [
     ...new Map([...options, ...remote].map((option) => [option.id, option])).values(),
   ];
-  const current = available.find((option) => option.id === selected);
+  const current =
+    available.find((option) => option.id === selected) ??
+    (chosenOption?.id === selected ? chosenOption : undefined);
   const filtered = available.filter((option) =>
     `${option.name} ${option.detail ?? ''}`.toLowerCase().includes(search.toLowerCase())
   );
@@ -86,6 +89,7 @@ function SourcePicker({
               aria-pressed={selected === option.id}
               onClick={(event) => {
                 setSelected(option.id);
+                setChosenOption(option);
                 setSearch('');
                 event.currentTarget.closest('details')?.removeAttribute('open');
                 event.currentTarget.closest('details')?.querySelector('summary')?.focus();
@@ -173,7 +177,7 @@ export function WelcomeCleanupFields({
       ) : null}
       <p className="muted">
         Drasil needs View Channel, Read Message History, and Manage Messages in the welcome channel.
-        Uncertain matches are kept.
+        Uncertain matches are kept. Image-only cards are kept when member information is incomplete.
       </p>
     </section>
   );

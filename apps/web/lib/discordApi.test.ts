@@ -73,6 +73,32 @@ describe('Discord API helpers', () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/members/search?query=welcome');
   });
 
+  it('loads bot members sequentially instead of issuing a parallel burst', async () => {
+    vi.stubEnv('DRASIL_WEB_BOT_TOKEN', 'bot-token');
+    let finish = (response: Response): void => {
+      void response;
+    };
+    const first = new Promise<Response>((resolve) => {
+      finish = resolve;
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce(
+        jsonResponse({ user: { id: '123456789012345679', username: 'second', bot: true } })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const role = { id: 'role', name: 'Bot', permissions: '0', position: 1, managed: true };
+    const work = fetchGuildBots('234567890123456789', [
+      { ...role, tags: { bot_id: '123456789012345678' } },
+      { ...role, tags: { bot_id: '123456789012345679' } },
+    ]);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    finish(jsonResponse({ user: { id: '123456789012345678', username: 'first', bot: true } }));
+    expect(await work).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('paginates current user guilds', async () => {
     vi.stubEnv('DISCORD_API_BASE_URL', 'https://discord.test/api/v10');
     const firstPage = Array.from({ length: 200 }, (_, index) => guild(String(index + 1)));
