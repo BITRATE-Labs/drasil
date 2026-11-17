@@ -146,6 +146,15 @@ describe('welcome cleanup', () => {
     expect(f.gpt.extractWelcomeRecipient).not.toHaveBeenCalled();
   });
 
+  it('uses the normal config cache to skip unconfigured servers without a forced read', async () => {
+    const f = setup();
+    delete (f.settings as Partial<typeof f.settings>).welcome_cleanup_channel_id;
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.config.getServerConfig).toHaveBeenCalledTimes(1);
+    expect(f.config.getServerConfig).toHaveBeenCalledWith('guild', { failOnReadError: true });
+    expect(f.repository.findForBan).not.toHaveBeenCalled();
+  });
+
   it('deletes an exclusive exact mention without a model call', async () => {
     const f = setup();
     f.fetchMessage.mockResolvedValue({ ...f.message, content: 'Welcome <@target>!' });

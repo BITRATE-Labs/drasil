@@ -6,6 +6,7 @@ const DEFAULT_DISCORD_API_BASE_URL = 'https://discord.com/api/v10';
 const DISCORD_GUILD_PAGE_LIMIT = 200;
 const DISCORD_MESSAGE_PAGE_LIMIT = 100;
 const DISCORD_MEMBER_PAGE_LIMIT = 1000;
+export const WELCOME_BOT_LIST_LIMIT = 20;
 
 export class DiscordApiError extends Error {
   public constructor(
@@ -290,20 +291,26 @@ export async function fetchGuildBots(
 ): Promise<DiscordUser[]> {
   const ids = [
     ...new Set([
-      ...roles.flatMap((role) => (role.tags?.bot_id ? [role.tags.bot_id] : [])),
       ...(savedId ? [savedId] : []),
+      ...roles.flatMap((role) => (role.tags?.bot_id ? [role.tags.bot_id] : [])),
     ]),
   ];
   if (!ids.length) return [];
   assertDiscordId(guildId);
   const users: DiscordUser[] = [];
-  for (const id of ids) {
+  // shortcut: only the first 20 bots are listed; use name search for additional bots.
+  for (const id of ids.slice(0, WELCOME_BOT_LIST_LIMIT)) {
     assertDiscordId(id);
     try {
       const user = (await fetchDiscordGuildMember(guildId, id)).user;
       if (user?.bot) users.push(user);
     } catch (error) {
-      if (!(error instanceof DiscordApiError && error.status === 404)) throw error;
+      if (error instanceof DiscordApiError && error.status === 404) continue;
+      const unavailable =
+        error instanceof ReadDependencyUnavailableError ||
+        (error instanceof DiscordApiError && (error.status === 429 || error.status >= 500));
+      if (!unavailable || !users.length) throw error;
+      break;
     }
   }
   return users

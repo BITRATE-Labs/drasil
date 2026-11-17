@@ -1556,7 +1556,11 @@ export class EventHandler implements IEventHandler {
   }
 
   private async handleGuildBanAdd(ban: GuildBan): Promise<void> {
-    void this.welcomeCleanup?.cleanupAfterBan(ban.guild, ban.user);
+    try {
+      void this.welcomeCleanup?.cleanupAfterBan(ban.guild, ban.user);
+    } catch (error) {
+      console.warn('Could not start welcome cleanup after ban:', error);
+    }
     if (!this.userModerationService) {
       return;
     }

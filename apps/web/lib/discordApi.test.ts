@@ -4,6 +4,7 @@ import {
   exchangeDiscordCode,
   fetchDiscordUser,
   fetchGuildBots,
+  WELCOME_BOT_LIST_LIMIT,
   searchGuildBots,
   fetchBotChannelMessages,
   fetchDiscordGuilds,
@@ -97,6 +98,52 @@ describe('Discord API helpers', () => {
     finish(jsonResponse({ user: { id: '123456789012345678', username: 'first', bot: true } }));
     expect(await work).toHaveLength(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('caps the initial bot list and keeps the saved bot first', async () => {
+    vi.stubEnv('DRASIL_WEB_BOT_TOKEN', 'bot-token');
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (url) =>
+        jsonResponse({ user: { id: String(url).split('/').at(-1), username: 'bot', bot: true } })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const saved = '999999999999999999';
+    const roles = Array.from({ length: 40 }, (_, index) => ({
+      id: String(index),
+      name: 'Bot',
+      permissions: '0',
+      position: 1,
+      managed: true,
+      tags: { bot_id: String(123456789012345678n + BigInt(index)) },
+    }));
+    expect(await fetchGuildBots('234567890123456789', roles, saved)).toHaveLength(
+      WELCOME_BOT_LIST_LIMIT
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(WELCOME_BOT_LIST_LIMIT);
+    expect(String(fetchMock.mock.calls[0][0])).toContain(`/members/${saved}`);
+  });
+
+  it('preserves loaded bots and stops fanout when a later provider read is unavailable', async () => {
+    vi.stubEnv('DRASIL_WEB_BOT_TOKEN', 'bot-token');
+    const bot = { id: '123456789012345678', username: 'first', bot: true };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ user: bot }))
+      .mockImplementation(async () => new Response('Unavailable', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const roles = [bot.id, '123456789012345679', '123456789012345680'].map((id) => ({
+      id,
+      name: 'Bot',
+      permissions: '0',
+      position: 1,
+      managed: true,
+      tags: { bot_id: id },
+    }));
+    await expect(fetchGuildBots('234567890123456789', roles)).resolves.toEqual([bot]);
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).endsWith('123456789012345680'))).toBe(
+      true
+    );
   });
 
   it('paginates current user guilds', async () => {

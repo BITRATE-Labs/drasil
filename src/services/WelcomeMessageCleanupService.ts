@@ -156,7 +156,6 @@ export class WelcomeMessageCleanupService {
 
   private async cleanup(guild: Guild, user: User): Promise<void> {
     const { settings, is_active } = await this.config.getServerConfig(guild.id, {
-      forceRefresh: true,
       failOnReadError: true,
     });
     if (

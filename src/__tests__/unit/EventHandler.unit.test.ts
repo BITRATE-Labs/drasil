@@ -223,6 +223,22 @@ describe('EventHandler (unit)', () => {
     expect(moderation.recordObservedDiscordBan).toHaveBeenCalled();
   });
 
+  it('reconciles observed bans even if starting welcome cleanup throws synchronously', async () => {
+    const welcomeCleanup = mock<WelcomeMessageCleanupService>();
+    welcomeCleanup.cleanupAfterBan.mockImplementation(() => {
+      throw new Error('Cannot start');
+    });
+    const moderation = { recordObservedDiscordBan: jest.fn().mockResolvedValue(0) };
+    const handler = buildHandler({ welcomeCleanup, userModerationService: moderation });
+    const ban = {
+      guild: { id: 'guild', fetchAuditLogs: jest.fn().mockResolvedValue({ entries: new Map() }) },
+      user: { id: 'user' },
+    };
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await handler['handleGuildBanAdd'](ban as unknown as GuildBan);
+    expect(moderation.recordObservedDiscordBan).toHaveBeenCalled();
+  });
+
   function buildReadOnlyConfigService(
     serverConfig: Record<string, unknown>,
     cachedConfig: Record<string, unknown> = {}

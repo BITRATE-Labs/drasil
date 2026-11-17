@@ -1303,4 +1303,6 @@ model welcome_message_candidates {
 
   @@id([server_id, message_id])
   @@index([server_id, channel_id, bot_id, created_at], map: "welcome_message_candidates_source_time_idx")
+  @@index([server_id, created_at(sort: Desc), message_id(sort: Desc)], map: "welcome_message_candidates_cap_idx")
+  @@index([expires_at], map: "welcome_message_candidates_expiry_idx")
 }

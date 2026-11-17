@@ -83,6 +83,7 @@ function SourcePicker({
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
+        {searchOptions ? <p className="muted">If a bot is missing, search by name.</p> : null}
         <div className="welcome-source-options" role="group" aria-label={`${label} options`}>
           <button type="button" aria-pressed={!selected} onClick={() => setSelected('')}>
             None
