@@ -35,13 +35,29 @@ export async function executeRestrictionPlan(
     currentEffectIndex: 0,
     receipts: [],
   };
+  const plan = await deps.executionStore.loadPlan(requestId);
+  const attempted = (): boolean =>
+    progress.receipts.some((receipt) => receipt.state !== 'not_attempted');
   const finish = async (
     stopReason: RestrictionApplyResult['stopReason']
   ): Promise<RestrictionApplyResult> => {
     const audit = await deps.audit(context.guildId);
-    return { progress, stopReason, verification: { setup: audit.setup, cases: audit.cases } };
+    const receipts =
+      plan?.effects.map(
+        (_, effectIndex) =>
+          progress.receipts.find((receipt) => receipt.effectIndex === effectIndex) ?? {
+            effectIndex,
+            state: 'not_attempted' as const,
+            observation: null,
+            error: null,
+          }
+      ) ?? progress.receipts;
+    return {
+      progress: { ...progress, receipts },
+      stopReason,
+      verification: { setup: audit.setup, cases: audit.cases },
+    };
   };
-  const plan = await deps.executionStore.loadPlan(requestId);
   if (
     !plan ||
     context.requestId !== requestId ||
@@ -51,7 +67,7 @@ export async function executeRestrictionPlan(
     !(await restrictionAuthorized(context, deps.authority))
   )
     return finish('authority_lost');
-  if (deps.reconcileOnly && progress.receipts.length === 0) return finish('interrupted');
+  if (deps.reconcileOnly && !attempted()) return finish('interrupted');
   const save = async (
     index: number,
     state: RestrictionProgress['receipts'][number]['state'],
@@ -93,7 +109,7 @@ export async function executeRestrictionPlan(
     }
   };
   // Recovery is observation only, including takeover with expired approval.
-  if (progress.receipts.length) {
+  if (attempted()) {
     for (const receipt of progress.receipts) {
       if (receipt.state !== 'started' && receipt.state !== 'unknown') continue;
       const effect = plan.effects[receipt.effectIndex];
@@ -132,7 +148,12 @@ export async function executeRestrictionPlan(
   for (let index = 0; index < plan.effects.length; index++) {
     if (!(await restrictionAuthorized(context, deps.authority))) return finish('authority_lost');
     if (Date.parse(plan.expiresAt) <= deps.now().getTime()) return finish('expired');
-    const fresh = await deps.readFresh(context.guildId, fixes);
+    let fresh;
+    try {
+      fresh = await deps.readFresh(context.guildId, fixes);
+    } catch {
+      return finish('precondition_changed');
+    }
     if (
       restrictionMaterialFingerprint(fresh, plan.effects) !==
       restrictionMaterialFingerprint(expected, plan.effects)

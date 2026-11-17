@@ -97,3 +97,99 @@ it('keeps interrupted effects and setup/current-case verification distinct', asy
   expect(html).toContain('Current case');
   expect(html).not.toContain('Selected batch finished');
 });
+
+it('renders every approved effect from a real stopped execution and preserves MCP/web parity', async () => {
+  const {
+    executeRestrictionPlan,
+    prepareRestrictionPlan,
+    restrictionFactsAfter,
+    projectHumanOutcome,
+  } = await import('@drasil/application');
+  const { fixtureRestrictionAuditSnapshot } = await import('@/lib/restrictionAuditFixtures');
+  const { parseModerationActionRequestRow } =
+    await import('@/lib/moderationActionRequestDataAdapter');
+  const snapshot = fixtureRestrictionAuditSnapshot();
+  const context = {
+    guildId: snapshot.guildId,
+    actor: { kind: 'user' as const, userId: 'owner' },
+    source: 'test',
+    requestId: 'apply',
+  };
+  let state = snapshot.facts;
+  const planDeps = {
+    authority: {
+      loadFresh: vi.fn().mockResolvedValue({
+        guildId: snapshot.guildId,
+        userId: 'owner',
+        present: true,
+        owner: true,
+        permissions: '8',
+        roleIds: [],
+      }),
+    },
+    auditStore: { load: vi.fn().mockResolvedValue(snapshot) },
+    now: () => new Date(snapshot.observedAt),
+    readFresh: async () => state,
+  };
+  const selection = {
+    auditRequestId: 'audit',
+    auditRevision: snapshot.revision,
+    selectedFixIds: ['exception', 'member', 'hardening'],
+  };
+  const plan = await prepareRestrictionPlan(context, selection, planDeps);
+  let writes = 0;
+  const result = await executeRestrictionPlan(context, 'apply', {
+    ...planDeps,
+    attemptToken: 'private',
+    executionStore: {
+      loadPlan: async () => plan,
+      loadProgress: async () => null,
+      saveProgress: async () => true,
+    },
+    write: async (effect) => {
+      if (++writes === 2) throw new Error('timeout');
+      state = restrictionFactsAfter(state, effect);
+    },
+    observe: async () => ({
+      state: writes === 1 ? 'desired_satisfied' : 'unavailable',
+      observedAt: snapshot.observedAt,
+      reason: null,
+    }),
+    audit: async () => snapshot,
+  });
+  const web = parseModerationActionRequestRow({
+    id: 'apply',
+    action_type: 'apply_case_role_lockdown',
+    actor_surface: 'web',
+    status: 'completed',
+    requested_at: snapshot.observedAt,
+    updated_at: snapshot.observedAt,
+    completed_at: snapshot.observedAt,
+    failed_at: null,
+    last_error: null,
+    target_user_id: null,
+    result: { restriction_apply: result },
+  });
+  const mcp = projectHumanOutcome(
+    { kind: 'apply_case_role_lockdown', ...selection },
+    { restriction_apply: result }
+  );
+  expect(web.restrictionApply).toEqual(mcp.outcome?.restrictionApply);
+  expect(result.progress.receipts.map((r) => r.state)).toEqual([
+    'applied',
+    'unknown',
+    'not_attempted',
+  ]);
+  const html = renderToStaticMarkup(
+    createElement(RestrictionAuditWizard, {
+      guildId: snapshot.guildId,
+      audit,
+      auditRequest: null,
+      applyRequest: web,
+      onReview: vi.fn(),
+      onApply: vi.fn(),
+    })
+  );
+  expect(html).toContain('Selected change 3');
+  expect(html).toContain('not attempted');
+});

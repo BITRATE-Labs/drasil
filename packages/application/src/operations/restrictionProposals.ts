@@ -1,3 +1,5 @@
+import { restrictionFactsAfter } from './restrictionFactsAfter';
+import { restrictionMemberHasProtectedRole } from './restrictionRepairEligibility';
 import { assessRestrictionFacts } from './restrictionAssessment';
 import {
   classifyRestrictionRoles,
@@ -129,11 +131,12 @@ export function proposeRestrictionFixes(
     summary: string,
     scope: string[],
     effects: RestrictionEffect[],
-    defaultSelected = false
+    defaultSelected = false,
+    kind: RestrictionFix['kind'] = 'access_repair'
   ): void => {
     fixes.push({
       id,
-      kind: 'access_repair',
+      kind,
       summary,
       before: 'Observed permission or policy mismatch',
       after: 'Apply only the listed frozen changes; a fresh audit verifies access',
@@ -155,31 +158,52 @@ export function proposeRestrictionFixes(
     });
   };
   let working = facts;
-  if (
-    facts.quarantineMode !== 'on' &&
-    assessment.setup.findings.some(
-      (f) => f.code === 'unexpected_channel_access' || f.code === 'exception_write_access'
-    )
-  ) {
+  const accessFindings = assessment.setup.findings.filter(
+    (f) => f.code === 'unexpected_channel_access' || f.code === 'exception_write_access'
+  );
+  const ordinary = classifyRestrictionRoles({
+    ...facts,
+    exemptRoleIds: [],
+    purpose: 'standard_case',
+  });
+  const includeExemptions = facts.exemptRoleIds.filter(
+    (id) =>
+      !facts.repairExcludedRoleIds?.includes(id) &&
+      ordinary.find((role) => role.roleId === id)?.removable &&
+      accessFindings.some((finding) => {
+        const channel = facts.channels.find((c) => c.id === finding.channelId);
+        const source = channel?.permissionsLocked
+          ? facts.channels.find((c) => c.id === channel.parentId)
+          : channel;
+        const overwrite = source?.overwrites.find((o) => o.type === 'role' && o.id === id);
+        const permissions = facts.roles.find((r) => r.id === id)?.permissions ?? '0';
+        return (
+          ((BigInt(overwrite?.allow ?? '0') | BigInt(permissions)) & (VIEW | INTERACTIONS)) !== 0n
+        );
+      })
+  );
+  if (accessFindings.length && (facts.quarantineMode !== 'on' || includeExemptions.length)) {
     const expected = {
       quarantineMode: facts.quarantineMode,
       exemptRoleIds: facts.exemptRoleIds,
       manualIntakeRoleId: facts.manualIntakeRoleId,
     };
+    const desired = {
+      ...expected,
+      quarantineMode: 'on' as const,
+      exemptRoleIds: facts.exemptRoleIds.filter((id) => !includeExemptions.includes(id)),
+    };
     add(
       'policy:quarantine',
-      'Enable quarantine of eligible ordinary roles for future cases',
-      [],
-      [
-        {
-          kind: 'update_quarantine_policy',
-          guildId: facts.guildId,
-          expected,
-          desired: { ...expected, quarantineMode: 'on' },
-        },
-      ]
+      includeExemptions.length
+        ? 'Include eligible exempt ordinary roles in future quarantine'
+        : 'Enable quarantine of eligible ordinary roles for future cases',
+      includeExemptions,
+      [{ kind: 'update_quarantine_policy', guildId: facts.guildId, expected, desired }]
     );
-    working = { ...facts, quarantineMode: 'on' };
+    fixes[fixes.length - 1].after =
+      'Future cases quarantine eligible ordinary roles. Current case removals require their own listed effects; ordinary members keep their roles.';
+    working = { ...facts, ...desired };
   }
   const role = facts.roles.find((r) => r.id === facts.caseRoleId);
   if (
@@ -209,19 +233,23 @@ export function proposeRestrictionFixes(
       );
     const findings = assessRestrictionFacts(working).setup.findings;
     const targets = new Set<string>();
-    for (const finding of [
-      ...findings,
-      ...(facts.recoveryParentId
-        ? [{ code: 'exception_write_access', channelId: facts.recoveryParentId }]
-        : []),
-    ]) {
+    for (const finding of findings) {
       if (
         !finding.channelId ||
-        !['unexpected_channel_access', 'exception_write_access'].includes(finding.code)
+        ![
+          'unexpected_channel_access',
+          'exception_write_access',
+          'recovery_parent_access_missing',
+        ].includes(finding.code)
       )
         continue;
       const channel = facts.channels.find((c) => c.id === finding.channelId);
-      if (!channel || !channel.metadataAvailable) continue;
+      if (
+        !channel ||
+        !channel.metadataAvailable ||
+        (channel.id === facts.recoveryParentId && channel.type !== 'text')
+      )
+        continue;
       const parent = facts.channels.find((c) => c.id === channel.parentId);
       const inherited = channel.permissionsLocked && parent?.metadataAvailable;
       const mixed =
@@ -278,31 +306,49 @@ export function proposeRestrictionFixes(
           .filter((c) => c.parentId === target.id && c.permissionsLocked)
           .map((c) => c.id),
       ];
+      const after = assessRestrictionFacts(effects.reduce(restrictionFactsAfter, working)).setup;
+      const repairsAccess = findings.some(
+        (f) =>
+          scope.includes(f.channelId ?? '') &&
+          f.kind === 'access_failure' &&
+          !after.findings.some(
+            (remaining) => remaining.code === f.code && remaining.channelId === f.channelId
+          )
+      );
       add(
         `overwrite:${target.id}:${role.id}`,
         inherited && mixed
           ? 'Unsync this channel and correct case-role access together'
-          : 'Correct case-role access on this channel and its synced children',
+          : repairsAccess
+            ? 'Correct case-role access on this channel and its synced children'
+            : 'Add optional case-role deny coverage; retained allows still need review',
         scope,
         effects,
-        !(inherited && mixed)
+        repairsAccess && !(inherited && mixed),
+        repairsAccess ? 'access_repair' : 'hardening'
       );
     }
   }
   const policy = fixes.find((fix) => fix.id === 'policy:quarantine');
   if (policy) {
-    const dependent = fixes.filter((fix) =>
-      fix.effects.some((effect) => effect.kind === 'edit_overwrite')
+    const dependent = fixes.filter(
+      (fix) =>
+        fix.kind === 'access_repair' &&
+        fix.effects.some(
+          (effect) => effect.kind === 'edit_overwrite' || effect.kind === 'unsync_channel'
+        )
     );
     if (dependent.length) {
-      const scope = [...new Set(dependent.flatMap((fix) => fix.affectedScope))];
+      const scope = [
+        ...new Set([...policy.affectedScope, ...dependent.flatMap((fix) => fix.affectedScope)]),
+      ];
       fixes.splice(
         0,
         fixes.length,
         ...fixes.filter((fix) => fix !== policy && !dependent.includes(fix)),
         {
           ...policy,
-          summary: 'Enable ordinary-role quarantine and correct case-role channel access together',
+          summary: 'Update ordinary-role quarantine and correct case-role channel access together',
           affectedScope: scope,
           affectedCount: scope.length,
           effects: [
@@ -326,33 +372,78 @@ export function proposeRestrictionFixes(
       continue;
     // The wizard never removes privileged staff roles, even for compromised-account cases.
     const dispositions = classifyRestrictionRoles({
-      ...facts,
+      ...working,
       caseRoleId: member.caseRoleId ?? facts.caseRoleId,
       purpose: 'standard_case',
     });
-    const removable = member.roleIds.filter(
+    const protectedMember = restrictionMemberHasProtectedRole(
+      facts.roles.filter((r) => member.roleIds.includes(r.id)),
+      member.caseRoleId ?? facts.caseRoleId
+    );
+    const candidates = member.roleIds.filter(
       (id) => id !== facts.caseRoleId && dispositions.find((d) => d.roleId === id)?.removable
     );
-    if (removable.length)
+    const removable: string[] = [];
+    for (const id of candidates) {
+      const reason = member.roleIds.some((roleId) => !facts.roles.some((r) => r.id === roleId))
+        ? 'Member role metadata is unavailable'
+        : protectedMember
+          ? 'This member retains a protected staff role; automatic removal is disabled'
+          : !member.repairEligibility
+            ? 'Snapshot ownership evidence is unavailable'
+            : (member.repairEligibility.reason ??
+              member.repairEligibility.blockedRoles.find((r) => r.roleId === id)?.reason ??
+              (facts.repairExcludedRoleIds?.includes(id)
+                ? 'This role is managed by the active role policy'
+                : null));
+      if (!reason) {
+        removable.push(id);
+        continue;
+      }
+      fixes.push({
+        id: `manual:quarantine:${member.caseId}:${id}`,
+        kind: 'manual',
+        summary: reason,
+        before: 'Current case role removal is not eligible',
+        after: 'Requires moderator review; no automatic change',
+        affectedScope: [member.userId, id],
+        affectedCount: 1,
+        defaultSelected: false,
+        selectable: false,
+        effects: [],
+      });
+    }
+    if (!removable.length) continue;
+    const effect: RestrictionEffect = {
+      kind: 'quarantine_case_roles',
+      guildId: facts.guildId,
+      caseId: member.caseId,
+      caseRevision: member.caseRevision,
+      joinedAt: member.joinedAt,
+      memberId: member.userId,
+      roleIds: removable,
+      expected: member.roleIds,
+      desired: member.roleIds.filter((id) => !removable.includes(id)),
+    };
+    const policyIndex = fixes.findIndex((fix) => fix.id === 'policy:quarantine');
+    if (policyIndex !== -1 && removable.some((id) => includeExemptions.includes(id))) {
+      const policy = fixes[policyIndex];
+      fixes[policyIndex] = {
+        ...policy,
+        summary: 'Update ordinary-role quarantine and remove the listed roles from current cases',
+        affectedScope: [...new Set([...policy.affectedScope, member.userId])],
+        affectedCount: policy.affectedCount + 1,
+        effects: [...policy.effects, effect],
+      };
+    } else
       add(
         `quarantine:${member.caseId}`,
         'Quarantine eligible ordinary roles on this case member',
         [member.userId],
-        [
-          {
-            kind: 'quarantine_case_roles',
-            guildId: facts.guildId,
-            caseId: member.caseId,
-            caseRevision: member.caseRevision,
-            joinedAt: member.joinedAt,
-            memberId: member.userId,
-            roleIds: removable,
-            expected: member.roleIds,
-            desired: member.roleIds.filter((id) => !removable.includes(id)),
-          },
-        ]
+        [effect]
       );
   }
+
   const manual = new Set<string>();
   for (const finding of [
     ...assessment.setup.findings,

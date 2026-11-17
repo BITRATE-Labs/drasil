@@ -215,7 +215,10 @@ test('inert embed and attachment permissions do not permit parent posting', () =
     facts({
       recoveryParentId: 'channel',
       roles: [
-        role({ id: 'guild', permissions: String(view | (1n << 14n) | (1n << 15n)) }),
+        role({
+          id: 'guild',
+          permissions: String(view | (1n << 14n) | (1n << 15n) | (1n << 16n) | (1n << 38n)),
+        }),
         role({ id: 'case' }),
       ],
       channels: [
@@ -279,7 +282,12 @@ test('optional-role combinations preserve capability prerequisites', () => {
       channel({ overwrites: [{ id: 'writer', type: 'role', allow: '0', deny: String(view) }] }),
     ],
   };
-  expect(assessRestrictionFacts(hiddenWriter).setup.status).toBe('verified');
+  expect(assessRestrictionFacts(hiddenWriter).setup.findingCodes).not.toContain(
+    'exception_write_access'
+  );
+  expect(assessRestrictionFacts(hiddenWriter).setup.findingCodes).toContain(
+    'recovery_parent_access_missing'
+  );
 });
 
 test('actual cases retain their persisted case role after the guild configuration changes', () => {
@@ -323,5 +331,65 @@ test.each([1, 2, 4, 13, 29, 30, 33, 43, 44])(
       expect(result.cases[0].findingCodes).toContain('retained_privileged_permissions');
       expect(result.cases[0].status).toBe('incomplete');
     }
+  }
+);
+
+test.each([null, 'missing'])(
+  'missing prospective recovery parent %s is incomplete',
+  (recoveryParentId) => {
+    expect(assessRestrictionFacts(facts({ recoveryParentId })).setup.findingCodes).toContain(
+      'recovery_parent_missing'
+    );
+  }
+);
+test.each([0n, 1n << 10n, 1n << 16n, 1n << 38n])(
+  'requires every recovery permission, missing %s',
+  (missing) => {
+    const required = (1n << 10n) | (1n << 16n) | (1n << 38n);
+    const input = facts({
+      recoveryParentId: 'recovery',
+      channels: [
+        channel({
+          id: 'recovery',
+          overwrites: [
+            {
+              id: 'case',
+              type: 'role',
+              allow: String(missing ? required & ~missing : 0n),
+              deny: '0',
+            },
+          ],
+        }),
+      ],
+    });
+    expect(assessRestrictionFacts(input).setup.findingCodes).toContain(
+      'recovery_parent_access_missing'
+    );
+  }
+);
+test('unavailable recovery metadata is unverified, known unusable parent is incomplete', () => {
+  const input = facts({
+    recoveryParentId: 'recovery',
+    channels: [channel({ id: 'recovery', metadataAvailable: false })],
+  });
+  expect(assessRestrictionFacts(input).setup.status).toBe('unverified');
+  expect(
+    assessRestrictionFacts({ ...input, channels: [channel({ id: 'recovery', type: 'forum' })] })
+      .setup.findingCodes
+  ).toContain('recovery_parent_unusable');
+});
+
+test('missing recovery parent in incomplete channel coverage is unavailable, not a known missing parent', () => {
+  const result = assessRestrictionFacts(
+    facts({ recoveryParentId: 'unread', channelsComplete: false })
+  );
+  expect(result.setup.status).toBe('unverified');
+  expect(result.setup.findingCodes).not.toContain('recovery_parent_missing');
+});
+test.each(['announcement', 'category', 'voice', 'media', 'stage', 'forum'] as const)(
+  'a %s channel cannot host the private recovery thread',
+  (type) => {
+    const input = facts({ recoveryParentId: 'channel', channels: [channel({ type })] });
+    expect(assessRestrictionFacts(input).setup.findingCodes).toContain('recovery_parent_unusable');
   }
 );

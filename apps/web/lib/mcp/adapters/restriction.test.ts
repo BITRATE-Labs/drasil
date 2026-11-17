@@ -97,6 +97,9 @@ function selectedCase() {
           case_kind: 'compromised_account',
           thread_id: 'thread',
           quarantine_case_role_id: 'original-case',
+          quarantine_attempt_id: null,
+          repair_snapshot: null,
+          departed: false,
         },
       ],
     });
@@ -156,4 +159,61 @@ test('foreign thread and failed paginated membership reads refuse admission', as
   fix = selectedCase();
   mocks.members.mockRejectedValue(new Error('Restriction thread coverage incomplete.'));
   await expect(readWebRestrictionFacts('guild', [fix])).rejects.toThrow('coverage incomplete');
+});
+
+test.each([false, true])(
+  'uses only enabled manual intake as effective exemption: %s',
+  async (enabled) => {
+    mocks.query.mockResolvedValue({
+      rows: [
+        {
+          ...serverRecord,
+          settings: { manual_intake_enabled: enabled, manual_intake_role_id: '123456789012345678' },
+        },
+      ],
+    });
+    const facts = await readWebRestrictionFacts('guild', []);
+    expect(facts.manualIntakeRoleId).toBe(enabled ? '123456789012345678' : null);
+  }
+);
+
+test('selected-case facts expose bounded ownership blocks without private owner tokens', async () => {
+  const fix = selectedCase();
+  mocks.query.mockReset();
+  mocks.query.mockResolvedValueOnce({ rows: [serverRecord] }).mockResolvedValueOnce({
+    rows: [
+      {
+        id: 'case-id',
+        user_id: 'user',
+        case_revision: 1,
+        case_kind: 'standard',
+        thread_id: null,
+        quarantine_case_role_id: null,
+        quarantine_attempt_id: null,
+        departed: false,
+        competing_snapshot: true,
+        repair_snapshot: {
+          status: 'active',
+          planned_role_ids: ['community'],
+          metadata: {
+            restriction_role_owners: {
+              community: {
+                requestId: 'private-request',
+                attemptToken: 'private-token',
+                state: 'unknown',
+              },
+            },
+          },
+        },
+      },
+    ],
+  });
+  const result = await readWebRestrictionFacts('guild', [fix]);
+  expect(result.cases[0].repairEligibility).toEqual({
+    reason: 'Another case owns an active role snapshot for this member',
+    blockedRoles: [
+      { roleId: 'community', reason: 'A prior restriction repair owns this role removal' },
+    ],
+  });
+  expect(JSON.stringify(result)).not.toMatch(/private-request|private-token/);
 });

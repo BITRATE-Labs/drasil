@@ -4,6 +4,7 @@ import {
   type RestrictionChannelFact,
   type RestrictionPlanDependencies,
   parseSetupStoredRecord,
+  restrictionRepairEligibility,
 } from '@drasil/application';
 import { createRestrictionStores } from '@drasil/application/postgres';
 import {
@@ -54,7 +55,7 @@ export async function readWebRestrictionFacts(
     );
   const types = new Map<number, RestrictionChannelFact['type']>([
     [0, 'text'],
-    [5, 'text'],
+    [5, 'announcement'],
     [2, 'voice'],
     [13, 'stage'],
     [15, 'forum'],
@@ -94,14 +95,30 @@ export async function readWebRestrictionFacts(
   const threads: RestrictionFacts['threads'] = [];
   for (const caseId of caseIds) {
     const { rows } = await pool.query(
-      "select id,user_id,case_revision,case_kind,thread_id,quarantine_case_role_id from verification_events where id=$1::uuid and server_id=$2 and status='pending'",
+      `select id,user_id,case_revision,case_kind,thread_id,quarantine_case_role_id,quarantine_attempt_id,
+        (select row_to_json(s) from (select status,planned_role_ids,metadata from role_quarantine_snapshots where verification_event_id=v.id order by created_at desc limit 1) s) as repair_snapshot,
+        exists(select 1 from moderation_outcomes where verification_event_id=v.id and outcome_type='member_left') as departed,
+        exists(select 1 from role_quarantine_snapshots where server_id=v.server_id and user_id=v.user_id and status='active' and verification_event_id is distinct from v.id) as competing_snapshot
+        from verification_events v where id=$1::uuid and server_id=$2 and status='pending'`,
       [caseId, guildId]
     );
     const row = rows[0];
     if (!row?.user_id) throw new Error('stale_state');
     const member = await fetchDiscordGuildMember(guildId, row.user_id);
     if (!member.joined_at) throw new Error('metadata_unavailable');
+    const eligibility = restrictionRepairEligibility(
+      row.repair_snapshot,
+      row.quarantine_attempt_id,
+      row.departed,
+      row.competing_snapshot
+    );
     cases.push({
+      repairEligibility: {
+        ...eligibility,
+        blockedRoles: eligibility.blockedRoles.filter(({ roleId }) =>
+          member.roles.includes(roleId)
+        ),
+      },
       caseId: row.id,
       caseRoleId: row.quarantine_case_role_id,
       caseRevision: String(row.case_revision),
@@ -132,11 +149,16 @@ export async function readWebRestrictionFacts(
   const allowedCategories = settings.case_role_lockdown_allowed_category_ids ?? [];
   const now = new Date().toISOString();
   return {
+    configurationAvailable: true,
     guildId,
     caseRoleId: config.case_role_id,
     quarantineMode: settings.role_quarantine_mode ?? 'off',
     exemptRoleIds: settings.role_quarantine_exempt_role_ids ?? [],
-    manualIntakeRoleId: settings.manual_intake_role_id?.trim() || null,
+    manualIntakeRoleId: settings.manual_intake_enabled
+      ? settings.manual_intake_role_id?.trim() || null
+      : null,
+    repairExcludedRoleIds:
+      settings.role_gate_enabled && settings.honeypot_role_id ? [settings.honeypot_role_id] : [],
     botHighestPosition: highest.position,
     roles: roles.map((r) => ({
       ...r,

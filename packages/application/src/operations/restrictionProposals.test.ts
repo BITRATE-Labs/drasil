@@ -1,5 +1,7 @@
+import { restrictionFactsAfter } from './restrictionActions';
+import { restrictionRepairEligibility } from './restrictionRepairEligibility';
 import { assessRestrictionFacts } from './restrictionAssessment';
-import { channel, facts } from './restrictionTestData';
+import { channel, facts, caseFact, role } from './restrictionTestData';
 import { proposeRestrictionFixes, normalizeRestrictionEffects } from './restrictionProposals';
 
 describe('restriction proposals', () => {
@@ -105,12 +107,7 @@ it('keeps protected staff roles out of current-case quarantine proposals', () =>
   const effect = proposeRestrictionFixes(input, assessRestrictionFacts(input))
     .flatMap((f) => f.effects)
     .find((e) => e.kind === 'quarantine_case_roles');
-  expect(effect).toMatchObject({
-    roleIds: ['member'],
-    expected: ['case', 'staff', 'member'],
-    desired: ['case', 'staff'],
-    caseRevision: '2',
-  });
+  expect(effect).toBeUndefined();
 });
 
 it('does not default-check corrections when required metadata is incomplete', () => {
@@ -162,5 +159,126 @@ it.each(['channel', 'thread'] as const)(
     expect(
       proposeRestrictionFixes(input, assessRestrictionFacts(input)).every((f) => !f.defaultSelected)
     ).toBe(true);
+  }
+);
+
+it('repairs a winning ordinary exemption with unchecked future policy, not redundant default denies', () => {
+  const input = facts({
+    exemptRoleIds: ['member'],
+    channels: [
+      channel({
+        overwrites: [
+          { id: 'case', type: 'role', allow: '0', deny: '1024' },
+          { id: 'member', type: 'role', allow: '1024', deny: '0' },
+        ],
+      }),
+    ],
+  });
+  const fixes = proposeRestrictionFixes(input, assessRestrictionFacts(input));
+  const policy = fixes.find((f) => f.effects.some((e) => e.kind === 'update_quarantine_policy'));
+  expect(policy).toMatchObject({ defaultSelected: false });
+  expect(policy?.effects).toContainEqual(
+    expect.objectContaining({
+      kind: 'update_quarantine_policy',
+      desired: expect.objectContaining({ exemptRoleIds: [] }),
+    })
+  );
+  expect(fixes.filter((f) => f.defaultSelected)).toEqual([]);
+});
+
+it.each([
+  {
+    status: 'active',
+    planned_role_ids: ['member'],
+    metadata: { failed_removals: [{ id: 'member' }] },
+  },
+  {
+    status: 'active',
+    planned_role_ids: ['member'],
+    metadata: {
+      restriction_role_owners: {
+        member: { requestId: 'private', attemptToken: 'secret', state: 'unknown' },
+      },
+    },
+  },
+  { status: 'restored', planned_role_ids: [], metadata: {} },
+])('keeps prior removal ownership manual: %j', (snapshot) => {
+  const input = facts({
+    channels: [channel({ overwrites: [{ id: 'member', type: 'role', allow: '1024', deny: '0' }] })],
+    cases: [
+      caseFact({
+        roleIds: ['case', 'member'],
+        repairEligibility: restrictionRepairEligibility(snapshot, null, false),
+      }),
+    ],
+  });
+  const fixes = proposeRestrictionFixes(input, assessRestrictionFacts(input));
+  expect(fixes.flatMap((f) => f.effects).some((e) => e.kind === 'quarantine_case_roles')).toBe(
+    false
+  );
+  expect(fixes).toContainEqual(
+    expect.objectContaining({
+      kind: 'manual',
+      summary: expect.stringMatching(/snapshot|ownership|owns/),
+    })
+  );
+  expect(JSON.stringify(fixes)).not.toContain('secret');
+});
+it('groups exemption policy with separately disclosed safe current removals and fixes the winning allow', () => {
+  const input = facts({
+    exemptRoleIds: ['member'],
+    channels: [
+      channel({
+        overwrites: [
+          { id: 'case', type: 'role', allow: '0', deny: '1024' },
+          { id: 'member', type: 'role', allow: '1024', deny: '0' },
+        ],
+      }),
+    ],
+    cases: [caseFact({ roleIds: ['case', 'member'] })],
+  });
+  const fix = proposeRestrictionFixes(input, assessRestrictionFacts(input)).find(
+    (f) => f.id === 'policy:quarantine'
+  )!;
+  expect(fix.defaultSelected).toBe(false);
+  expect(fix.effects.map((e) => e.kind)).toEqual([
+    'update_quarantine_policy',
+    'quarantine_case_roles',
+  ]);
+  const after = assessRestrictionFacts(fix.effects.reduce(restrictionFactsAfter, input));
+  expect(after.setup.findingCodes).not.toContain('unexpected_channel_access');
+  expect(after.cases[0].findingCodes).not.toContain('unexpected_channel_access');
+});
+it.each(['staff', 'managed', 'intake', 'policy'])(
+  'does not remove %s exemptions to offer an automatic bypass',
+  (kind) => {
+    const input = facts({
+      exemptRoleIds: ['member'],
+      manualIntakeRoleId: kind === 'intake' ? 'member' : null,
+      repairExcludedRoleIds: kind === 'policy' ? ['member'] : [],
+      roles: [
+        ...facts().roles.filter((r) => r.id !== 'member'),
+        role({ permissions: kind === 'staff' ? '8' : '0', managed: kind === 'managed' }),
+      ],
+      channels: [
+        channel({
+          overwrites: [
+            { id: 'case', type: 'role', allow: '0', deny: '1024' },
+            { id: 'member', type: 'role', allow: '1024', deny: '0' },
+          ],
+        }),
+      ],
+    });
+    const fixes = proposeRestrictionFixes(input, assessRestrictionFacts(input));
+    expect(fixes.flatMap((f) => f.effects).some((e) => e.kind === 'update_quarantine_policy')).toBe(
+      false
+    );
+    expect(
+      fixes.filter(
+        (f) =>
+          f.defaultSelected &&
+          f.effects.some((e) => e.kind === 'edit_overwrite' && e.channelId === 'channel')
+      )
+    ).toEqual([]);
   }
 );

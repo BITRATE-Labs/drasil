@@ -64,12 +64,14 @@ export function restrictionMaterialFingerprint(
       if (overwrite.type === 'role') roleIds.add(overwrite.id);
   const threadIds = new Set(cases.map((c) => c.threadId));
   const projection = {
+    configurationAvailable: facts.configurationAvailable !== false,
     guildId: facts.guildId,
     caseRoleId: facts.caseRoleId,
     botHighestPosition: facts.botHighestPosition,
     quarantineMode: facts.quarantineMode,
     exemptRoleIds: [...facts.exemptRoleIds].sort(),
     manualIntakeRoleId: facts.manualIntakeRoleId,
+    repairExcludedRoleIds: [...(facts.repairExcludedRoleIds ?? [])].sort(),
     exceptionChannelIds: facts.exceptionChannelIds.filter((id) => channelIds.has(id)).sort(),
     recoveryParentId: channelIds.has(facts.recoveryParentId ?? '') ? facts.recoveryParentId : null,
     roles: sorted(facts.roles.filter((r) => roleIds.has(r.id))).map((r) => ({
@@ -130,63 +132,4 @@ export async function prepareRestrictionPlan(
     expiresAt: audit.expiresAt,
   };
 }
-/** Advance the approved before-state only by our verified effects. */
-export function restrictionFactsAfter(
-  facts: RestrictionFacts,
-  effect: RestrictionEffect
-): RestrictionFacts {
-  switch (effect.kind) {
-    case 'set_role_permissions':
-      return {
-        ...facts,
-        roles: facts.roles.map((r) =>
-          r.id === effect.roleId
-            ? {
-                ...r,
-                permissions: (
-                  (BigInt(r.permissions) & ~BigInt(effect.mask)) |
-                  (BigInt(effect.desired) & BigInt(effect.mask))
-                ).toString(),
-              }
-            : r
-        ),
-      };
-    case 'update_quarantine_policy':
-      return { ...facts, ...effect.desired };
-    case 'quarantine_case_roles':
-      return {
-        ...facts,
-        cases: facts.cases.map((c) =>
-          c.caseId === effect.caseId
-            ? { ...c, roleIds: c.roleIds.filter((id) => !effect.roleIds.includes(id)) }
-            : c
-        ),
-      };
-    case 'edit_overwrite':
-      return {
-        ...facts,
-        channels: facts.channels.map((c) =>
-          c.id === effect.channelId || (c.parentId === effect.channelId && c.permissionsLocked)
-            ? {
-                ...c,
-                overwrites: [
-                  ...c.overwrites.filter((o) => !(o.type === 'role' && o.id === effect.roleId)),
-                  ...(effect.desired
-                    ? [{ id: effect.roleId, type: 'role' as const, ...effect.desired }]
-                    : []),
-                ],
-              }
-            : c
-        ),
-      };
-    case 'unsync_channel':
-      return {
-        ...facts,
-        channels: facts.channels.map((c) =>
-          c.id === effect.channelId
-            ? { ...c, permissionsLocked: false, overwrites: effect.desired }
-            : c
-        ),
-      };
-  }
-}
+export { restrictionFactsAfter } from './restrictionFactsAfter';

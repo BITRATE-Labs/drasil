@@ -15,6 +15,7 @@ import type {
   RestrictionOverwrite,
 } from './restrictionTypes';
 
+const HISTORY = 1n << 16n;
 const VIEW = 1n << 10n;
 const ADMIN = 1n << 3n;
 const MANAGE_THREADS = 1n << 34n;
@@ -82,7 +83,7 @@ function setupPermissionCandidates(
     ? (facts.channels.find((item) => item.id === channel.parentId)?.overwrites ?? [])
     : channel.overwrites;
   const candidates = new Map<string, readonly string[]>([['baseline', fixedRoleIds]]);
-  const capabilities = TEXT_INTERACTIONS | VOICE_INTERACTIONS | ADMINISTRATIVE_MUTATIONS;
+  const capabilities = TEXT_INTERACTIONS | VOICE_INTERACTIONS | ADMINISTRATIVE_MUTATIONS | HISTORY;
   for (let bit = 0n; bit <= 51n; bit++) {
     const capability = 1n << bit;
     if ((capabilities & capability) === 0n && capability !== VIEW) continue;
@@ -144,11 +145,15 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
       });
     };
     let unknown =
+      facts.configurationAvailable === false ||
       !facts.channelsComplete ||
       !facts.casesComplete ||
       !facts.threadsComplete ||
       (member !== null && !member.metadataAvailable);
-    if (!caseRoleId || !facts.roles.some((role) => role.id === caseRoleId))
+    if (
+      facts.configurationAvailable !== false &&
+      (!caseRoleId || !facts.roles.some((role) => role.id === caseRoleId))
+    )
       add('case_role_missing');
     const roleIds = member?.roleIds ?? [
       ...setupRoles,
@@ -204,6 +209,26 @@ export function assessRestrictionFacts(facts: RestrictionFacts): RestrictionAsse
       }
     };
     checkChannels();
+    const checkRecovery = (): void => {
+      if (facts.configurationAvailable === false) return;
+      const parent = facts.channels.find((channel) => channel.id === facts.recoveryParentId);
+      if (!facts.recoveryParentId || (!parent && facts.channelsComplete))
+        add('recovery_parent_missing', facts.recoveryParentId);
+      else if (!parent || !parent.metadataAvailable) unknown = true;
+      else if (parent.type !== 'text') add('recovery_parent_unusable', parent.id);
+      else {
+        const candidates = setupPermissionCandidates(facts, parent, setupRoles);
+        const required = VIEW | HISTORY | THREAD_REPLY;
+        if (candidates.some((permissions) => permissions === null)) unknown = true;
+        if (
+          candidates.some(
+            (permissions) => permissions !== null && (permissions & required) !== required
+          )
+        )
+          add('recovery_parent_access_missing', parent.id);
+      }
+    };
+    if (!member) checkRecovery();
     if (facts.knownParentContentExposure) add('parent_content_exposure', facts.recoveryParentId);
     let checkedThreads = 0;
     const checkThreads = (): void => {

@@ -1,8 +1,5 @@
 import { restrictionRoleFact } from '../utils/restrictionRoleFact';
-import {
-  classifyRestrictionRoles,
-  STANDARD_RESTRICTION_PRIVILEGED_PERMISSIONS,
-} from '@drasil/application';
+import { classifyRestrictionRoles, restrictionMemberHasProtectedRole } from '@drasil/application';
 import { GuildMember, PartialGuildMember, Role, User } from 'discord.js';
 import { inject, injectable, optional } from 'inversify';
 import { IConfigService } from '../config/ConfigService';
@@ -288,10 +285,12 @@ export class RoleQuarantineService implements IRoleQuarantineService {
           !member.roles.cache.has(roleId) ||
           roleId === config.case_role_id ||
           !disposition?.removable ||
-          [...member.roles.cache.values()].some(
-            (r) =>
-              r.id !== caseRoleId &&
-              (r.permissions.bitfield & STANDARD_RESTRICTION_PRIVILEGED_PERMISSIONS) !== 0n
+          restrictionMemberHasProtectedRole(
+            [...member.roles.cache.values()].map((r) => ({
+              id: r.id,
+              permissions: r.permissions.bitfield.toString(),
+            })),
+            caseRoleId
           ) ||
           (gate.enabled && roleId === gate.honeypotRoleId)
         )

@@ -1,3 +1,4 @@
+import { restrictionSnapshotRoleBlock } from '@drasil/application';
 import { restrictionActiveFenceSql } from '@drasil/application/postgres';
 import { getManualIntakeSettings } from '../utils/manualIntakeSettings';
 import { getRoleGateSettings } from '../utils/roleGateSettings';
@@ -101,6 +102,16 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
         where: { verification_event_id: input.caseId, outcome_type: 'member_left' },
       });
       if (departed) return null;
+      const competing = await tx.role_quarantine_snapshots.findFirst({
+        where: {
+          server_id: request.server_id,
+          user_id: input.userId,
+          status: 'active',
+          OR: [{ verification_event_id: { not: input.caseId } }, { verification_event_id: null }],
+        },
+        select: { id: true },
+      });
+      if (competing) return null;
       const snapshots = await tx.$queryRaw<
         RoleQuarantineSnapshot[]
       >`select * from role_quarantine_snapshots where verification_event_id=${input.caseId}::uuid order by created_at desc for update`;
@@ -119,15 +130,8 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
         return null;
       const metadata = (snapshot?.metadata ?? {}) as Prisma.JsonObject;
       const owners = (metadata.restriction_role_owners ?? {}) as Prisma.JsonObject;
-      for (const id of input.roleIds) {
-        const owner = owners[id] as Prisma.JsonObject | undefined;
-        if (
-          owner &&
-          (owner.requestId !== input.requestId || owner.attemptToken !== input.attemptToken)
-        )
-          return null;
-        if (snapshot?.planned_role_ids.includes(id) && !owner) return null;
-      }
+      if (input.roleIds.some((id) => restrictionSnapshotRoleBlock(snapshot ?? null, id, input)))
+        return null;
       const nextOwners = { ...owners };
       for (const id of input.roleIds)
         nextOwners[id] = owners[id] ?? {

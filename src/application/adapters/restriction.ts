@@ -213,7 +213,7 @@ export function createBotRestrictionEffects(deps: BotRestrictionEffectDependenci
     if (
       policy.mode !== effect.expected.quarantineMode ||
       canonicalIds(policy.exemptRoleIds) !== canonicalIds(effect.expected.exemptRoleIds) ||
-      manual.roleId !== effect.expected.manualIntakeRoleId
+      (manual.enabled ? manual.roleId : null) !== effect.expected.manualIntakeRoleId
     )
       throw new RestrictionWriteRejected('Policy changed');
     await deps.repairFence.assertOwner();

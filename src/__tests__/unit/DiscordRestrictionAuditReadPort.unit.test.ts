@@ -15,16 +15,26 @@ it('pages guild-scoped pending cases in fixed batches of 50', async () => {
       thread_id: null,
       case_kind: 'standard',
       quarantine_case_role_id: 'persisted',
+      quarantine_attempt_id: null,
+      role_quarantine_snapshots: [],
+      moderation_outcomes: [],
     }))
   );
   const port = new DiscordRestrictionAuditReadPort(
     {} as Client,
     {} as IConfigService,
-    { verification_events: { findMany } } as unknown as PrismaClient
+    {
+      verification_events: { findMany },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    } as unknown as PrismaClient
   );
   const page = await port.readCases('guild', 'previous', 50);
   expect(findMany).toHaveBeenCalledWith({
     where: { server_id: 'guild', status: 'pending', user_id: { not: null } },
+    include: expect.objectContaining({
+      role_quarantine_snapshots: expect.objectContaining({ take: 1 }),
+      moderation_outcomes: expect.objectContaining({ take: 1 }),
+    }),
     orderBy: { id: 'asc' },
     cursor: { id: 'previous' },
     skip: 1,

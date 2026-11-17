@@ -77,6 +77,21 @@ test('grouped policy and current-member repair freezes both effects and membersh
   ]);
   f.deps.readFresh.mockResolvedValue({
     ...f.state,
+    cases: [
+      {
+        ...member,
+        repairEligibility: {
+          reason: null,
+          blockedRoles: [
+            { roleId: 'member', reason: 'A prior restriction repair owns this role removal' },
+          ],
+        },
+      },
+    ],
+  });
+  await expect(prepareRestrictionPlan(context, f.selection, f.deps)).rejects.toThrow('stale_state');
+  f.deps.readFresh.mockResolvedValue({
+    ...f.state,
     cases: [{ ...member, joinedAt: '2026-11-17T12:00:00Z' }],
   });
   await expect(prepareRestrictionPlan(context, f.selection, f.deps)).rejects.toThrow('stale_state');

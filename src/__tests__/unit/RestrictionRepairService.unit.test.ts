@@ -6,7 +6,7 @@ import {
   RoleQuarantineService,
   type IRoleQuarantineService,
 } from '../../services/RoleQuarantineService';
-import { repairFixture } from '../fixtures/restrictionRepair';
+import { repairFixture, createRestrictionRole } from '../fixtures/restrictionRepair';
 import type { IRoleQuarantineSnapshotRepository } from '../../repositories/RoleQuarantineSnapshotRepository';
 import type { IVerificationEventRepository } from '../../repositories/VerificationEventRepository';
 import { RoleQuarantineSnapshotPurpose } from '../../repositories/types';
@@ -161,4 +161,60 @@ test('unsync adapter rejects a changed frozen source before writing', async () =
     })
   ).rejects.toThrow('source changed');
   expect(set).not.toHaveBeenCalled();
+});
+
+test('an unrelated policy write preserves the configured disabled intake role', async () => {
+  const { ConfigService } = await import('../../config/ConfigService');
+  const { InMemoryServerRepository } = await import('../fakes/inMemoryRepositories');
+  const previous = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'in-memory';
+  try {
+    const f = fixture();
+    const repository = new InMemoryServerRepository();
+    const client = { guilds: { fetch: jest.fn().mockResolvedValue({}) } } as unknown as Client;
+    const config = new ConfigService(repository, client);
+    await config.updateServerConfig('guild', {
+      settings: {
+        manual_intake_enabled: false,
+        manual_intake_role_id: '123456789012345678',
+        role_quarantine_mode: 'off',
+      },
+    });
+    const input = facts({ quarantineMode: 'off', manualIntakeRoleId: null });
+    const adapter = createBotRestrictionEffects({
+      client,
+      configService: config,
+      cases: f.cases as unknown as IVerificationEventRepository,
+      quarantine: f.service,
+      auditService: {
+        auditGuild: jest.fn().mockResolvedValue({ facts: input }),
+      } as unknown as IRestrictionAuditService,
+      actorId: 'actor',
+      repairFence: f.fence,
+    });
+    await adapter.write({
+      kind: 'update_quarantine_policy',
+      guildId: 'guild',
+      expected: { quarantineMode: 'off', exemptRoleIds: [], manualIntakeRoleId: null },
+      desired: { quarantineMode: 'on', exemptRoleIds: [], manualIntakeRoleId: null },
+    });
+    expect((await repository.findByGuildId('guild'))?.settings).toMatchObject({
+      manual_intake_enabled: false,
+      manual_intake_role_id: '123456789012345678',
+      role_quarantine_mode: 'on',
+    });
+  } finally {
+    if (previous === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previous;
+  }
+});
+
+test('a protected staff role also prevents removing a separate ordinary role', async () => {
+  const f = fixture();
+  f.member.roles.cache.set('staff', createRestrictionRole('staff', 8n));
+  await expect(
+    f.service.repairCaseRoles(f.member, f.event, ['ordinary'], f.actor, f.fence)
+  ).rejects.toThrow('Restriction repair stopped');
+  expect(f.snapshots.appendRestrictionRepairRoles).not.toHaveBeenCalled();
+  expect(f.member.roles.remove).not.toHaveBeenCalled();
 });

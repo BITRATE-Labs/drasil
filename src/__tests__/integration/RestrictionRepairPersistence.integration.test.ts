@@ -1,5 +1,12 @@
-import { facts } from '../../../packages/application/src/operations/restrictionTestData';
-import { assessRestrictionFacts } from '@drasil/application';
+import { DiscordRestrictionAuditReadPort } from '../../services/DiscordRestrictionAuditReadPort';
+import type { Client } from 'discord.js';
+import type { IConfigService } from '../../config/ConfigService';
+import {
+  facts,
+  caseFact,
+  channel,
+} from '../../../packages/application/src/operations/restrictionTestData';
+import { assessRestrictionFacts, proposeRestrictionFixes } from '@drasil/application';
 import { RoleQuarantineSnapshotRepository } from '../../repositories/RoleQuarantineSnapshotRepository';
 import { ModerationActionRequestType } from '../../repositories/types';
 import { createRestrictionStores } from '@drasil/application/postgres';
@@ -154,6 +161,83 @@ integration('restriction request persistence', () => {
       (await f.prisma.verification_events.findUnique({ where: { id: event.id } }))!.status
     ).toBe('verified');
   });
+  it.each(['unowned_failed', 'owned_unknown', 'other_case', 'fresh'] as const)(
+    'proposals agree with real append admission for %s roles',
+    async (mode) => {
+      const f = await fixture();
+      await f.prisma.users.create({ data: { discord_id: 'member' } });
+      const event = await f.prisma.verification_events.create({
+        data: { server_id: 'guild', user_id: 'member' },
+      });
+      const other =
+        mode === 'other_case'
+          ? await f.prisma.verification_events.create({
+              data: { server_id: 'guild', user_id: 'member' },
+            })
+          : null;
+      await f.prisma.role_quarantine_snapshots.create({
+        data: {
+          server_id: 'guild',
+          user_id: 'member',
+          verification_event_id: other?.id ?? event.id,
+          original_role_ids: ['member'],
+          planned_role_ids: mode === 'fresh' ? [] : ['member'],
+          failed_removals: [{ id: 'member', reason: 'transport failed' }],
+          metadata:
+            mode === 'owned_unknown'
+              ? {
+                  restriction_role_owners: {
+                    member: { requestId: 'old', attemptToken: 'private', state: 'unknown' },
+                  },
+                }
+              : {},
+        },
+      });
+      const reader = new DiscordRestrictionAuditReadPort(
+        {} as Client,
+        {} as IConfigService,
+        f.prisma
+      );
+      const page = await reader.readCases('guild', null, 50);
+      const input = facts({
+        cases: [
+          caseFact({
+            ...page.items.find((item) => item.caseId === event.id)!,
+            roleIds: ['case', 'member'],
+            metadataAvailable: true,
+            joinedAt: '2020-01-01T00:00:00.000Z',
+          }),
+        ],
+        channels: [
+          channel({ overwrites: [{ id: 'member', type: 'role', allow: '1024', deny: '0' }] }),
+        ],
+      });
+      const fixes = proposeRestrictionFixes(input, assessRestrictionFacts(input));
+      expect(
+        fixes.flatMap((fix) => fix.effects).some((e) => e.kind === 'quarantine_case_roles')
+      ).toBe(mode === 'fresh');
+      const claim = await f.repository.claimNext();
+      const attemptToken = (claim!.metadata as Record<string, string>).restriction_attempt_token;
+      const appended = await new RoleQuarantineSnapshotRepository(
+        f.prisma
+      ).appendRestrictionRepairRoles({
+        caseId: event.id,
+        caseRevision: 0,
+        requestId: f.request.id,
+        attemptToken,
+        userId: 'member',
+        roleIds: ['member'],
+      });
+      expect(appended !== null).toBe(mode === 'fresh');
+      if (mode !== 'fresh')
+        expect(fixes).toContainEqual(
+          expect.objectContaining({
+            kind: 'manual',
+            summary: expect.stringMatching(/ownership|owns/),
+          })
+        );
+    }
+  );
   it('a later revision cannot erase a durable effect receipt', async () => {
     const f = await fixture();
     const claim = await f.repository.claimNext();

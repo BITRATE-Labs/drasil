@@ -77,7 +77,7 @@ it('does not verify obfuscated overwrites or API-denied member reads', async () 
   (port.readMember as jest.Mock).mockRejectedValue(new Error('API denied'));
   const audit = await new RestrictionAuditService(port).auditGuild('guild');
   expect(audit.setup.status).not.toBe('verified');
-  expect(audit.coverage.find((c) => c.area === 'channels')?.state).toBe('unavailable');
+  expect(audit.coverage.find((c) => c.area === 'channels')?.state).toBe('partial');
   expect(audit.coverage.find((c) => c.area === 'affected_members')?.state).toBe('unavailable');
 });
 it('checks private membership, public siblings and archived-thread reopening metadata', async () => {

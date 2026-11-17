@@ -134,38 +134,16 @@ export class LockdownConfigCommandHandler {
     settings: ServerSettings
   ): string {
     const lockdownSettings = getCaseRoleLockdownSettings(settings);
-    const autoAllowedChannelIds = this.getCaseRoleLockdownAutoAllowedChannelIds(
-      verificationChannelId,
-      settings
-    );
     return [
       `Case-role lockdown: \`${lockdownSettings.enabled ? 'enabled' : 'disabled'}\``,
-      `Explicit allowed channels: ${this.formatChannelIdList(lockdownSettings.allowedChannelIds)}`,
-      `Explicit allowed categories: ${this.formatChannelIdList(lockdownSettings.allowedCategoryIds)}`,
-      `Auto-allowed channels: ${this.formatChannelIdList(autoAllowedChannelIds)}`,
+      `Explicit read-only channels: ${this.formatChannelIdList(lockdownSettings.allowedChannelIds)}`,
+      `Explicit read-only categories: ${this.formatChannelIdList(lockdownSettings.allowedCategoryIds)}`,
+      `Recovery parent (technical case-thread access): ${this.formatChannelIdList(verificationChannelId ? [verificationChannelId] : [])}`,
       `Guild ID: \`${guildId}\``,
       '',
       'Run `/config lockdown audit`, then review selected repairs in the dashboard.',
       'Lockdown does not delete messages. Message cleanup should be a separate moderator-confirmed action.',
     ].join('\n');
-  }
-
-  private getCaseRoleLockdownAutoAllowedChannelIds(
-    verificationChannelId: string | null,
-    settings: ServerSettings
-  ): string[] {
-    const ids = new Set<string>();
-    const reportInstructionsChannelId = settings.report_instructions_channel_id;
-
-    if (verificationChannelId) {
-      ids.add(verificationChannelId);
-    }
-
-    if (typeof reportInstructionsChannelId === 'string' && reportInstructionsChannelId) {
-      ids.add(reportInstructionsChannelId);
-    }
-
-    return [...ids];
   }
 
   private formatChannelIdList(channelIds: readonly string[]): string {

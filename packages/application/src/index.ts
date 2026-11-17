@@ -100,6 +100,7 @@ export * from './moderation/automaticResponse';
 
 export * from './operations/restrictionTypes';
 export * from './operations/restrictionPolicy';
+export * from './operations/restrictionRepairEligibility';
 export * from './operations/restrictionAssessment';
 export * from './operations/restrictionProposals';
 

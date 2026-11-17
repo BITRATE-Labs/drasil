@@ -18,6 +18,9 @@ export const restrictionCoverageSchema = z.object({
 export type RestrictionCoverage = z.infer<typeof restrictionCoverageSchema>;
 export const restrictionFindingCodeSchema = z.enum([
   'case_role_missing',
+  'recovery_parent_missing',
+  'recovery_parent_unusable',
+  'recovery_parent_access_missing',
   'retained_privileged_permissions',
   'metadata_unavailable',
   'unexpected_channel_access',
@@ -103,7 +106,7 @@ export type RestrictionOverwrite = z.infer<typeof restrictionOverwriteSchema>;
 export const restrictionChannelFactSchema = z.object({
   id,
   name: z.string(),
-  type: z.enum(['text', 'voice', 'stage', 'forum', 'media', 'category']),
+  type: z.enum(['text', 'announcement', 'voice', 'stage', 'forum', 'media', 'category']),
   parentId: id.nullable(),
   permissionsLocked: z.boolean(),
   overwrites: z.array(restrictionOverwriteSchema),
@@ -131,11 +134,18 @@ export const restrictionCaseFactSchema = z.object({
   owner: z.boolean(),
   metadataAvailable: z.boolean(),
   threadId: id.nullable(),
+  repairEligibility: z
+    .object({
+      reason: z.string().nullable(),
+      blockedRoles: z.array(z.object({ roleId: id, reason: z.string() })),
+    })
+    .optional(),
 });
 export type RestrictionCaseFact = z.infer<typeof restrictionCaseFactSchema>;
 export const restrictionFactsSchema = restrictionRolePolicyInputSchema
   .omit({ purpose: true })
   .extend({
+    configurationAvailable: z.boolean().optional(),
     observedAt: timestamp,
     completedAt: timestamp,
     channels: z.array(restrictionChannelFactSchema),
@@ -147,6 +157,7 @@ export const restrictionFactsSchema = restrictionRolePolicyInputSchema
     exceptionChannelIds: z.array(id),
     recoveryParentId: id.nullable(),
     knownParentContentExposure: z.boolean(),
+    repairExcludedRoleIds: z.array(id).optional(),
   });
 export type RestrictionFacts = z.infer<typeof restrictionFactsSchema>;
 const overwriteState = z.object({ allow: bits, deny: bits }).nullable();

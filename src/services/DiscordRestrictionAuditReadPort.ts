@@ -1,9 +1,11 @@
+import { getRoleGateSettings } from '../utils/roleGateSettings';
 import { restrictionRoleFact } from '../utils/restrictionRoleFact';
-import type {
-  RestrictionCaseFact,
-  RestrictionChannelFact,
-  RestrictionFacts,
-  RestrictionThreadFact,
+import {
+  restrictionRepairEligibility,
+  type RestrictionCaseFact,
+  type RestrictionChannelFact,
+  type RestrictionFacts,
+  type RestrictionThreadFact,
 } from '@drasil/application';
 import {
   ChannelType,
@@ -48,7 +50,10 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
 
   public async readBase(guildId: string): Promise<RestrictionFacts> {
     const guild = await this.client.guilds.fetch({ guild: guildId, force: true });
-    const settings = await this.config.getServerConfig(guildId);
+    const settings = await this.config.getServerConfig(guildId, {
+      forceRefresh: true,
+      failOnReadError: true,
+    });
     const [roles, channels] = await Promise.all([guild.roles.fetch(), guild.channels.fetch()]);
     // Discord.js retains cached overwrites when the raw response omits them.
     const rawChannels = (await this.client.rest.get(
@@ -57,10 +62,12 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
     const bot = await guild.members.fetchMe().catch(() => null);
     const lockdown = getCaseRoleLockdownSettings(settings.settings);
     const quarantine = getRoleQuarantineSettings(settings.settings);
+    const intake = getManualIntakeSettings(settings.settings);
+    const gate = getRoleGateSettings(settings.settings);
     const channelFacts: RestrictionChannelFact[] = [];
     const types = new Map<number, RestrictionChannelFact['type']>([
       [ChannelType.GuildText, 'text'],
-      [ChannelType.GuildAnnouncement, 'text'],
+      [ChannelType.GuildAnnouncement, 'announcement'],
       [ChannelType.GuildVoice, 'voice'],
       [ChannelType.GuildStageVoice, 'stage'],
       [ChannelType.GuildForum, 'forum'],
@@ -107,11 +114,13 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
       });
     }
     return {
+      configurationAvailable: true,
       guildId,
       caseRoleId: settings.case_role_id,
       quarantineMode: quarantine.mode,
       exemptRoleIds: [...quarantine.exemptRoleIds],
-      manualIntakeRoleId: getManualIntakeSettings(settings.settings).roleId,
+      manualIntakeRoleId: intake.enabled ? intake.roleId : null,
+      repairExcludedRoleIds: gate.enabled && gate.honeypotRoleId ? [gate.honeypotRoleId] : [],
       botHighestPosition: bot?.roles.highest.position ?? null,
       roles: [...roles.values()].map((role) => restrictionRoleFact(role, bot)),
       observedAt: new Date().toISOString(),
@@ -142,15 +151,37 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
   ): Promise<RestrictionPage<RestrictionCaseFact>> {
     const rows = await this.prisma.verification_events.findMany({
       where: { server_id: guildId, status: VerificationStatus.PENDING, user_id: { not: null } },
+      include: {
+        role_quarantine_snapshots: { orderBy: { created_at: 'desc' }, take: 1 },
+        moderation_outcomes: {
+          where: { outcome_type: 'member_left' },
+          take: 1,
+          select: { id: true },
+        },
+      },
       orderBy: { id: 'asc' },
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       take: limit,
     });
+    const competing = rows.length
+      ? await this.prisma.$queryRaw<Array<{ id: string; competing: boolean }>>`
+      select v.id, exists(select 1 from role_quarantine_snapshots s
+        where s.server_id=v.server_id and s.user_id=v.user_id and s.status='active'
+        and s.verification_event_id is distinct from v.id) as competing
+      from verification_events v where v.server_id=${guildId} and v.id=any(${rows.map((row) => row.id)}::uuid[])
+    `
+      : [];
     return {
       items: rows.map((row) => {
         if (!row.user_id) throw new Error('Case member binding unavailable');
         return {
           caseId: row.id,
+          repairEligibility: restrictionRepairEligibility(
+            row.role_quarantine_snapshots[0] ?? null,
+            row.quarantine_attempt_id,
+            row.moderation_outcomes.length > 0,
+            competing.some((item) => item.id === row.id && item.competing)
+          ),
           caseRoleId: row.quarantine_case_role_id,
           caseRevision: String(row.case_revision),
           joinedAt: null,
@@ -177,6 +208,14 @@ export class DiscordRestrictionAuditReadPort implements RestrictionAuditReadPort
     const member = await guild.members.fetch({ user: item.userId, force: true });
     return {
       ...item,
+      repairEligibility: item.repairEligibility
+        ? {
+            ...item.repairEligibility,
+            blockedRoles: item.repairEligibility.blockedRoles.filter(({ roleId }) =>
+              member.roles.cache.has(roleId)
+            ),
+          }
+        : undefined,
       roleIds: [...member.roles.cache.keys()],
       joinedAt: member.joinedAt?.toISOString() ?? null,
       owner: member.id === guild.ownerId,

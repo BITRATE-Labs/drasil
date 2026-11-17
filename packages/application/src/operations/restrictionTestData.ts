@@ -39,11 +39,12 @@ export function caseFact(input: Partial<RestrictionCaseFact> = {}): RestrictionC
     owner: false,
     metadataAvailable: true,
     threadId: null,
+    repairEligibility: { reason: null, blockedRoles: [] },
     ...input,
   };
 }
 export function facts(input: Partial<RestrictionFacts> = {}): RestrictionFacts {
-  return {
+  const result: RestrictionFacts = {
     guildId: 'guild',
     caseRoleId: 'case',
     quarantineMode: 'on',
@@ -64,4 +65,23 @@ export function facts(input: Partial<RestrictionFacts> = {}): RestrictionFacts {
     knownParentContentExposure: false,
     ...input,
   };
+  if (!('recoveryParentId' in input)) {
+    result.recoveryParentId = 'recovery';
+    result.channels = [
+      ...result.channels,
+      channel({
+        id: 'recovery',
+        name: 'Recovery',
+        overwrites: [
+          {
+            id: 'case',
+            type: 'role',
+            allow: String((1n << 10n) | (1n << 16n) | (1n << 38n)),
+            deny: String((1n << 11n) | (1n << 6n)),
+          },
+        ],
+      }),
+    ];
+  }
+  return result;
 }

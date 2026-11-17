@@ -158,7 +158,11 @@ test('second effect failure leaves first applied and third untouched', async () 
     });
   const result = await executeRestrictionPlan(context, 'apply', f.deps);
   expect(result.stopReason).toBe('unknown_outcome');
-  expect(result.progress.receipts.map((r) => r.state)).toEqual(['applied', 'unknown']);
+  expect(result.progress.receipts.map((r) => r.state)).toEqual([
+    'applied',
+    'unknown',
+    'not_attempted',
+  ]);
   expect(f.deps.write).toHaveBeenCalledTimes(2);
 });
 
@@ -176,4 +180,31 @@ test('transport failure stops even when desired state is observed', async () => 
   const result = await executeRestrictionPlan(context, 'apply', f.deps);
   expect(result.stopReason).toBe('unknown_outcome');
   expect(result.progress.receipts[0]).toMatchObject({ state: 'applied', error: 'write_error' });
+});
+
+test('all accepted effects are reported when authority is lost before the first write', async () => {
+  const f = await execution();
+  const result = await executeRestrictionPlan(
+    { ...context, actor: { kind: 'user', userId: 'other' } },
+    'apply',
+    f.deps
+  );
+  expect(result.progress.receipts).toEqual([
+    { effectIndex: 0, state: 'not_attempted', observation: null, error: null },
+  ]);
+});
+test('only not-attempted receipts do not imply mutation, but explicit takeover never replays', async () => {
+  const f = await execution();
+  const progress: RestrictionProgress = {
+    schemaVersion: 1,
+    revision: 0,
+    currentEffectIndex: 0,
+    receipts: [{ effectIndex: 0, state: 'not_attempted', observation: null, error: null }],
+  };
+  f.deps.executionStore.loadProgress.mockResolvedValue(progress);
+  expect(
+    (await executeRestrictionPlan(context, 'apply', { ...f.deps, reconcileOnly: true })).stopReason
+  ).toBe('interrupted');
+  expect(f.deps.write).not.toHaveBeenCalled();
+  expect((await executeRestrictionPlan(context, 'apply', f.deps)).stopReason).toBe('completed');
 });

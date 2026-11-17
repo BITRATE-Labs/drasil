@@ -71,6 +71,7 @@ export class RestrictionAuditService implements IRestrictionAuditService {
       facts = await bounded(() => this.read.readBase(guildId));
     } catch {
       facts = {
+        configurationAvailable: false,
         guildId,
         caseRoleId: null,
         quarantineMode: 'off',
