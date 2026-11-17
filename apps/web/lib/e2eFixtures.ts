@@ -347,6 +347,9 @@ function applyFixtureServerSettingsUpdate(
   setIfDefined(settings, 'case_responder_role_ids', update.caseResponderRoleIds);
   setIfDefined(settings, 'case_responder_routing_mode', update.caseResponderRoutingMode);
   setIfDefined(settings, 'case_responder_thread_member_cap', update.caseResponderThreadMemberCap);
+  setIfDefined(settings, 'welcome_cleanup_enabled', update.welcomeCleanupEnabled);
+  setIfDefined(settings, 'welcome_cleanup_bot_id', update.welcomeCleanupBotId);
+  setIfDefined(settings, 'welcome_cleanup_channel_id', update.welcomeCleanupChannelId);
   setIfDefined(settings, 'message_deletion_enabled', update.messageDeletionEnabled);
   setIfDefined(
     settings,

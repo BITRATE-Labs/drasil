@@ -149,6 +149,19 @@ export class MessageContextRepository implements IMessageContextRepository {
           )
         `,
       ]);
+      try {
+        await this.prisma.$executeRaw`
+          DELETE FROM public.welcome_message_candidates w USING public.servers s
+          WHERE w.server_id = s.guild_id AND (
+            w.expires_at <= ${now}
+            OR s.settings->>'welcome_cleanup_enabled' = 'false'
+            OR w.channel_id IS DISTINCT FROM s.settings->>'welcome_cleanup_channel_id'
+            OR w.bot_id IS DISTINCT FROM s.settings->>'welcome_cleanup_bot_id'
+          )
+        `;
+      } catch (error) {
+        console.warn('Welcome reference pruning failed:', error);
+      }
       return Number(expiredCount) + Number(overflowCount);
     } catch (error) {
       this.handleError(error, 'pruneExpired');

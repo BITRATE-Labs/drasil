@@ -111,6 +111,9 @@ export interface ServerSettings {
   pending_screening_alerts_enabled?: boolean;
   pending_screening_long_pending_days?: number;
   moderation_queue_channel_id?: string | null;
+  welcome_cleanup_enabled?: boolean;
+  welcome_cleanup_bot_id?: string | null;
+  welcome_cleanup_channel_id?: string | null;
   message_deletion_enabled?: boolean;
   message_deletion_source_message_enabled?: boolean;
   message_deletion_watchlist_enabled?: boolean;

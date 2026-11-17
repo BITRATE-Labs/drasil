@@ -5,6 +5,8 @@ import { readOptionalEnv, requireEnv } from './env';
 const DEFAULT_DISCORD_API_BASE_URL = 'https://discord.com/api/v10';
 const DISCORD_GUILD_PAGE_LIMIT = 200;
 const DISCORD_MESSAGE_PAGE_LIMIT = 100;
+const DISCORD_MEMBER_PAGE_LIMIT = 1000;
+export const WELCOME_BOT_LIST_LIMIT = 20;
 
 export class DiscordApiError extends Error {
   public constructor(
@@ -19,6 +21,7 @@ export class DiscordApiError extends Error {
 export interface DiscordUser {
   readonly id: string;
   readonly username: string;
+  readonly bot?: boolean;
   readonly global_name?: string | null;
   readonly avatar?: string | null;
 }
@@ -44,6 +47,7 @@ export interface DiscordRole {
   readonly permissions: string;
   readonly position: number;
   readonly managed: boolean;
+  readonly tags?: { readonly bot_id?: string };
 }
 
 export interface DiscordChannel {
@@ -279,6 +283,47 @@ export async function fetchDiscordGuildMember(
   userId: string
 ): Promise<DiscordGuildMember> {
   return fetchBotJson(`/guilds/${guildId}/members/${userId}`);
+}
+export async function fetchGuildBots(
+  guildId: string,
+  roles: readonly DiscordRole[],
+  savedId?: string | null
+): Promise<DiscordUser[]> {
+  const ids = [
+    ...new Set([
+      ...(savedId ? [savedId] : []),
+      ...roles.flatMap((role) => (role.tags?.bot_id ? [role.tags.bot_id] : [])),
+    ]),
+  ];
+  if (!ids.length) return [];
+  assertDiscordId(guildId);
+  const users: DiscordUser[] = [];
+  // shortcut: only the first 20 bots are listed; use name search for additional bots.
+  for (const id of ids.slice(0, WELCOME_BOT_LIST_LIMIT)) {
+    assertDiscordId(id);
+    try {
+      const user = (await fetchDiscordGuildMember(guildId, id)).user;
+      if (user?.bot) users.push(user);
+    } catch (error) {
+      if (error instanceof DiscordApiError && error.status === 404) continue;
+      const unavailable =
+        error instanceof ReadDependencyUnavailableError ||
+        (error instanceof DiscordApiError && (error.status === 429 || error.status >= 500));
+      if (!unavailable || !users.length) throw error;
+      break;
+    }
+  }
+  return users
+    .filter((user): user is DiscordUser => user?.bot === true)
+    .sort((a, b) => (a.global_name ?? a.username).localeCompare(b.global_name ?? b.username));
+}
+export async function searchGuildBots(guildId: string, query: string): Promise<DiscordUser[]> {
+  assertDiscordId(guildId);
+  const params = new URLSearchParams({ query, limit: String(DISCORD_MEMBER_PAGE_LIMIT) });
+  const members = await fetchBotJson<DiscordGuildMember[]>(
+    `/guilds/${guildId}/members/search?${params}`
+  );
+  return members.flatMap((member) => (member.user?.bot ? [member.user] : []));
 }
 export async function fetchDiscordGuildChannels(guildId: string): Promise<DiscordChannel[]> {
   assertDiscordId(guildId);

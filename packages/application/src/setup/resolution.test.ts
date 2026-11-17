@@ -67,10 +67,10 @@ function resolver(
     loadHeuristicDefaults: async (scope) => shippedResetChanges(scope),
   });
 }
-test('covers all 75 mapped inputs and all 77 keys in 11 strict sections', () => {
-  expect(fixtures.fields).toHaveLength(75);
+test('covers all 78 mapped inputs and all 80 keys in 11 strict sections', () => {
+  expect(fixtures.fields).toHaveLength(78);
   expect(Object.keys(settingsSectionSchemas)).toEqual(Object.keys(fixtures.sections));
-  expect(Object.values(fixtures.sections).flat()).toHaveLength(77);
+  expect(Object.values(fixtures.sections).flat()).toHaveLength(80);
   expect(Object.keys(setupChangesSchema.shape).sort()).toEqual(
     fixtures.fields.map((f) => f.input).sort()
   );

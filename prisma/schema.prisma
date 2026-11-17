@@ -341,6 +341,7 @@ model server_members {
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model servers {
+  welcome_message_candidates          welcome_message_candidates[]
   guild_id                            String                       @id
   case_role_id                        String?
   admin_channel_id                    String?
@@ -1284,4 +1285,24 @@ model mcp_metadata_permits {
   id String @id @db.Uuid
   origin String
   acquired_at DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+}
+
+model welcome_message_candidates {
+  server           servers  @relation(fields: [server_id], references: [guild_id], onDelete: Cascade, onUpdate: NoAction)
+  server_id        String
+  message_id       String
+  channel_id       String
+  bot_id           String
+  created_at       DateTime @db.Timestamptz(6)
+  member_snapshots Json     @default("{}")
+  snapshots_complete Boolean @default(false)
+  verification_attempted Boolean @default(false)
+  recipient_id String?
+  verified_edited_at DateTime? @db.Timestamptz(6)
+  expires_at DateTime @db.Timestamptz(6)
+
+  @@id([server_id, message_id])
+  @@index([server_id, channel_id, bot_id, created_at], map: "welcome_message_candidates_source_time_idx")
+  @@index([server_id, created_at(sort: Desc), message_id(sort: Desc)], map: "welcome_message_candidates_cap_idx")
+  @@index([expires_at], map: "welcome_message_candidates_expiry_idx")
 }

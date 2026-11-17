@@ -19,6 +19,8 @@ import { createBotDelegatedRuntime } from '../application/adapters/delegation';
 import { createBotApplication, type BotApplication } from '../application/createBotApplication';
 import { ModerationEvidenceService } from '../services/ModerationEvidenceService';
 import 'reflect-metadata';
+import { WelcomeMessageRepository } from '../repositories/WelcomeMessageRepository';
+import { WelcomeMessageCleanupService } from '../services/WelcomeMessageCleanupService';
 import { Container } from 'inversify';
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import OpenAI from 'openai';
@@ -538,6 +540,11 @@ function configureServices(container: Container): void {
   container
     .bind<ICaptchaChallengeService>(TYPES.CaptchaChallengeService)
     .to(CaptchaChallengeService)
+    .inSingletonScope();
+  container.bind(TYPES.WelcomeMessageRepository).to(WelcomeMessageRepository).inSingletonScope();
+  container
+    .bind(TYPES.WelcomeMessageCleanupService)
+    .to(WelcomeMessageCleanupService)
     .inSingletonScope();
 }
 

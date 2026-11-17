@@ -1,3 +1,4 @@
+import { WelcomeMessageCleanupService } from '../services/WelcomeMessageCleanupService';
 import { isInLocalGuildScope } from '../localGuildScope';
 import { IReportMemberDirectory } from '../services/ReportMemberDirectory';
 import { withObservation, recordWorkflowOutcome } from '../observability/langfuse';
@@ -231,7 +232,10 @@ export class EventHandler implements IEventHandler {
     activeQuarantineCache?: IActiveAccountQuarantineCache,
     @inject(TYPES.ReportMemberDirectory)
     @optional()
-    private reportMemberDirectory?: IReportMemberDirectory
+    private reportMemberDirectory?: IReportMemberDirectory,
+    @inject(TYPES.WelcomeMessageCleanupService)
+    @optional()
+    private readonly welcomeCleanup?: WelcomeMessageCleanupService
   ) {
     this.client = client;
     this.detectionOrchestrator = detectionOrchestrator;
@@ -441,8 +445,15 @@ export class EventHandler implements IEventHandler {
   }
 
   private async handleMessage(message: Message): Promise<void> {
-    // Ignore messages from bots (including self)
-    if (message.author.bot) return;
+    // Collect configured welcomes before excluding bot messages from moderation.
+    if (message.author.bot) {
+      try {
+        await this.welcomeCleanup?.collect(message);
+      } catch (error) {
+        console.warn('Welcome candidate collection failed:', error);
+      }
+      return;
+    }
     if (!message.guild || !message.member) return;
 
     await this.recordParkedQuarantineBreach(message);
@@ -1545,6 +1556,11 @@ export class EventHandler implements IEventHandler {
   }
 
   private async handleGuildBanAdd(ban: GuildBan): Promise<void> {
+    try {
+      void this.welcomeCleanup?.cleanupAfterBan(ban.guild, ban.user);
+    } catch (error) {
+      console.warn('Could not start welcome cleanup after ban:', error);
+    }
     if (!this.userModerationService) {
       return;
     }

@@ -12,6 +12,8 @@ export const TYPES = {
   // Services
   HeuristicService: Symbol.for('HeuristicService'),
   GPTService: Symbol.for('GPTService'),
+  WelcomeMessageRepository: Symbol.for('WelcomeMessageRepository'),
+  WelcomeMessageCleanupService: Symbol.for('WelcomeMessageCleanupService'),
   JevService: Symbol.for('JevService'),
   DetectionOrchestrator: Symbol.for('DetectionOrchestrator'),
   RoleManager: Symbol.for('RoleManager'),

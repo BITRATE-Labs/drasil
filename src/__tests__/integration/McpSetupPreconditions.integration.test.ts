@@ -226,7 +226,7 @@ integration('MCP setup approved writes', () => {
       ...fixtures.fields.map((f) => ({ location: f.location, value: f.value })),
       ...fixtures.sectionOnly.map((f) => ({ location: `settings.${f.key}`, value: f.value })),
     ];
-    expect(cases).toHaveLength(84);
+    expect(cases).toHaveLength(87);
     expect(cases).toContainEqual({
       location: 'settings.report_intake_staged_enabled',
       value: true,

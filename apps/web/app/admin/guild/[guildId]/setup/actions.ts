@@ -21,6 +21,15 @@ import {
   queueCompleteSetupVerificationRequestWithReceipt,
   queueReportInstructionsRepairRequest,
 } from '@/lib/setupArtifactActionQueue';
+import {
+  fetchDiscordGuildMember,
+  fetchDiscordChannel,
+  searchGuildBots,
+  fetchGuildBots,
+  fetchDiscordGuildRoles,
+  discordAvatarUrl,
+} from '@/lib/discordApi';
+import { createSetupDataAdapter } from '@/lib/setupDataAdapter';
 import { createSetupDashboardService } from '@/lib/setupDashboardService';
 
 function readOptionalFormString(formData: FormData, key: string): string | null | undefined {
@@ -282,6 +291,30 @@ export async function saveGuildSetup(guildId: string, formData: FormData): Promi
 
   const service = createSetupDashboardService();
   await service.assertCanManageGuild(guildId, token.accessToken);
+  const welcomeBotId = guildSetupUpdateSchema.shape.welcomeCleanupBotId.parse(
+    readOptionalFormString(formData, 'welcomeCleanupBotId')
+  );
+  const welcomeChannelId = guildSetupUpdateSchema.shape.welcomeCleanupChannelId.parse(
+    readOptionalFormString(formData, 'welcomeCleanupChannelId')
+  );
+  const storedWelcome = (await createSetupDataAdapter().getServer(guildId))?.settings;
+  if (welcomeBotId && welcomeBotId !== storedWelcome?.welcome_cleanup_bot_id) {
+    try {
+      const member = await fetchDiscordGuildMember(guildId, welcomeBotId);
+      if (!member.user?.bot) throw new Error('Invalid bot');
+    } catch {
+      throw new Error('Choose a bot that Drasil can access in this server.');
+    }
+  }
+  if (welcomeChannelId && welcomeChannelId !== storedWelcome?.welcome_cleanup_channel_id) {
+    try {
+      const channel = await fetchDiscordChannel(welcomeChannelId);
+      if (channel.guild_id !== guildId || ![0, 5].includes(channel.type))
+        throw new Error('Invalid channel');
+    } catch {
+      throw new Error('Choose a text channel that Drasil can access in this server.');
+    }
+  }
   const update = guildSetupUpdateSchema.parse({
     guildId,
     updatedBy: session.userId,
@@ -398,6 +431,9 @@ export async function saveGuildSetup(guildId: string, formData: FormData): Promi
       formData,
       'caseResponderThreadMemberCap'
     ),
+    welcomeCleanupEnabled: formData.get('welcomeCleanupEnabled') === 'on',
+    welcomeCleanupBotId: welcomeBotId,
+    welcomeCleanupChannelId: welcomeChannelId,
     messageDeletionEnabled: formData.get('messageDeletionEnabled') === 'on',
     messageDeletionSourceMessageEnabled:
       formData.get('messageDeletionSourceMessageEnabled') === 'on',
@@ -447,4 +483,25 @@ function readCaptchaSettingsFormValues(formData: FormData) {
     ),
     captchaMaxSubmissions: readOptionalIntegerFormValue(formData, 'captchaMaxSubmissions'),
   };
+}
+
+export async function searchWelcomeBots(
+  guildId: string,
+  query: string
+): Promise<{ id: string; name: string; detail: string; avatarUrl: string }[]> {
+  const [session, token] = await Promise.all([getCurrentAdminSession(), getCurrentDiscordToken()]);
+  if (!session || !token) throw new Error('Sign in to search server bots.');
+  await createSetupDashboardService().assertCanManageGuild(guildId, token.accessToken);
+  if (typeof query !== 'string' || query.length > 100) return [];
+  const bots = query.trim()
+    ? await searchGuildBots(guildId, query.trim())
+    : await fetchGuildBots(guildId, await fetchDiscordGuildRoles(guildId));
+  return bots.map((bot) => ({
+    id: bot.id,
+    name: bot.global_name ?? bot.username,
+    detail: `@${bot.username}`,
+    avatarUrl:
+      discordAvatarUrl(bot) ??
+      `https://cdn.discordapp.com/embed/avatars/${Number((BigInt(bot.id) >> 22n) % 6n)}.png`,
+  }));
 }
