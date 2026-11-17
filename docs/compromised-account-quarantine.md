@@ -194,9 +194,8 @@ While a compromised-account quarantine is active:
 - Member departure ends active containment and follows the existing member-left workflow.
 - Drasil never presents `contained` while dangerous retained roles or overwrites remain.
 
-The per-user action does not rewrite guild-wide channel permissions. A lockdown audit that still
-has planned changes blocks parking and sends the case back to review so a moderator can explicitly
-repair the server-wide configuration.
+The per-user action does not rewrite guild-wide channel permissions. An incomplete or unverified restriction assessment blocks parking and returns the case to review.
+A moderator can review and approve selected server-wide repairs separately.
 
 Member-specific permission allows can override role-level denies. The first release detects and
 reports those overwrites but does not automatically rewrite and later restore every channel
@@ -322,3 +321,9 @@ Manual staging QA:
 - Preventing mutual-server direct messages.
 - Automatically rewriting member-specific channel overwrites in the first release.
 - Automatically releasing quarantine based on a thread message.
+
+## Restriction wizard assessment
+
+Compromised-account containment consumes the shared restriction assessment. Actual retained global privileges, member overrides, unavailable thread evidence and broken own-thread access prevent verified containment. Optional hardening proposals alone do not prove an actual access failure. Protected staff roles remain protected by the wizard, which reports the resulting limitation for manual handling.
+
+The selected repair workflow is separate from the per-user quarantine action. It requires explicit review and fresh approval, and never automatically rewrites member-specific overwrites or migrates recovery threads. Permission verification does not inspect recovery-parent message history. See [controlled acceptance](test-cases.md#restriction-wizard-controlled-acceptance) for the separate live checks.
