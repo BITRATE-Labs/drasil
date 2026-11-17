@@ -208,4 +208,90 @@ integration('restriction request persistence', () => {
     });
     expect(await f.store.load(f.request.id, 'guild')).toBeNull();
   });
+  it('terminal completion preserves newer durable progress', async () => {
+    const f = await fixture();
+    const claim = await f.repository.claimNext();
+    const token = (claim!.metadata as Record<string, string>).restriction_attempt_token;
+    const progress = {
+      schemaVersion: 1 as const,
+      revision: 1,
+      currentEffectIndex: 0,
+      receipts: [{ effectIndex: 0, state: 'applied' as const, observation: null, error: null }],
+    };
+    expect(await f.store.saveProgress(f.request.id, token, 0, progress)).toBe(true);
+    await f.repository.complete(
+      f.request.id,
+      { restriction_progress: { ...progress, revision: 0, receipts: [] } },
+      token
+    );
+    expect(await f.store.loadProgress(f.request.id)).toEqual(progress);
+    expect((await f.repository.findById(f.request.id))!.status).toBe('completed');
+  });
+  it.each(['started', 'unknown'] as const)(
+    'cannot reset %s receipt to not_attempted',
+    async (state) => {
+      const f = await fixture();
+      const claim = await f.repository.claimNext();
+      const token = (claim!.metadata as Record<string, string>).restriction_attempt_token;
+      const receipt = { effectIndex: 0, state, observation: null, error: null };
+      expect(
+        await f.store.saveProgress(f.request.id, token, 0, {
+          schemaVersion: 1,
+          revision: 1,
+          currentEffectIndex: 0,
+          receipts: [receipt],
+        })
+      ).toBe(true);
+      expect(
+        await f.store.saveProgress(f.request.id, token, 1, {
+          schemaVersion: 1,
+          revision: 2,
+          currentEffectIndex: 0,
+          receipts: [{ ...receipt, state: 'not_attempted' }],
+        })
+      ).toBe(false);
+      expect((await f.store.loadProgress(f.request.id))!.receipts).toEqual([receipt]);
+    }
+  );
+  it('stale generic snapshot metadata cannot erase repair ownership', async () => {
+    const f = await fixture();
+    await f.prisma.users.create({ data: { discord_id: 'member' } });
+    const event = await f.prisma.verification_events.create({
+      data: { server_id: 'guild', user_id: 'member' },
+    });
+    const repository = new RoleQuarantineSnapshotRepository(f.prisma);
+    const initial = await repository.create({
+      serverId: 'guild',
+      userId: 'member',
+      verificationEventId: event.id,
+      mode: 'automatic',
+      originalRoleIds: [],
+      plannedRoleIds: [],
+      metadata: { existing: true },
+    });
+    const staleMetadata = initial.metadata;
+    const claim = await f.repository.claimNext();
+    const token = (claim!.metadata as Record<string, string>).restriction_attempt_token;
+    const appended = await repository.appendRestrictionRepairRoles({
+      caseId: event.id,
+      caseRevision: 0,
+      requestId: f.request.id,
+      attemptToken: token,
+      userId: 'member',
+      roleIds: ['new'],
+    });
+    const updated = await repository.update(initial.id, { metadata: staleMetadata });
+    expect((updated!.metadata as Record<string, unknown>).restriction_role_owners).toEqual(
+      (appended!.metadata as Record<string, unknown>).restriction_role_owners
+    );
+    expect(
+      await repository.recordRestrictionRepairOutcome({
+        snapshotId: initial.id,
+        requestId: f.request.id,
+        attemptToken: token,
+        roleId: 'new',
+        state: 'applied',
+      })
+    ).not.toBeNull();
+  });
 });

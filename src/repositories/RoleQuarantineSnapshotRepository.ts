@@ -265,10 +265,9 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
     data: RoleQuarantineSnapshotUpdate
   ): Promise<RoleQuarantineSnapshot | null> {
     try {
-      const updated = await this.prisma.role_quarantine_snapshots.update({
-        where: { id },
-        data: this.toUpdateData(data),
-      });
+      const updated = await this.prisma.$transaction((transaction) =>
+        this.updatePreservingRepairOwnership(transaction, id, data)
+      );
 
       return updated as RoleQuarantineSnapshot;
     } catch (error) {
@@ -290,10 +289,7 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
         if (!(await this.renewQuarantineAttempt(transaction, verificationEventId, attemptId))) {
           return null;
         }
-        const updated = await transaction.role_quarantine_snapshots.update({
-          where: { id },
-          data: this.toUpdateData(data),
-        });
+        const updated = await this.updatePreservingRepairOwnership(transaction, id, data);
         return updated as RoleQuarantineSnapshot;
       })) as RoleQuarantineSnapshot | null;
     } catch (error) {
@@ -302,6 +298,33 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
       }
       this.handleError(error, 'updateRoleQuarantineSnapshotForAttempt');
     }
+  }
+
+  private async updatePreservingRepairOwnership(
+    transaction: Prisma.TransactionClient,
+    id: string,
+    data: RoleQuarantineSnapshotUpdate
+  ): Promise<RoleQuarantineSnapshot | null> {
+    const rows = await transaction.$queryRaw<
+      RoleQuarantineSnapshot[]
+    >`select * from role_quarantine_snapshots where id=${id}::uuid for update`;
+    const current = rows.at(0);
+    if (!current) return null;
+    const update = this.toUpdateData(data);
+    if (data.metadata !== undefined) {
+      const incoming = data.metadata;
+      const currentMetadata = (current.metadata ?? {}) as Prisma.JsonObject;
+      const metadata: Prisma.JsonObject =
+        incoming && typeof incoming === 'object' && !Array.isArray(incoming) ? { ...incoming } : {};
+      delete metadata.restriction_role_owners;
+      if (currentMetadata.restriction_role_owners !== undefined)
+        metadata.restriction_role_owners = currentMetadata.restriction_role_owners;
+      update.metadata = metadata as Prisma.InputJsonValue;
+    }
+    return (await transaction.role_quarantine_snapshots.update({
+      where: { id },
+      data: update,
+    })) as RoleQuarantineSnapshot;
   }
 
   private async renewQuarantineAttempt(

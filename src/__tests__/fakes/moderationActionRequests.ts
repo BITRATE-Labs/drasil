@@ -239,7 +239,14 @@ export class InMemoryModerationActionRequestRepository implements IModerationAct
     const next = {
       ...row,
       status: ModerationActionRequestStatus.COMPLETED,
-      result,
+      result:
+        (row.metadata as Prisma.JsonObject).restriction_schema_version === 1 &&
+        (row.result as Prisma.JsonObject).restriction_progress !== undefined
+          ? {
+              ...(result as Prisma.JsonObject),
+              restriction_progress: (row.result as Prisma.JsonObject).restriction_progress,
+            }
+          : result,
       completed_at: new Date(),
       updated_at: new Date(),
     };

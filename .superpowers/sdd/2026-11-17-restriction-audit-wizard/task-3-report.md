@@ -77,3 +77,35 @@ Report-ban predicates and transitions remain unchanged; restriction fencing is a
 Skipped live Discord verification and full CI. New restriction MCP settlement was inspected and token-fenced, but a complete already-started MCP execution fixture and routing acceptance belong Task 5. Existing worker/delegation regression tests cover current paths. This intermediate commit must remain staged with the broader feature and must not publish the coarse apply route separately.
 
 Final directly affected package regressions: npm test --workspace @drasil/application -- --runInBand --runTestsByPath src/postgres/enqueue.test.ts src/delegation/execution.test.ts, two suites and 24 tests passed.
+
+## Review fix round 1, base 02da24b
+
+Read `task-3-review.md`. Addressed all three Important findings.
+
+1. Versioned apply completion atomically takes `restriction_progress` from the locked current request row when it exists. Incoming terminal data cannot erase it or replace it with an older same-attempt revision. Other terminal fields still come from completion input, and report-ban CASE branches are unchanged. Updated the request fake to preserve the same namespace.
+2. Progress persistence now enforces monotonic receipt transitions. `not_attempted` may advance; `started` may stay started or become applied/failed/unknown; `unknown` may stay unknown or become applied; applied/failed receipts remain identical. Missing prior effect indices still reject the save. This closes both started and unknown reset/replay paths.
+3. Both ordinary snapshot `update` and `updateForQuarantineAttempt` share a small row-locked update helper. It preserves the latest persisted `restriction_role_owners` namespace regardless of stale incoming metadata, and ordinary writers cannot introduce or replace that namespace. The append/outcome paths already lock and construct metadata from the current snapshot row. Audited repository writes with `rg -n 'role_quarantine_snapshots\.update|toUpdateData' src packages/application/src`.
+
+Behavioral red command, with the identical owned database environment documented above:
+
+```powershell
+npx jest --runInBand --runTestsByPath src/__tests__/integration/RestrictionRepairPersistence.integration.test.ts
+```
+
+Red output: four failed, six passed. `terminal completion preserves newer durable progress` received revision zero and no receipts instead of revision one applied receipt; started and unknown reset tests each received true instead of false; stale generic snapshot metadata received undefined ownership instead of the durable role owner. All failures occurred after successful real database setup.
+
+Green after fixes, same command and database: 10 passed, one suite, 32.786 seconds. The snapshot regression deliberately reads metadata before repair append commits, then applies that stale metadata through the ordinary repository update and proves the owner survives and can record its actual outcome. The same helper protects quarantine-attempt updates. No live effects or external posts.
+
+No new framework, table, enum or dependency. Existing lifecycle and report-ban behavior preserved. No additional test breadth beyond the requested persistence and worker checks.
+
+Round 1 final focused checks:
+
+- `npm run build --workspace @drasil/application`: passed.
+- `npx tsc --noEmit -p tsconfig.json`: passed.
+- `npm run lint --workspace @drasil/application`: passed.
+- `npx eslint src/repositories/ModerationActionRequestRepository.ts src/repositories/RoleQuarantineSnapshotRepository.ts src/__tests__/fakes/moderationActionRequests.ts src/__tests__/integration/RestrictionRepairPersistence.integration.test.ts`: passed without diagnostics.
+- `npm test --workspace @drasil/application -- --runInBand --runTestsByPath src/operations/restrictionPersistence.test.ts`: two passed.
+- `npx jest --runInBand --runTestsByPath src/__tests__/unit/ModerationActionRequestService.unit.test.ts src/__tests__/unit/ModerationActionRequestDelegation.unit.test.ts`: 149 passed, two suites, 19.661 seconds; expected existing failure-path console warnings.
+- `git diff --check`: passed.
+
+Live Discord and full CI remain unchecked. Task 5's already-started MCP reconciliation routing remains the previously documented integration boundary.

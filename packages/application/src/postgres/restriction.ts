@@ -58,7 +58,7 @@ export function createRestrictionStores(
       )
         return false;
       const { rows } = await database.query(
-        `update moderation_action_requests q set result=jsonb_set(coalesce(result,'{}'::jsonb),'{restriction_progress}',$4::jsonb), updated_at=clock_timestamp() where q.id=$1::uuid and q.action_type='apply_case_role_lockdown' and ${restrictionActiveFenceSql} and coalesce(q.result->'restriction_progress'->>'revision','0')=$3 and not exists (select 1 from jsonb_array_elements(coalesce(q.result->'restriction_progress'->'receipts','[]'::jsonb)) prior where not exists (select 1 from jsonb_array_elements($4::jsonb->'receipts') incoming where incoming->'effectIndex'=prior->'effectIndex' and (prior->>'state' not in ('applied','failed') or incoming=prior))) returning q.id`,
+        `update moderation_action_requests q set result=jsonb_set(coalesce(result,'{}'::jsonb),'{restriction_progress}',$4::jsonb), updated_at=clock_timestamp() where q.id=$1::uuid and q.action_type='apply_case_role_lockdown' and ${restrictionActiveFenceSql} and coalesce(q.result->'restriction_progress'->>'revision','0')=$3 and not exists (select 1 from jsonb_array_elements(coalesce(q.result->'restriction_progress'->'receipts','[]'::jsonb)) prior where not exists (select 1 from jsonb_array_elements($4::jsonb->'receipts') incoming where incoming->'effectIndex'=prior->'effectIndex' and (case prior->>'state' when 'not_attempted' then true when 'started' then incoming->>'state' in ('started','applied','failed','unknown') when 'unknown' then incoming->>'state' in ('unknown','applied') else incoming=prior end))) returning q.id`,
         [id, token, String(revision), JSON.stringify(parsed.data)]
       );
       return rows.length === 1;
