@@ -1,3 +1,4 @@
+import { approvedRestrictionPlanSchema } from '../operations/restrictionTypes';
 import type { McpAuditPort } from '../delegation/operations';
 import { parseQueuedRow } from '../requests/decode';
 import { consumeMcpLimit } from './operations';
@@ -716,6 +717,49 @@ function canReconcileReportBan(
     queue.request.metadata?.report_ban_attempt_token === attempt
   );
 }
+/** Definitive no-send denials retain the same token/lease and identity boundaries as admission. */
+async function terminalizeUnstartedRestrictionDenial(
+  client: DelegationQueryClient,
+  execution: ExecutionRecord,
+  queue: DelegatedQueueAdmission,
+  code: string
+): Promise<boolean> {
+  const request = queue.request;
+  const token = request.metadata?.restriction_attempt_token;
+  if (
+    execution.startedAt ||
+    execution.completedAt ||
+    execution.queueRequestId !== request.id ||
+    request.server_id !== execution.guildId ||
+    request.actor_id !== execution.userId ||
+    request.actor_surface !== 'mcp' ||
+    typeof token !== 'string' ||
+    execution.authorizedDelivery.kind !== 'queued'
+  )
+    return false;
+  const terminal = await client.query(
+    `update moderation_action_requests set status='completed',completed_at=clock_timestamp(),updated_at=clock_timestamp(),last_error=null,result=coalesce(result,'{}'::jsonb) || $3::jsonb
+     where id=$1::uuid and status='processing' and metadata->>'restriction_schema_version'='1' and metadata->>'restriction_attempt_token'=$2
+       and server_id=$4 and actor_id=$5 and actor_surface='mcp' and action_type::text=$6
+       and metadata->'delegation'->>'executionId'=$7 and metadata->'delegation'->>'connectionId'=$8
+       and metadata->'delegation'->>'grantVersion'=$9 and metadata->'delegation'->>'commandDigest'=$10
+       and updated_at >= clock_timestamp()-interval '15 minutes'
+       and not exists (select 1 from jsonb_array_elements(coalesce(result->'restriction_progress'->'receipts','[]'::jsonb)) receipt where receipt->>'state'<>'not_attempted') returning id`,
+    [
+      request.id,
+      token,
+      JSON.stringify({ action_type: 'delegated_admission', state: 'denied', code }),
+      execution.guildId,
+      execution.userId,
+      execution.authorizedDelivery.command.kind,
+      execution.executionId,
+      execution.connectionId,
+      String(execution.grantVersion),
+      execution.authorizedDelivery.commandDigest,
+    ]
+  );
+  return terminal.rows.length > 0;
+}
 async function validateQueuedAdmission(
   client: DelegationQueryClient,
   execution: ExecutionRecord,
@@ -743,6 +787,18 @@ async function validateQueuedAdmission(
       code: 'execution_interrupted_before_send',
       persistence: 'observe_only',
     };
+  if (
+    persisted.metadata?.restriction_schema_version === 1 &&
+    execution.command.kind === 'apply_case_role_lockdown'
+  ) {
+    const plan = approvedRestrictionPlanSchema.safeParse(persisted.metadata.restriction_plan);
+    if (
+      !plan.success ||
+      execution.preconditions.kind !== 'restriction_plan' ||
+      canonicalDigest(plan.data) !== canonicalDigest(execution.preconditions.plan)
+    )
+      return { kind: 'denied', code: 'binding_mismatch', persistence: 'observe_only' };
+  }
   // A stale owner cannot admit new work after its queue lease expires.
   // Already-admitted executions remain read-only observations, including after revocation.
   if (!execution.startedAt && !execution.completedAt) {
@@ -756,6 +812,14 @@ async function validateQueuedAdmission(
   }
   if (await hasCommittedContainment(client, execution, queue.request))
     return { kind: 'committed_containment', execution };
+  if (
+    persisted.metadata?.restriction_schema_version === 1 &&
+    execution.command.kind === 'apply_case_role_lockdown' &&
+    execution.startedAt &&
+    !execution.completedAt &&
+    (await queueLeaseIsLive(client, queue.request.id))
+  )
+    return { kind: 'restriction_reconciliation', execution };
   if (queue.recovery) {
     if (canReconcileReportBan(execution, persisted, queue))
       return { kind: 'committed_reconciliation', execution };
@@ -815,7 +879,27 @@ function createExecutionStore(
         return { kind: 'denied', code: 'binding_mismatch' };
       if (queue) {
         const admission = await validateQueuedAdmission(client, execution, queue);
-        if (admission) return admission;
+        if (admission) {
+          if (
+            admission.kind === 'denied' &&
+            !admission.persistence &&
+            queue.request.metadata?.restriction_schema_version === 1 &&
+            !execution.startedAt &&
+            !execution.completedAt
+          ) {
+            if (
+              await terminalizeUnstartedRestrictionDenial(client, execution, queue, admission.code)
+            )
+              await finish(client, executionId, { state: 'denied', code: admission.code });
+            else
+              return {
+                kind: 'denied',
+                code: 'uncertain_prior_effect',
+                persistence: 'observe_only',
+              };
+          }
+          return admission;
+        }
       } else if (
         execution.authorizedDelivery.kind !== 'direct' ||
         execution.queueRequestId !== null
@@ -856,6 +940,11 @@ function createExecutionStore(
           };
       }
       if (denial) {
+        if (
+          queue?.request.metadata?.restriction_schema_version === 1 &&
+          !(await terminalizeUnstartedRestrictionDenial(client, execution, queue, denial))
+        )
+          return { kind: 'denied', code: 'uncertain_prior_effect', persistence: 'observe_only' };
         await finish(client, executionId, { state: 'denied', code: denial });
         return { kind: 'denied', code: denial };
       }

@@ -1,17 +1,11 @@
 import { requireSetupOutcome } from '../application/adapters/setup';
-import { operationConfirmationCommand } from '@drasil/application';
 import { createDiscordActionContext } from '../application/context';
-import { requireOperationsOutcome } from '../application/adapters/operations';
 import type { BotApplication } from '../application/createBotApplication';
 import { ChannelType, ChatInputCommandInteraction, Guild, MessageFlags } from 'discord.js';
 import { IConfigService } from '../config/ConfigService';
 import { ServerSettings } from '../repositories/types';
-import {
-  ICaseRoleLockdownService,
-  CaseRoleLockdownReport,
-} from '../services/CaseRoleLockdownService';
+import { ICaseRoleLockdownService } from '../services/CaseRoleLockdownService';
 import { getCaseRoleLockdownSettings } from '../utils/caseRoleLockdownSettings';
-import { truncatePreview } from '../utils/textPreview';
 
 export class LockdownConfigCommandHandler {
   public constructor(
@@ -82,31 +76,17 @@ export class LockdownConfigCommandHandler {
         userId: interaction.user.id,
         requestId: interaction.id,
       });
-      const command =
-        subcommand === 'apply'
-          ? {
-              kind: 'apply_case_role_lockdown' as const,
-              unsyncAllowedChannels: interaction.options.getBoolean('unsync-allowed') ?? false,
-            }
-          : { kind: 'audit_case_role_lockdown' as const };
-      // The authenticated slash apply subcommand is the shipped explicit execution step.
-      if (subcommand === 'apply')
-        this.application.caseConfirmations.recordVerified(
-          context,
-          operationConfirmationCommand(context, command)
-        );
-      const outcome = requireOperationsOutcome(
-        await this.application.operations.execute(context, command)
-      );
-      if (
-        outcome.kind !== 'audit_case_role_lockdown' &&
-        outcome.kind !== 'apply_case_role_lockdown'
-      )
-        throw new Error('Operation outcome mismatch.');
-      const report = outcome.report;
-
+      const reviewUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? process.env.DRASIL_WEB_PUBLIC_URL ?? 'https://drasil.app').replace(/\/$/, '')}/admin/guild/${encodeURIComponent(guild.id)}/operations/restrictions`;
+      if (subcommand === 'apply') {
+        await interaction.editReply({
+          content: `plan_required: Run a fresh restriction audit and review selected repairs before applying them. ${reviewUrl}`,
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+      const requestId = await this.application.operationsRuntime.enqueueAudit(context);
       await interaction.editReply({
-        content: this.formatCaseRoleLockdownReport(report, subcommand === 'apply'),
+        content: `Restriction audit queued. Request: ${requestId}. Review coverage and selected repairs: ${reviewUrl}`,
         allowedMentions: { parse: [] },
       });
     } catch (error) {
@@ -165,87 +145,9 @@ export class LockdownConfigCommandHandler {
       `Auto-allowed channels: ${this.formatChannelIdList(autoAllowedChannelIds)}`,
       `Guild ID: \`${guildId}\``,
       '',
-      'Run `/config lockdown audit` to preview missing denies and `/config lockdown apply` to write them.',
+      'Run `/config lockdown audit`, then review selected repairs in the dashboard.',
       'Lockdown does not delete messages. Message cleanup should be a separate moderator-confirmed action.',
     ].join('\n');
-  }
-
-  private formatCaseRoleLockdownReport(report: CaseRoleLockdownReport, applied: boolean): string {
-    const actionLabel = applied ? 'apply' : 'audit';
-    const status =
-      report.errorCount > 0
-        ? `Case-role lockdown ${actionLabel} found ${report.errorCount} error(s) and ${report.warningCount} warning(s).`
-        : report.warningCount > 0
-          ? `Case-role lockdown ${actionLabel} found ${report.warningCount} warning(s).`
-          : `Case-role lockdown ${actionLabel} passed with no issues.`;
-
-    const lines = [
-      status,
-      `Mode: \`${report.enabled ? 'enabled' : 'disabled'}\``,
-      `Planned deny writes: \`${report.plannedActions.length}\``,
-      `Applied deny writes: \`${report.appliedActions.length}\``,
-      `Unsynced allowed channels: \`${report.unsyncedAllowedChannels.length}\``,
-      `Allowed channels: ${this.formatChannelIdList(report.allowedChannelIds)}`,
-      `Allowed categories: ${this.formatChannelIdList(report.allowedCategoryIds)}`,
-      `Auto-allowed channels: ${this.formatChannelIdList(report.autoAllowedChannelIds)}`,
-    ];
-
-    if (report.syncedAllowedChannels.length > 0) {
-      lines.push(
-        '',
-        'Synced allowed-channel blockers:',
-        ...report.syncedAllowedChannels
-          .slice(0, 8)
-          .map((action) => `- #${action.channelName} (${action.channelId})`)
-      );
-      if (report.syncedAllowedChannels.length > 8) {
-        lines.push(`- ... +${report.syncedAllowedChannels.length - 8} more blocker(s)`);
-      }
-    }
-
-    if (report.unsyncedAllowedChannels.length > 0) {
-      lines.push(
-        '',
-        'Allowed channels unsynced before apply:',
-        ...report.unsyncedAllowedChannels
-          .slice(0, 8)
-          .map((action) => `- #${action.channelName} (${action.channelId})`)
-      );
-      if (report.unsyncedAllowedChannels.length > 8) {
-        lines.push(`- ... +${report.unsyncedAllowedChannels.length - 8} more unsynced channel(s)`);
-      }
-    }
-
-    if (report.issues.length > 0) {
-      const sortedIssues = [...report.issues].sort((left, right) =>
-        left.severity === right.severity ? 0 : left.severity === 'error' ? -1 : 1
-      );
-      lines.push('', 'Issues:');
-      for (const issue of sortedIssues.slice(0, 12)) {
-        lines.push(`- [${issue.severity.toUpperCase()}] ${issue.message}`);
-      }
-      if (sortedIssues.length > 12) {
-        lines.push(`- ... +${sortedIssues.length - 12} more issue(s)`);
-      }
-    }
-
-    if (report.plannedActions.length > 0) {
-      lines.push('', applied ? 'Remaining planned writes:' : 'Planned writes:');
-      for (const action of report.plannedActions.slice(0, 8)) {
-        lines.push(`- ${action.scope} #${action.channelName} (${action.channelId})`);
-      }
-      if (report.plannedActions.length > 8) {
-        lines.push(`- ... +${report.plannedActions.length - 8} more write(s)`);
-      }
-    }
-
-    lines.push(
-      '',
-      'Role-order note: keep the Drasil bot role above the case role for assignment. Channel overwrites, not role order, decide quarantine visibility.',
-      'Message deletion is intentionally not part of lockdown V1.'
-    );
-
-    return truncatePreview(lines.join('\n'), 1900);
   }
 
   private getCaseRoleLockdownAutoAllowedChannelIds(

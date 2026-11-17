@@ -1,3 +1,4 @@
+import { fixture as restrictionFixture } from '../../../packages/application/src/operations/restrictionExecutionTestData';
 import type { CaptchaAutoResolutionDecision } from '../../services/CaptchaChallengePolicy';
 import type { ObservedBanResult } from '@drasil/application';
 import { MessageCleanupService } from '../../services/MessageCleanupService';
@@ -1190,7 +1191,7 @@ describe('ModerationActionRequestService', () => {
       setupDiagnosticsService: setupDiagnosticsService as any,
       reportIntakeService: reportIntakeService as any,
       caseThreadClosureSweepService: caseThreadClosureSweepService as never,
-      caseRoleLockdownService: caseRoleLockdownService as never,
+      restrictionAuditService: { auditGuild: async () => restrictionFixture().audit },
       integrityAuditService: { auditGuild: jest.fn() },
       messageDeletionJobs: messageDeletionJobs as any,
       messageCleanupService: messageCleanupService as any,
@@ -3969,10 +3970,19 @@ describe('ModerationActionRequestService', () => {
       const h = buildService([request]);
       h.reporterMember.permissions.bitfield = 1n << 5n;
       await expect(h.service.processPendingRequests()).resolves.toBe(1);
-      expect(h.repository.completed).toEqual([]);
-      expect(h.repository.failed).toEqual([
-        { id: request.id, error: 'Operation denied: permission_denied' },
-      ]);
+      if (request.action_type === ModerationActionRequestType.APPLY_CASE_ROLE_LOCKDOWN) {
+        expect(h.repository.completed).toEqual([
+          expect.objectContaining({
+            result: { action_type: 'delegated_admission', state: 'denied', code: 'plan_required' },
+          }),
+        ]);
+        expect(h.repository.failed).toEqual([]);
+      } else {
+        expect(h.repository.completed).toEqual([]);
+        expect(h.repository.failed).toEqual([
+          { id: request.id, error: 'Operation denied: permission_denied' },
+        ]);
+      }
       expect(h.moderationQueueService.syncServerQueue).not.toHaveBeenCalled();
       expect(h.moderationQueueService.clearServerQueue).not.toHaveBeenCalled();
       expect(h.caseThreadClosureSweepService.sweepResolvedCaseThreads).not.toHaveBeenCalled();
@@ -4060,53 +4070,38 @@ describe('ModerationActionRequestService', () => {
   });
 
   it('queues case-role lockdown audits through the bot-owned lockdown service', async () => {
-    const { caseRoleLockdownService, guild, repository, service } = buildService([
+    const { caseRoleLockdownService, repository, service } = buildService([
       auditCaseRoleLockdownRequest,
     ]);
 
     await expect(service.processPendingRequests()).resolves.toBe(1);
 
-    expect(caseRoleLockdownService.auditGuild).toHaveBeenCalledWith(guild);
+    expect(caseRoleLockdownService.auditGuild).not.toHaveBeenCalled();
     expect(repository.completed).toEqual([
       {
         id: 'audit-lockdown-request-1',
         result: expect.objectContaining({
           action_type: ModerationActionRequestType.AUDIT_CASE_ROLE_LOCKDOWN,
-          applied_writes: 2,
-          enabled: true,
-          error_count: 1,
-          failed_writes: 1,
-          planned_writes: 1,
+          restriction_audit: expect.objectContaining({ schemaVersion: 1, revision: 'r1' }),
+          audit_request_id: 'audit-lockdown-request-1',
           server_id: 'guild-1',
-          synced_allowed_channel_blockers: 1,
-          unsynced_allowed_channels: 1,
-          warning_count: 1,
         }),
       },
     ]);
     expect(repository.failed).toEqual([]);
   });
 
-  it('queues case-role lockdown applies with unsync confirmation metadata', async () => {
-    const { caseRoleLockdownService, guild, repository, service } = buildService([
+  it('legacy queued lockdown apply returns plan_required without writes', async () => {
+    const { caseRoleLockdownService, repository, service } = buildService([
       applyCaseRoleLockdownRequest,
     ]);
-
     await expect(service.processPendingRequests()).resolves.toBe(1);
-
-    expect(caseRoleLockdownService.applyGuild).toHaveBeenCalledWith(guild, 'moderator-1', {
-      unsyncAllowedChannels: true,
-    });
+    expect(caseRoleLockdownService.applyGuild).not.toHaveBeenCalled();
     expect(repository.completed).toEqual([
-      {
+      expect.objectContaining({
         id: 'apply-lockdown-request-1',
-        result: expect.objectContaining({
-          action_type: ModerationActionRequestType.APPLY_CASE_ROLE_LOCKDOWN,
-          applied_writes: 2,
-          planned_writes: 1,
-          server_id: 'guild-1',
-        }),
-      },
+        result: { action_type: 'delegated_admission', state: 'denied', code: 'plan_required' },
+      }),
     ]);
     expect(repository.failed).toEqual([]);
   });

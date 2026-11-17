@@ -18,6 +18,7 @@ export interface QuarantinePreview {
     readonly skippedRoles: readonly QuarantineRoleDetail[];
   };
   readonly lockdown: {
+    readonly assessment?: import('../operations/restrictionTypes').RestrictionAssessment;
     readonly enabled: boolean;
     readonly errorCount: number;
     readonly issues: readonly {

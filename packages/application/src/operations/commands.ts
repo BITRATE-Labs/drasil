@@ -1,5 +1,6 @@
 import type { QueuedCommand } from '../requests/commands';
 import { z } from 'zod';
+import { restrictionSelectionSchema } from './restrictionTypes';
 const id = z.string().min(1);
 const days = z.number().int().min(1).max(365);
 export const queuedOperationCommandSchema = z.discriminatedUnion('kind', [
@@ -27,7 +28,7 @@ export const queuedOperationCommandSchema = z.discriminatedUnion('kind', [
     .strict(),
   z.object({ kind: z.literal('audit_case_role_lockdown') }).strict(),
   z
-    .object({ kind: z.literal('apply_case_role_lockdown'), unsyncAllowedChannels: z.boolean() })
+    .object({ kind: z.literal('apply_case_role_lockdown'), ...restrictionSelectionSchema.shape })
     .strict(),
   z
     .object({

@@ -248,6 +248,7 @@ export function createBotQuarantineRuntime(
 export function requireQuarantineOutcome<T>(result: ActionResult<T>): T {
   if (result.kind === 'outcome') return result.outcome;
   const messages = {
+    plan_required: 'Run a fresh audit and review selected repairs.',
     permission_denied: 'Account quarantine requires current moderation permission.',
     actor_unavailable: 'Account quarantine requires current moderation permission.',
     stale_state: 'The live account-quarantine containment state changed; run a new preview.',

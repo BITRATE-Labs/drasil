@@ -3,6 +3,7 @@ import {
   isQueuedOperationKind,
   type QueuedOperationCommand,
 } from '../operations/commands';
+import { ActionDeniedError } from '../results';
 import type { ActionContext } from '../context';
 import type { QueuedRow } from './decode';
 import type { EnqueueInput } from './receipt';
@@ -22,6 +23,8 @@ export function encodeOperationAction(
       operation_action: command.kind,
       ...(context.source === 'mcp' ||
       command.kind === 'audit_integrity' ||
+      command.kind === 'apply_case_role_lockdown' ||
+      command.kind === 'audit_case_role_lockdown' ||
       (command.kind === 'close_resolved_case_threads' && command.intent === 'guild_audit')
         ? { operation_command: command }
         : {}),
@@ -32,9 +35,7 @@ export function encodeOperationAction(
       ...('limit' in command ? { limit: command.limit } : {}),
       ...('reason' in command && command.reason !== null ? { reason: command.reason } : {}),
       ...('roleId' in command ? { role_id: command.roleId } : {}),
-      ...('unsyncAllowedChannels' in command
-        ? { unsync_allowed_channels: command.unsyncAllowedChannels }
-        : {}),
+      ...(command.kind === 'audit_case_role_lockdown' ? { restriction_schema_version: 1 } : {}),
       ...('userId' in command && command.userId ? { user_id: command.userId } : {}),
     },
   };
@@ -43,7 +44,15 @@ export function decodeOperationCommand(row: QueuedRow): QueuedOperationCommand |
   if (!isQueuedOperationKind(row.action_type)) return null;
   const metadata = row.metadata ?? {};
   if (metadata.operation_command !== undefined) {
-    const command = queuedOperationCommandSchema.parse(metadata.operation_command);
+    const parsed = queuedOperationCommandSchema.safeParse(metadata.operation_command);
+    if (!parsed.success && row.action_type === 'apply_case_role_lockdown')
+      throw new ActionDeniedError(
+        'plan_required',
+        'Run a fresh audit and review selected repairs.'
+      );
+    const command = parsed.success
+      ? parsed.data
+      : queuedOperationCommandSchema.parse(metadata.operation_command);
     if (command.kind !== row.action_type) throw new Error('Operation command binding mismatch.');
     return command;
   }
@@ -75,10 +84,10 @@ export function decodeOperationCommand(row: QueuedRow): QueuedOperationCommand |
         reason: metadata.reason ?? null,
       });
     case 'apply_case_role_lockdown':
-      return queuedOperationCommandSchema.parse({
-        ...base,
-        unsyncAllowedChannels: metadata.unsync_allowed_channels === true,
-      });
+      throw new ActionDeniedError(
+        'plan_required',
+        'Run a fresh audit and review selected repairs.'
+      );
     default:
       return queuedOperationCommandSchema.parse(base);
   }

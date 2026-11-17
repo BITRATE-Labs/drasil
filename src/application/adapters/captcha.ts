@@ -282,6 +282,7 @@ export function createBotCaptchaRuntime(
 export function requireCaptchaOutcome<T>(result: ActionResult<T>): T {
   if (result.kind === 'outcome') return result.outcome;
   const messages = {
+    plan_required: 'Run a fresh audit and review selected repairs.',
     permission_denied: 'Security-check actions require current moderation permission.',
     actor_unavailable: 'Security-check actions require current moderation permission.',
     binding_mismatch: 'Security-check request does not match its case subject.',

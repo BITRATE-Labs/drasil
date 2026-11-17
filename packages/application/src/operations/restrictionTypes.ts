@@ -265,17 +265,23 @@ export const restrictionProgressSchema = z.object({
   ),
 });
 export type RestrictionProgress = z.infer<typeof restrictionProgressSchema>;
-export interface RestrictionApplyResult {
-  readonly progress: RestrictionProgress;
-  readonly stopReason:
-    | 'completed'
-    | 'stale_state'
-    | 'fence_lost'
-    | 'interrupted'
-    | 'write_failed'
-    | 'precondition_changed'
-    | 'unknown_outcome'
-    | 'authority_lost'
-    | 'expired';
-  readonly verification: RestrictionAssessmentSet;
-}
+export const restrictionApplyResultSchema = z.object({
+  progress: restrictionProgressSchema,
+  stopReason: z.enum([
+    'completed',
+    'stale_state',
+    'fence_lost',
+    'interrupted',
+    'write_failed',
+    'precondition_changed',
+    'unknown_outcome',
+    'authority_lost',
+    'expired',
+  ]),
+  verification: z.object({
+    setup: restrictionAssessmentSchema,
+    cases: z.array(restrictionCaseAssessmentSchema),
+  }),
+});
+
+export type RestrictionApplyResult = z.infer<typeof restrictionApplyResultSchema>;

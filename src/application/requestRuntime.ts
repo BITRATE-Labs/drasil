@@ -46,7 +46,20 @@ export async function prepareQueuedRequest(input: {
   readonly recovery?: boolean;
 }): Promise<PreparedQueuedRequest> {
   const { runtime, request, analytics, recovery } = input;
-  const decoded = await decodeRequest(runtime, request);
+  let decoded: DecodedQueuedAction;
+  try {
+    decoded = await decodeRequest(runtime, request);
+  } catch (error) {
+    if (error instanceof ActionDeniedError && error.code === 'plan_required')
+      return {
+        execute: async () => ({
+          action_type: 'delegated_admission',
+          state: 'denied',
+          code: 'plan_required',
+        }),
+      };
+    throw error;
+  }
   const delegation = runtime.delegation;
   const admission = delegation
     ? await delegation.authorizeDelegatedRequest(request, recovery === true, decoded)
@@ -91,12 +104,17 @@ export async function prepareQueuedRequest(input: {
     delegation &&
     (admission.kind === 'new_execution' ||
       admission.kind === 'committed_reconciliation' ||
-      admission.kind === 'committed_containment')
+      admission.kind === 'committed_containment' ||
+      admission.kind === 'restriction_reconciliation')
       ? (outcome): Promise<void> => delegation.complete(admission.execution, outcome)
       : undefined;
   const { command } = decoded;
   let action = decoded;
-  if (recovery && admission.kind !== 'committed_containment') {
+  if (
+    recovery &&
+    admission.kind !== 'committed_containment' &&
+    admission.kind !== 'restriction_reconciliation'
+  ) {
     if (command.kind !== 'ban_observed_detection')
       throw new Error('Only report-ban operations can enter reconciliation.');
     action = {
@@ -150,7 +168,11 @@ export async function prepareQueuedRequest(input: {
       onComplete,
     };
   let scopedRuntime = caseRuntime;
-  if (admission.kind === 'new_execution' || admission.kind === 'committed_containment') {
+  if (
+    admission.kind === 'new_execution' ||
+    admission.kind === 'committed_containment' ||
+    admission.kind === 'restriction_reconciliation'
+  ) {
     const committedOnly = admission.kind === 'committed_containment';
     const family = workflowDefinitions.find(
       (entry) => entry.id === admission.execution.workflowId
@@ -185,9 +207,18 @@ export async function prepareQueuedRequest(input: {
     if (family === 'operations')
       scopedRuntime = {
         ...caseRuntime,
-        operations: runtime.operationsRuntime.forExecution(admission.execution),
+        operations: runtime.operationsRuntime.forExecution(admission.execution, request),
       };
   }
+  if (admission.kind === 'restriction_reconciliation')
+    scopedRuntime = {
+      ...scopedRuntime,
+      operationsRuntime: {
+        ...runtime.operationsRuntime,
+        forRequest: (r): import('@drasil/application').OperationsActions =>
+          runtime.operationsRuntime.forRequest(r, true),
+      },
+    };
   const dispatch = prepareQueuedAction({ runtime: scopedRuntime, action, request });
   const execute: PreparedQueuedRequest['execute'] =
     admission.kind === 'ordinary'

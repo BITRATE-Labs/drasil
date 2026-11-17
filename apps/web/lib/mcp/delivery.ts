@@ -1,3 +1,4 @@
+import { createRestrictionStores } from '@drasil/application/postgres';
 import { checkMcpLimit } from './limits';
 import { recordMcpAudit } from './audit';
 import { isMcpEnabled } from '@drasil/application';
@@ -48,6 +49,7 @@ export function createMcpActionDelivery(
   options: { setup?: ApprovedSetupExecutor; clock?: McpDeadlineClock } = {}
 ) {
   return createDelegatedActionService({
+    restrictionAudits: createRestrictionStores(createWebDelegationDatabase()),
     operations: { checkMcpLimit, recordMcpAudit, enabled: isMcpEnabled },
     store: createDelegationStore(createWebDelegationDatabase(), {
       enabled: isMcpEnabled,
@@ -80,9 +82,10 @@ export function confirmMcpAction(
 export function getMcpActionStatus(
   service: ReturnType<typeof createMcpActionDelivery>,
   principal: DelegatedPrincipal,
-  id: string
+  id: string,
+  diagnosticOffset?: number
 ): Promise<PublicActionResult> {
-  return service.status(principal, id);
+  return service.status(principal, id, diagnosticOffset);
 }
 /** Observe only this connection's receipt. Polling and a stalled status read share one deadline. */
 export async function waitForMcpReceipt(

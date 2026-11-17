@@ -32,7 +32,7 @@ export function buildCaseApplication(
     readonly productAnalyticsService?: BotSetupDependencies['productAnalyticsService'];
     readonly queueService?: BotOperationsDependencies['queueService'];
     readonly integrityAuditService?: BotOperationsDependencies['integrityAuditService'];
-    readonly caseRoleLockdownService?: BotOperationsDependencies['caseRoleLockdownService'];
+    readonly caseRoleLockdownService?: import('../../services/CaseRoleLockdownService').ICaseRoleLockdownService;
     readonly caseThreadClosureSweepService?: BotOperationsDependencies['caseThreadClosureSweepService'];
     readonly captchaChallengeService?: BotCaptchaDependencies['captchaChallengeService'];
     readonly threadManager?: BotCaptchaDependencies['threadManager'];
@@ -65,9 +65,6 @@ export function buildCaseApplication(
       queueService: deps.queueService ?? mock<BotOperationsDependencies['queueService']>(),
       integrityAuditService:
         deps.integrityAuditService ?? mock<BotOperationsDependencies['integrityAuditService']>(),
-      caseRoleLockdownService:
-        deps.caseRoleLockdownService ??
-        mock<BotOperationsDependencies['caseRoleLockdownService']>(),
       caseThreadClosureSweepService:
         deps.caseThreadClosureSweepService ??
         mock<BotOperationsDependencies['caseThreadClosureSweepService']>(),

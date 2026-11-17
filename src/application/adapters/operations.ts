@@ -1,10 +1,22 @@
+import { createBotRestrictionEffects } from './restriction';
+import { createBotDelegationDatabase } from './delegationDatabase';
+import { createRestrictionStores, restrictionActiveFenceSql } from '@drasil/application/postgres';
+import { getRestrictionAttemptToken } from '../../repositories/ModerationActionRequestRepository';
+import {
+  ModerationActionRequestType,
+  type ModerationActionRequest,
+} from '../../repositories/types';
+import type { IRestrictionAuditService } from '../../services/RestrictionAuditService';
+import type { IRoleQuarantineService } from '../../services/RoleQuarantineService';
+import type { IVerificationEventRepository } from '../../repositories/VerificationEventRepository';
+import type { PrismaClient } from '../../db/prisma';
 import { createApprovedSetupConfiguration, type ApprovedSetupConfiguration } from './approvedSetup';
 import {
-  CaseRoleLockdownService,
-  type ICaseRoleLockdownService,
-} from '../../services/CaseRoleLockdownService';
-import {
   ActionDeniedError,
+  executeRestrictionPlan,
+  canonicalDigest,
+  encodeQueuedAction,
+  type ActionContext,
   type ExecutionRecord,
   createOperationsActions,
   type ActionResult,
@@ -28,12 +40,18 @@ export interface BotOperationsDependencies {
   readonly queueService: IModerationQueueService;
   readonly securityActionService: ISecurityActionService;
   readonly caseThreadClosureSweepService: ICaseThreadClosureSweepService;
-  readonly caseRoleLockdownService: ICaseRoleLockdownService;
+  readonly actionRequests?: import('../../repositories/ModerationActionRequestRepository').IModerationActionRequestRepository;
+  readonly restrictionAuditService?: IRestrictionAuditService;
+  readonly prisma?: PrismaClient;
+  readonly roleQuarantineService?: IRoleQuarantineService;
+  readonly verificationEventRepository?: IVerificationEventRepository;
   readonly integrityAuditService: IIntegrityAuditService;
 }
 export interface BotOperationsRuntime {
   readonly actions: OperationsActions;
-  forExecution(execution: ExecutionRecord): OperationsActions;
+  enqueueAudit(context: ActionContext): Promise<string>;
+  forExecution(execution: ExecutionRecord, request?: ModerationActionRequest): OperationsActions;
+  forRequest(request: ModerationActionRequest, reconcileOnly?: boolean): OperationsActions;
   withProgress(onProgress: (progress: RoleIntakeProgress) => Promise<void>): OperationsActions;
 }
 export function createBotOperationsRuntime(
@@ -42,7 +60,9 @@ export function createBotOperationsRuntime(
 ): BotOperationsRuntime {
   const create = (
     onProgress?: (progress: RoleIntakeProgress) => Promise<void>,
-    approved?: ApprovedSetupConfiguration
+    approved?: ApprovedSetupConfiguration,
+    request?: ModerationActionRequest,
+    reconcileOnly = false
   ): OperationsActions =>
     createOperationsActions({
       authority,
@@ -78,15 +98,65 @@ export function createBotOperationsRuntime(
           }),
       },
       lockdown: {
-        async audit(guildId) {
-          return deps.caseRoleLockdownService.auditGuild(await deps.client.guilds.fetch(guildId));
+        async audit(context) {
+          if (!request || request.id !== context.requestId || !deps.restrictionAuditService)
+            throw new ActionDeniedError('audit_request_required');
+          return deps.restrictionAuditService.auditGuild(context.guildId);
         },
-        async apply(input) {
-          approved?.startEffects();
-          return (
-            approved ? new CaseRoleLockdownService(approved.config) : deps.caseRoleLockdownService
-          ).applyGuild(await deps.client.guilds.fetch(input.guildId), input.actorId, {
-            unsyncAllowedChannels: input.unsyncAllowedChannels,
+        async apply(context, selection) {
+          if (
+            !request ||
+            !deps.prisma ||
+            !deps.restrictionAuditService ||
+            !deps.roleQuarantineService ||
+            !deps.verificationEventRepository ||
+            context.actor.kind !== 'user'
+          )
+            throw new ActionDeniedError('plan_required');
+          const attemptToken = getRestrictionAttemptToken(request);
+          if (!attemptToken) throw new ActionDeniedError('plan_required');
+          const database = createBotDelegationDatabase(deps.prisma);
+          const stores = createRestrictionStores(database);
+          const plan = await stores.loadPlan(request.id);
+          if (
+            !plan ||
+            canonicalDigest(selection) !==
+              canonicalDigest({
+                auditRequestId: plan.auditRequestId,
+                auditRevision: plan.auditRevision,
+                selectedFixIds: plan.selectedFixIds,
+              })
+          )
+            throw new ActionDeniedError('plan_required');
+          const auditService = deps.restrictionAuditService;
+          const effects = createBotRestrictionEffects({
+            client: deps.client,
+            configService: deps.configService,
+            cases: deps.verificationEventRepository,
+            quarantine: deps.roleQuarantineService,
+            auditService: deps.restrictionAuditService,
+            actorId: context.actor.userId,
+            repairFence: {
+              requestId: request.id,
+              attemptToken,
+              async assertOwner() {
+                const { rows } = await database.query(
+                  `select q.id from moderation_action_requests q where q.id=$1::uuid and ${restrictionActiveFenceSql}`,
+                  [request.id, attemptToken]
+                );
+                if (!rows.length) throw new ActionDeniedError('fence_lost');
+              },
+            },
+          });
+          return executeRestrictionPlan(context, request.id, {
+            authority,
+            auditStore: stores,
+            executionStore: stores,
+            now: () => new Date(),
+            attemptToken,
+            reconcileOnly,
+            ...effects,
+            audit: (guildId) => auditService.auditGuild(guildId),
           });
         },
       },
@@ -124,8 +194,23 @@ export function createBotOperationsRuntime(
     });
   return {
     actions: create(),
+    async enqueueAudit(context): Promise<string> {
+      if (!deps.actionRequests) throw new ActionDeniedError('audit_request_unavailable');
+      const encoded = encodeQueuedAction(context, { kind: 'audit_case_role_lockdown' });
+      const request = await deps.actionRequests.enqueue({
+        ...encoded,
+        actionType: ModerationActionRequestType.AUDIT_CASE_ROLE_LOCKDOWN,
+      });
+      return request.id;
+    },
     withProgress: create,
-    forExecution(execution): OperationsActions {
+    forRequest: (request, reconcileOnly) => create(undefined, undefined, request, reconcileOnly),
+    forExecution(execution, request): OperationsActions {
+      if (
+        execution.command.kind === 'audit_case_role_lockdown' ||
+        execution.command.kind === 'apply_case_role_lockdown'
+      )
+        return create(undefined, undefined, request);
       if (execution.preconditions.kind !== 'setup')
         throw new ActionDeniedError('setup_preconditions_required');
       return create(

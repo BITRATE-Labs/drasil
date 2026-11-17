@@ -16,6 +16,7 @@ import type {
 } from './restrictionTypes';
 export interface RestrictionExecutionDependencies extends RestrictionPlanDependencies {
   readonly attemptToken: string;
+  readonly reconcileOnly?: boolean;
   readonly executionStore: RestrictionExecutionStore;
   write(effect: RestrictionEffect): Promise<void>;
   observe(effect: RestrictionEffect): Promise<RestrictionEffectObservation>;
@@ -50,6 +51,7 @@ export async function executeRestrictionPlan(
     !(await restrictionAuthorized(context, deps.authority))
   )
     return finish('authority_lost');
+  if (deps.reconcileOnly && progress.receipts.length === 0) return finish('interrupted');
   const save = async (
     index: number,
     state: RestrictionProgress['receipts'][number]['state'],

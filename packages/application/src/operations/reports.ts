@@ -46,6 +46,7 @@ export interface CaseRoleLockdownApplyFailure extends CaseRoleLockdownPlannedAct
 }
 
 export interface CaseRoleLockdownReport {
+  readonly assessment?: import('./restrictionTypes').RestrictionAssessment;
   readonly guildId: string;
   readonly checkedAt: Date;
   readonly enabled: boolean;

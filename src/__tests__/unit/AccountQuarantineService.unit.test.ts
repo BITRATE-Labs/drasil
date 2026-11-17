@@ -69,6 +69,13 @@ const roleResult: RoleQuarantineApplyResult = {
 
 function lockdownReport(overrides: Partial<CaseRoleLockdownReport> = {}): CaseRoleLockdownReport {
   return {
+    assessment: {
+      status: 'verified',
+      findingCodes: [],
+      findings: [],
+      coverage: [],
+      scope: 'permissions_and_membership',
+    },
     guildId: 'guild-1',
     checkedAt: new Date(),
     enabled: true,
@@ -91,6 +98,16 @@ function memberAudit(
   overrides: Partial<CaseRoleLockdownMemberAudit> = {}
 ): CaseRoleLockdownMemberAudit {
   return {
+    assessment: {
+      status: 'verified',
+      findingCodes: [],
+      findings: [],
+      coverage: [],
+      scope: 'permissions_and_membership',
+      caseId: 'case',
+      caseRevision: '1',
+      userId: 'user-1',
+    },
     memberId: 'user-1',
     bypasses: [],
     retainedPrivilegedRoleIds: [],
@@ -143,6 +160,13 @@ function buildHarness(
       ready
         ? lockdownReport()
         : lockdownReport({
+            assessment: {
+              status: 'incomplete',
+              findingCodes: [],
+              findings: [],
+              coverage: [],
+              scope: 'permissions_and_membership',
+            },
             plannedActions: [{ scope: 'channel', channelId: 'channel-1', channelName: 'general' }],
           })
     ),

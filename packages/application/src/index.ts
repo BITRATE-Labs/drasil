@@ -110,3 +110,5 @@ export type {
 
 export * from './operations/restrictionActions';
 export * from './operations/restrictionExecution';
+
+export * from './operations/restrictionPresentation';

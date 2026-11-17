@@ -330,9 +330,10 @@ function configureServices(container: Container): void {
         caseThreadClosureSweepService: context.get<ICaseThreadClosureSweepService>(
           TYPES.CaseThreadClosureSweepService
         ),
-        caseRoleLockdownService: context.get<ICaseRoleLockdownService>(
-          TYPES.CaseRoleLockdownService
+        restrictionAuditService: context.get<IRestrictionAuditService>(
+          TYPES.RestrictionAuditService
         ),
+        roleQuarantineService: context.get<IRoleQuarantineService>(TYPES.RoleQuarantineService),
         integrityAuditService: context.get<IIntegrityAuditService>(TYPES.IntegrityAuditService),
         messageDeletionJobs: context.get<IMessageDeletionJobRepository>(
           TYPES.MessageDeletionJobRepository

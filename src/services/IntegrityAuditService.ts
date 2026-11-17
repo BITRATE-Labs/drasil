@@ -1,6 +1,5 @@
 import { IRestrictionAuditService } from './RestrictionAuditService';
 import type {
-  RestrictionAudit,
   IntegrityAuditFindingSeverity,
   IntegrityAuditFinding,
   IntegrityAuditReport,
@@ -186,8 +185,7 @@ export class IntegrityAuditService implements IIntegrityAuditService {
         candidates.moderationQueueItems,
         liveUsers,
         serverConfig.case_role_id,
-        findings,
-        restrictionAudit
+        findings
       );
       this.auditResolvedCases(candidates.recentResolvedVerificationEvents, liveUsers, findings);
     }
@@ -234,8 +232,7 @@ export class IntegrityAuditService implements IIntegrityAuditService {
     queueItems: IntegrityAuditModerationQueueItem[],
     liveUsers: Map<string, LiveUserState>,
     caseRoleId: string | null,
-    findings: IntegrityAuditFinding[],
-    restrictionAudit?: RestrictionAudit
+    findings: IntegrityAuditFinding[]
   ): Promise<void> {
     const activeSnapshotCaseIds = new Set(
       snapshots
@@ -291,78 +288,6 @@ export class IntegrityAuditService implements IIntegrityAuditService {
             'Parked account quarantine is missing its assigned case role in Discord.'
           )
         );
-      }
-      if (!restrictionAudit && liveMember?.status === 'found' && this.caseRoleLockdownService) {
-        try {
-          const [lockdownAudit, memberAudit] = await Promise.all([
-            this.caseRoleLockdownService.auditGuild(
-              liveMember.value.guild,
-              verificationEvent.thread_id,
-              effectiveCaseRoleId
-            ),
-            this.caseRoleLockdownService.auditMemberBypasses(
-              liveMember.value,
-              new Set(),
-              verificationEvent.thread_id,
-              effectiveCaseRoleId
-            ),
-          ]);
-          if (
-            lockdownAudit.errorCount > 0 ||
-            lockdownAudit.warningCount > 0 ||
-            lockdownAudit.plannedActions.length > 0
-          ) {
-            findings.push(
-              this.buildCaseFinding(
-                lockdownAudit.errorCount > 0 || lockdownAudit.plannedActions.length > 0
-                  ? 'error'
-                  : 'warning',
-                'parked_quarantine_lockdown_drift',
-                verificationEvent,
-                `Parked account quarantine has ${lockdownAudit.errorCount} lockdown error(s), ${lockdownAudit.warningCount} warning(s), and ${lockdownAudit.plannedActions.length} unapplied lockdown action(s).`
-              )
-            );
-          }
-          if (memberAudit.bypasses.length > 0) {
-            findings.push(
-              this.buildCaseFinding(
-                'error',
-                'parked_quarantine_permission_bypass',
-                verificationEvent,
-                `Parked account quarantine has ${memberAudit.bypasses.length} live channel permission bypass(es).`
-              )
-            );
-          }
-          if (memberAudit.retainedPrivilegedRoleIds.length > 0) {
-            findings.push(
-              this.buildCaseFinding(
-                'error',
-                'parked_quarantine_privileged_role',
-                verificationEvent,
-                `Parked account quarantine retains privileged role(s): ${memberAudit.retainedPrivilegedRoleIds.join(', ')}.`
-              )
-            );
-          }
-          if (memberAudit.unremovablePrivilegeReasons.length > 0) {
-            findings.push(
-              this.buildCaseFinding(
-                'error',
-                'parked_quarantine_unremovable_privilege',
-                verificationEvent,
-                `Parked account quarantine has unremovable privilege blocker(s): ${memberAudit.unremovablePrivilegeReasons.join(', ')}.`
-              )
-            );
-          }
-        } catch (error) {
-          findings.push(
-            this.buildCaseFinding(
-              'error',
-              'parked_quarantine_live_audit_failed',
-              verificationEvent,
-              `Could not audit live quarantine bypasses: ${formatDiscordFetchError(error, ERROR_DETAIL_MAX_LENGTH)}`
-            )
-          );
-        }
       }
       if (mirroredCaseIds.has(verificationEvent.id)) {
         findings.push(

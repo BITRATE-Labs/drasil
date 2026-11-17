@@ -42,6 +42,7 @@ export interface DiscordGuildSummary {
 }
 
 export interface DiscordRole {
+  readonly tags?: { readonly bot_id?: string };
   readonly id: string;
   readonly name: string;
   readonly permissions: string;
@@ -51,6 +52,7 @@ export interface DiscordRole {
 }
 
 export interface DiscordChannel {
+  readonly thread_metadata?: { readonly archived: boolean; readonly locked: boolean };
   readonly guild_id?: string;
   readonly parent_id?: string | null;
   readonly id: string;
@@ -65,6 +67,7 @@ export interface DiscordChannel {
 }
 
 export interface DiscordGuildMember {
+  readonly joined_at?: string | null;
   readonly roles: readonly string[];
   readonly user?: DiscordUser;
 }
@@ -376,4 +379,22 @@ export async function fetchBotChannelMessagePage({
   if (!Array.isArray(messages) || messages.length > limit)
     throw new Error('Invalid conversation page.');
   return messages;
+}
+
+/** Bounded pagination for one selected case thread. Incomplete evidence rejects admission. */
+export async function fetchDiscordThreadMembers(threadId: string): Promise<DiscordThreadMember[]> {
+  assertDiscordId(threadId);
+  const members: DiscordThreadMember[] = [];
+  let after = '';
+  for (let page = 0; page < 100; page++) {
+    const items = await fetchBotJson<DiscordThreadMember[]>(
+      `/channels/${threadId}/thread-members?limit=100${after ? `&after=${after}` : ''}`
+    );
+    members.push(...items);
+    if (items.length < 100) return members;
+    const next = items[items.length - 1]?.user_id;
+    if (!next || next === after) throw new Error('Restriction thread coverage unavailable.');
+    after = next;
+  }
+  throw new Error('Restriction thread coverage incomplete.');
 }
