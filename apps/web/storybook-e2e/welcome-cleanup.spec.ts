@@ -44,3 +44,14 @@ test('bot typeahead finds bots outside the initial known-role list', async ({ pa
   await expect(page.locator('summary').filter({ hasText: 'Other Bot' })).toBeVisible();
   await expect(page.locator('input[name="welcomeCleanupBotId"]')).toHaveValue('123456789012345670');
 });
+
+test('loads bot choices on opening and retains the list after a name search', async ({ page }) => {
+  await page.goto('/iframe.html?id=setup-welcome-cleanup--bot-search&viewMode=story');
+  await expect(page.locator('button').filter({ hasText: 'Known Bot' })).toHaveCount(0);
+  await page.locator('summary').filter({ hasText: 'Choose welcome bot' }).click();
+  await expect(page.getByRole('button', { name: 'Known Bot @known' })).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Search welcome bot' }).fill('other');
+  await expect(page.getByRole('button', { name: 'Other Bot @other' })).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Search welcome bot' }).fill('');
+  await expect(page.getByRole('button', { name: 'Known Bot @known' })).toBeVisible();
+});

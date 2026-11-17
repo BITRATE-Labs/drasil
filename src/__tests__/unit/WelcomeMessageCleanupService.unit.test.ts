@@ -1,3 +1,5 @@
+import { MessageContextRepository } from '../../repositories/MessageContextRepository';
+import type { PrismaClient } from '../../db/prisma';
 import 'reflect-metadata';
 import { Collection, type Guild, type Message, type User } from 'discord.js';
 import { mock } from 'jest-mock-extended';
@@ -146,6 +148,7 @@ describe('welcome cleanup', () => {
 
   it('deletes an exclusive exact mention without a model call', async () => {
     const f = setup();
+    f.fetchMessage.mockResolvedValue({ ...f.message, content: 'Welcome <@target>!' });
     f.message.mentions.users.set('target', f.user);
     await f.service.cleanupAfterBan(f.guild, f.user);
     expect(f.gpt.extractWelcomeRecipient).not.toHaveBeenCalled();
@@ -326,6 +329,59 @@ describe('welcome cleanup', () => {
     expect(f.message.delete).not.toHaveBeenCalled();
   });
 
+  it('limits image work and leaves the remaining candidates unverified', async () => {
+    const f = setup();
+    f.repository.findForBan.mockResolvedValue(
+      Array.from({ length: 5 }, (_, i) => ({ ...f.candidate, message_id: `candidate-${i}` }))
+    );
+    f.fetchMessage.mockImplementation(async (input: { message: string }) => ({
+      ...f.message,
+      id: input.message,
+    }));
+    f.gpt.extractWelcomeRecipient.mockResolvedValue({
+      is_welcome: true,
+      recipient_name: 'unknown member',
+      confidence: 1,
+    });
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.gpt.extractWelcomeRecipient).toHaveBeenCalledTimes(3);
+    expect(f.repository.recordRecipient).toHaveBeenCalledTimes(3);
+    expect(f.message.delete).not.toHaveBeenCalled();
+  });
+
+  it('caps snapshots and marks overflow incomplete', async () => {
+    const f = setup();
+    for (let i = 0; i < 51; i++)
+      f.cache.set(`member-${i}`, {
+        id: `member-${i}`,
+        user: { username: `member-${i}`, bot: false },
+        joinedTimestamp: joined.getTime(),
+        nickname: null,
+      });
+    Object.defineProperty(f.guild, 'memberCount', { value: 51 });
+    await f.service.collect(f.message);
+    const stored = f.repository.collect.mock.calls[0][0];
+    expect(Object.keys(stored.member_snapshots)).toHaveLength(50);
+    expect(stored.snapshots_complete).toBe(false);
+  });
+
+  it('keeps a card that welcomes someone else while mentioning a recent inviter', async () => {
+    const f = setup();
+    f.message.mentions.users.set('target', f.user);
+    f.candidate.member_snapshots.other = { names: ['Alice'], joinedAt: joined.toISOString() };
+    f.fetchMessage.mockResolvedValue({
+      ...f.message,
+      content: 'Welcome Alice! Invited by <@target>.',
+    });
+    f.gpt.extractWelcomeRecipient.mockResolvedValue({
+      is_welcome: true,
+      recipient_name: 'Alice',
+      confidence: 1,
+    });
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.message.delete).not.toHaveBeenCalled();
+  });
+
   it('shares concurrent cleanup for the same ban', async () => {
     const f = setup();
     await Promise.all([
@@ -356,5 +412,22 @@ describe('welcome cleanup', () => {
       'https://images-ext-1.discordapp.net/external/hash/https/example.com/card.png',
     ]);
     expect(welcomeNameMatches('new_member', 'target', snapshots)).toBe(false);
+  });
+});
+
+describe('welcome retention isolation', () => {
+  it('preserves context retention and its count if welcome pruning fails', async () => {
+    const execute = jest
+      .fn()
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockRejectedValueOnce(new Error('Welcome table unavailable'));
+    const transaction = jest.fn().mockResolvedValue([2, 3]);
+    const repository = new MessageContextRepository({
+      $executeRaw: execute,
+      $transaction: transaction,
+    } as unknown as PrismaClient);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(repository.pruneExpired()).resolves.toBe(5);
   });
 });

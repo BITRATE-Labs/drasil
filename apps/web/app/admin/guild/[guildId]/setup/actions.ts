@@ -25,6 +25,8 @@ import {
   fetchDiscordGuildMember,
   fetchDiscordChannel,
   searchGuildBots,
+  fetchGuildBots,
+  fetchDiscordGuildRoles,
   discordAvatarUrl,
 } from '@/lib/discordApi';
 import { createSetupDataAdapter } from '@/lib/setupDataAdapter';
@@ -490,8 +492,10 @@ export async function searchWelcomeBots(
   const [session, token] = await Promise.all([getCurrentAdminSession(), getCurrentDiscordToken()]);
   if (!session || !token) throw new Error('Sign in to search server bots.');
   await createSetupDashboardService().assertCanManageGuild(guildId, token.accessToken);
-  if (typeof query !== 'string' || !query.trim() || query.length > 100) return [];
-  const bots = await searchGuildBots(guildId, query.trim());
+  if (typeof query !== 'string' || query.length > 100) return [];
+  const bots = query.trim()
+    ? await searchGuildBots(guildId, query.trim())
+    : await fetchGuildBots(guildId, await fetchDiscordGuildRoles(guildId));
   return bots.map((bot) => ({
     id: bot.id,
     name: bot.global_name ?? bot.username,

@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   welcomeMember: vi.fn(),
   welcomeChannel: vi.fn(),
   welcomeSearch: vi.fn(),
+  welcomeRoles: vi.fn(),
+  welcomeBots: vi.fn(),
 }));
 
 vi.mock('@/lib/application/adapters/authority', () => ({
@@ -26,6 +28,8 @@ vi.mock('@/lib/discordApi', async (importOriginal) => ({
   fetchDiscordGuildMember: mocks.welcomeMember,
   fetchDiscordChannel: mocks.welcomeChannel,
   searchGuildBots: mocks.welcomeSearch,
+  fetchDiscordGuildRoles: mocks.welcomeRoles,
+  fetchGuildBots: mocks.welcomeBots,
 }));
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
@@ -222,4 +226,18 @@ it('authenticates bot-name search and returns only safe picker fields', async ()
     },
   ]);
   expect(mocks.welcomeSearch).toHaveBeenCalledWith('234567890123456789', 'helper');
+});
+
+it('loads the known bot list through the authenticated empty-search request', async () => {
+  mocks.session.mockResolvedValue({ userId: 'fixture-admin' });
+  mocks.token.mockResolvedValue({ accessToken: 'token' });
+  mocks.assertCanManageGuild.mockResolvedValue({ owner: true, permissions: '8' });
+  mocks.welcomeRoles.mockResolvedValue([]);
+  mocks.welcomeBots.mockResolvedValue([
+    { id: '123456789012345678', username: 'known-bot', bot: true, avatar: null },
+  ]);
+  const bots = await searchWelcomeBots('234567890123456789', '');
+  expect(bots[0].name).toBe('known-bot');
+  expect(mocks.welcomeRoles).toHaveBeenCalledWith('234567890123456789');
+  expect(mocks.welcomeBots).toHaveBeenCalledWith('234567890123456789', []);
 });

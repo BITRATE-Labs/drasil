@@ -2,6 +2,8 @@ import { inject, injectable } from 'inversify';
 import { PrismaClient } from '../db/prisma';
 import { TYPES } from '../di/symbols';
 
+export const WELCOME_MAX_CANDIDATES = 20;
+export const WELCOME_SERVER_REFERENCE_LIMIT = 50_000;
 export const WELCOME_JOIN_WINDOW_MS = 2 * 60 * 1000;
 export interface WelcomeMemberSnapshot {
   names: string[];
@@ -27,13 +29,23 @@ export class WelcomeMessageRepository {
 
   async collect(candidate: WelcomeCandidate): Promise<void> {
     const snapshots = JSON.stringify(candidate.member_snapshots);
-    await this.prisma.$executeRaw`
+    await this.prisma.$transaction([
+      this.prisma.$executeRaw`
       INSERT INTO public.welcome_message_candidates
         (server_id, message_id, channel_id, bot_id, created_at, member_snapshots, snapshots_complete, expires_at)
       VALUES (${candidate.server_id}, ${candidate.message_id}, ${candidate.channel_id},
         ${candidate.bot_id}, ${candidate.created_at}, CAST(${snapshots} AS jsonb), ${candidate.snapshots_complete}, ${candidate.expires_at})
       ON CONFLICT (server_id, message_id) DO NOTHING
-    `;
+    `,
+      this.prisma.$executeRaw`
+        DELETE FROM public.welcome_message_candidates
+        WHERE server_id = ${candidate.server_id} AND message_id IN (
+          SELECT message_id FROM public.welcome_message_candidates
+          WHERE server_id = ${candidate.server_id}
+          ORDER BY created_at DESC, message_id DESC OFFSET ${WELCOME_SERVER_REFERENCE_LIMIT}
+        )
+      `,
+    ]);
   }
 
   async findForBan(
@@ -51,7 +63,8 @@ export class WelcomeMessageRepository {
         AND (NOT verification_attempted OR recipient_id = ${userId})
         AND (member_snapshots ? ${userId}
           OR (created_at >= ${joinedAt}::timestamptz AND created_at <= ${until}::timestamptz))
-      ORDER BY created_at
+      ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - ${joinedAt}::timestamptz))) NULLS LAST, created_at
+      LIMIT ${WELCOME_MAX_CANDIDATES}
     `;
   }
 

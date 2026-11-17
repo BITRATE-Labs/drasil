@@ -54,15 +54,17 @@ export const BotSearch: Story = {
   args: {
     bots: [],
     searchBots: async (query) =>
-      query.includes('other')
-        ? [
-            {
-              id: '123456789012345670',
-              name: 'Other Bot',
-              detail: '@other',
-              avatarUrl: 'https://cdn.discordapp.com/embed/avatars/2.png',
-            },
-          ]
-        : [],
+      !query
+        ? [{ id: '123456789012345671', name: 'Known Bot', detail: '@known' }]
+        : query.includes('other')
+          ? [
+              {
+                id: '123456789012345670',
+                name: 'Other Bot',
+                detail: '@other',
+                avatarUrl: 'https://cdn.discordapp.com/embed/avatars/2.png',
+              },
+            ]
+          : [],
   },
 };

@@ -11,6 +11,8 @@ import type { IServerMemberRepository } from '../repositories/ServerMemberReposi
 import { MESSAGE_CONTEXT_RETENTION_DAYS } from '../repositories/MessageContextRepository';
 import type { IGPTService } from './GPTService';
 
+export const WELCOME_MAX_IMAGE_CHECKS = 3;
+export const WELCOME_SNAPSHOT_LIMIT = 50;
 const MIN_WELCOME_CONFIDENCE = 0.98;
 function normalizeName(name: string): string {
   return name.normalize('NFKC').trim().replace(/^@/, '').toLowerCase();
@@ -86,10 +88,17 @@ export class WelcomeMessageCleanupService {
       return;
     if (welcomeImageUrls(message).length === 0) return;
     const snapshots: Record<string, WelcomeMemberSnapshot> = {};
+    let snapshotsComplete = message.guild.members.cache.size === message.guild.memberCount;
+    let snapshotCount = 0;
     for (const member of message.guild.members.cache.values()) {
       if (member.user.bot || member.joinedTimestamp === null) continue;
       const age = message.createdTimestamp - member.joinedTimestamp;
       if (age < 0 || age > WELCOME_JOIN_WINDOW_MS) continue;
+      if (snapshotCount >= WELCOME_SNAPSHOT_LIMIT) {
+        snapshotsComplete = false;
+        break;
+      }
+      snapshotCount++;
       snapshots[member.id] = {
         names: [
           ...new Set(
@@ -108,7 +117,7 @@ export class WelcomeMessageCleanupService {
       bot_id: message.author.id,
       created_at: message.createdAt,
       member_snapshots: snapshots,
-      snapshots_complete: message.guild.members.cache.size === message.guild.memberCount,
+      snapshots_complete: snapshotsComplete,
       verification_attempted: false,
       recipient_id: null,
       verified_edited_at: null,
@@ -167,6 +176,7 @@ export class WelcomeMessageCleanupService {
       settings.welcome_cleanup_bot_id,
       member?.join_date ?? null
     );
+    let imageChecks = 0;
     for (const candidate of candidates) {
       try {
         const message = await channel.messages.fetch({
@@ -191,22 +201,30 @@ export class WelcomeMessageCleanupService {
           ...message.embeds.flatMap((embed) => [embed.title, embed.description]),
         ].join(' ');
         if (cachedVerdict) recipientId = candidate.recipient_id;
-        else if (mentions.length === 1 && /\bwelcome\b/iu.test(welcomeText))
+        else if (
+          mentions.length === 1 &&
+          new RegExp(
+            `(?:\\bwelcome[\\s,!:-]*<@!?${mentions[0]}>|<@!?${mentions[0]}>[\\s,!:-]*welcome\\b)`,
+            'iu'
+          ).test(welcomeText)
+        )
           recipientId = mentions[0];
-        else if (mentions.length <= 1 && (mentions.length === 1 || candidate.snapshots_complete)) {
+        else if (mentions.length <= 1 && candidate.snapshots_complete) {
           const urls = welcomeImageUrls(message);
           if (!urls.length) continue;
+          if (imageChecks >= WELCOME_MAX_IMAGE_CHECKS) return;
+          imageChecks++;
           const recipient = await this.gpt.extractWelcomeRecipient(urls);
           // A failed provider read is not a negative verdict. End this run without caching it.
           if (recipient === null) return;
           if (recipient.is_welcome && recipient.confidence >= MIN_WELCOME_CONFIDENCE) {
-            if (mentions.length === 1) recipientId = mentions[0];
-            else if (recipient.recipient_name) {
+            if (recipient.recipient_name) {
               const name = recipient.recipient_name;
-              recipientId =
+              const matchedId =
                 Object.keys(candidate.member_snapshots).find((id) =>
                   welcomeNameMatches(name, id, candidate.member_snapshots)
                 ) ?? null;
+              if (!mentions.length || matchedId === mentions[0]) recipientId = matchedId;
             }
           }
         }

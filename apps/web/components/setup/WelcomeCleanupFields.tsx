@@ -27,17 +27,17 @@ function SourcePicker({
   const [chosenOption, setChosenOption] = useState<WelcomeSourceOption>();
   const [remote, setRemote] = useState<readonly WelcomeSourceOption[]>([]);
   const [searchFailed, setSearchFailed] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [loadedOptions, setLoadedOptions] = useState<readonly WelcomeSourceOption[] | null>(null);
   useEffect(() => {
-    if (!searchOptions || !search.trim()) {
-      setRemote([]);
-      return;
-    }
+    if (!searchOptions || !open || (!search.trim() && loadedOptions !== null)) return;
     let active = true;
     const timer = setTimeout(() => {
       searchOptions(search)
         .then((results) => {
           if (active) {
-            setRemote(results);
+            if (search.trim()) setRemote(results);
+            else setLoadedOptions(results);
             setSearchFailed(false);
           }
         })
@@ -49,9 +49,11 @@ function SourcePicker({
       active = false;
       clearTimeout(timer);
     };
-  }, [search, searchOptions]);
+  }, [search, searchOptions, open, loadedOptions]);
   const available = [
-    ...new Map([...options, ...remote].map((option) => [option.id, option])).values(),
+    ...new Map(
+      [...options, ...(loadedOptions ?? []), ...remote].map((option) => [option.id, option])
+    ).values(),
   ];
   const current =
     available.find((option) => option.id === selected) ??
@@ -63,7 +65,10 @@ function SourcePicker({
     <div className="field">
       <label id={`${id}-label`}>{label}</label>
       <input type="hidden" name={name} value={selected} />
-      <details className="welcome-source-picker">
+      <details
+        className="welcome-source-picker"
+        onToggle={(event) => setOpen(event.currentTarget.open)}
+      >
         <summary aria-labelledby={`${id}-label ${id}-value`}>
           <span id={`${id}-value`}>
             {current?.name ??

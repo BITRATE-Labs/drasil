@@ -116,13 +116,48 @@ describeIntegration('welcome message persistence', () => {
       data: { ...data, message_id: 'current', expires_at: new Date('2099-01-01') },
     });
     const contexts = new MessageContextRepository(prisma);
-    expect(await contexts.pruneExpired()).toBe(2);
+    expect(await contexts.pruneExpired()).toBe(0);
     expect(await prisma.welcome_message_candidates.count()).toBe(1);
     await prisma.servers.update({
       where: { guild_id: 'retention' },
       data: { settings: { welcome_cleanup_enabled: false } },
     });
-    expect(await contexts.pruneExpired()).toBe(1);
+    expect(await contexts.pruneExpired()).toBe(0);
     expect(await prisma.welcome_message_candidates.count()).toBe(0);
+  });
+  it('caps stored references and bounds candidates nearest the join time', async () => {
+    const prisma = getPrismaClient();
+    await prisma.servers.create({ data: { guild_id: 'bounded' } });
+    await prisma.$executeRaw`
+      INSERT INTO public.welcome_message_candidates (server_id, message_id, channel_id, bot_id, created_at, expires_at)
+      SELECT 'bounded', 'old-' || n::text, 'welcome', 'bot', '2000-01-01'::timestamptz, '2099-01-01'::timestamptz
+      FROM generate_series(1, 50000) n
+    `;
+    const repository = new WelcomeMessageRepository(prisma);
+    const joined = new Date();
+    const row: WelcomeCandidate = {
+      server_id: 'bounded',
+      message_id: 'nearest',
+      channel_id: 'welcome',
+      bot_id: 'bot',
+      created_at: joined,
+      expires_at: new Date('2099-01-01'),
+      member_snapshots: {},
+      snapshots_complete: false,
+      verification_attempted: false,
+      recipient_id: null,
+      verified_edited_at: null,
+    };
+    await repository.collect(row);
+    expect(await prisma.welcome_message_candidates.count()).toBe(50000);
+    for (let i = 0; i < 21; i++)
+      await repository.collect({
+        ...row,
+        message_id: `later-${i}`,
+        created_at: new Date(joined.getTime() + 1000 + i),
+      });
+    const candidates = await repository.findForBan('bounded', 'target', 'welcome', 'bot', joined);
+    expect(candidates).toHaveLength(20);
+    expect(candidates[0].message_id).toBe('nearest');
   });
 });

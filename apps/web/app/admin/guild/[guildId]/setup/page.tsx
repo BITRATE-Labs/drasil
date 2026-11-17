@@ -201,7 +201,7 @@ export default async function GuildSetupPage({ params }: PageProps) {
   let welcomeBots: DiscordUser[] = [];
   let welcomeBotsUnavailable = false;
   try {
-    welcomeBots = await fetchGuildBots(guildId, roles, server?.settings.welcome_cleanup_bot_id);
+    welcomeBots = await fetchGuildBots(guildId, [], server?.settings.welcome_cleanup_bot_id);
   } catch {
     welcomeBotsUnavailable = true;
   }
