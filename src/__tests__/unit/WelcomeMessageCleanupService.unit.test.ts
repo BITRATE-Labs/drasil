@@ -382,6 +382,43 @@ describe('welcome cleanup', () => {
     expect(f.message.delete).not.toHaveBeenCalled();
   });
 
+  it('sends only the first image to verification and logs a confirmed deletion', async () => {
+    const f = setup();
+    f.fetchMessage.mockResolvedValue({
+      ...f.message,
+      embeds: [{ image: { url: 'https://cdn.discordapp.com/attachments/1/3/banner.png' } }],
+    });
+    const log = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.gpt.extractWelcomeRecipient).toHaveBeenCalledWith([
+      'https://cdn.discordapp.com/attachments/1/2/welcome.png',
+    ]);
+    expect(log).toHaveBeenCalledWith('Welcome message deleted after ban', {
+      guild_id: 'guild',
+      channel_id: 'welcome',
+      message_id: 'message',
+      user_id: 'target',
+      match_path: 'image',
+    });
+  });
+
+  it('does not treat an adjacent inviter mention after an exclamation as the welcome recipient', async () => {
+    const f = setup();
+    f.message.mentions.users.set('target', f.user);
+    f.candidate.member_snapshots.other = { names: ['Alice'], joinedAt: joined.toISOString() };
+    f.fetchMessage.mockResolvedValue({
+      ...f.message,
+      content: 'Welcome! <@target> brought a new member.',
+    });
+    f.gpt.extractWelcomeRecipient.mockResolvedValue({
+      is_welcome: true,
+      recipient_name: 'Alice',
+      confidence: 1,
+    });
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.message.delete).not.toHaveBeenCalled();
+  });
+
   it('shares concurrent cleanup for the same ban', async () => {
     const f = setup();
     await Promise.all([

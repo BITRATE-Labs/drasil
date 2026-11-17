@@ -200,21 +200,19 @@ export class WelcomeMessageCleanupService {
           message.content,
           ...message.embeds.flatMap((embed) => [embed.title, embed.description]),
         ].join(' ');
-        if (cachedVerdict) recipientId = candidate.recipient_id;
-        else if (
+        const directMention =
           mentions.length === 1 &&
-          new RegExp(
-            `(?:\\bwelcome[\\s,!:-]*<@!?${mentions[0]}>|<@!?${mentions[0]}>[\\s,!:-]*welcome\\b)`,
-            'iu'
-          ).test(welcomeText)
-        )
-          recipientId = mentions[0];
+          (!candidate.snapshots_complete || Boolean(candidate.member_snapshots[mentions[0]])) &&
+          new RegExp(`\\bwelcome[\\s,]*<@!?${mentions[0]}>`, 'iu').test(welcomeText);
+        const matchPath = cachedVerdict ? 'cached' : directMention ? 'mention' : 'image';
+        if (cachedVerdict) recipientId = candidate.recipient_id;
+        else if (directMention) recipientId = mentions[0];
         else if (mentions.length <= 1 && candidate.snapshots_complete) {
-          const urls = welcomeImageUrls(message);
-          if (!urls.length) continue;
+          const imageUrl = welcomeImageUrls(message)[0];
+          if (!imageUrl) continue;
           if (imageChecks >= WELCOME_MAX_IMAGE_CHECKS) return;
           imageChecks++;
-          const recipient = await this.gpt.extractWelcomeRecipient(urls);
+          const recipient = await this.gpt.extractWelcomeRecipient([imageUrl]);
           // A failed provider read is not a negative verdict. End this run without caching it.
           if (recipient === null) return;
           if (recipient.is_welcome && recipient.confidence >= MIN_WELCOME_CONFIDENCE) {
@@ -252,6 +250,13 @@ export class WelcomeMessageCleanupService {
         )
           continue;
         await fresh.delete();
+        console.info('Welcome message deleted after ban', {
+          guild_id: guild.id,
+          channel_id: channel.id,
+          message_id: message.id,
+          user_id: user.id,
+          match_path: matchPath,
+        });
         await this.repository.remove(guild.id, message.id);
         return;
       } catch (error) {
