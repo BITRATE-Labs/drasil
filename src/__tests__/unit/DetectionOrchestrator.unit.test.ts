@@ -55,6 +55,7 @@ describe('DetectionOrchestrator (unit)', () => {
       clearMessageHistory: jest.fn(),
     };
     gptService = {
+      extractWelcomeRecipient: jest.fn(),
       analyzeProfile: jest.fn(),
       analyzeVerificationThreadResponses: jest.fn(),
       analyzeReportEvidence: jest.fn(),

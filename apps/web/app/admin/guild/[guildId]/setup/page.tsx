@@ -1,3 +1,5 @@
+import { WelcomeCleanupFields } from '@/components/setup/WelcomeCleanupFields';
+import { discordAvatarUrl, fetchGuildBots, type DiscordUser } from '@/lib/discordApi';
 import { LegacyWorkspacePage } from '@/components/workspace/LegacyWorkspacePage';
 import { CaptchaSettingsFields } from '@/components/setup/CaptchaSettingsFields';
 import { getEffectiveCaptchaMethod } from '@drasil/contracts';
@@ -195,6 +197,13 @@ export default async function GuildSetupPage({ params }: PageProps) {
   const service = createSetupDashboardService();
   const { dashboard, channels, roles } = await service.getDashboard(guildId, token.accessToken);
   const server = dashboard.server;
+  let welcomeBots: DiscordUser[] = [];
+  let welcomeBotsUnavailable = false;
+  try {
+    welcomeBots = await fetchGuildBots(guildId);
+  } catch {
+    welcomeBotsUnavailable = true;
+  }
   const saveAction = saveGuildSetup.bind(null, guildId);
   const completeSetupVerificationAction = queueCompleteSetupVerification.bind(null, guildId);
   const repairReportInstructionsAction = queueReportInstructionsRepair.bind(null, guildId);
@@ -1166,6 +1175,23 @@ export default async function GuildSetupPage({ params }: PageProps) {
         </div>
 
         <div>
+          <WelcomeCleanupFields
+            enabled={server?.settings.welcome_cleanup_enabled ?? true}
+            botId={server?.settings.welcome_cleanup_bot_id ?? null}
+            channelId={server?.settings.welcome_cleanup_channel_id ?? null}
+            bots={welcomeBots.map((bot) => ({
+              id: bot.id,
+              name: bot.global_name ?? bot.username,
+              detail: `@${bot.username}`,
+              avatarUrl:
+                discordAvatarUrl(bot) ??
+                `https://cdn.discordapp.com/embed/avatars/${Number((BigInt(bot.id) >> 22n) % 6n)}.png`,
+            }))}
+            channels={channels
+              .filter((channel) => [0, 5].includes(channel.type))
+              .map((channel) => ({ id: channel.id, name: `#${channel.name}` }))}
+            botsUnavailable={welcomeBotsUnavailable}
+          />
           <h2>Message Deletion</h2>
           <p className="muted">
             High-confidence watchlist deletion preserves moderator evidence, then removes the source

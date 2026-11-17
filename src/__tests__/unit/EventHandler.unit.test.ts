@@ -1,3 +1,5 @@
+import { mock } from 'jest-mock-extended';
+import { WelcomeMessageCleanupService } from '../../services/WelcomeMessageCleanupService';
 import { setLocalGuildScope } from '../../localGuildScope';
 import { EventEmitter } from 'node:events';
 import { WebSocketShardEvents } from '@discordjs/ws';
@@ -15,6 +17,7 @@ import {
   AuditLogEvent,
   Events,
   Guild,
+  type GuildBan,
   GuildMember,
   Message,
   MessageFlags,
@@ -58,6 +61,7 @@ const GLOBAL_WATCHLIST_MESSAGE = `watch this ${GLOBAL_WATCHLIST_ENTRY.term} clip
 
 describe('EventHandler (unit)', () => {
   function buildHandler(overrides?: {
+    welcomeCleanup?: WelcomeMessageCleanupService;
     client?: Client | Record<string, unknown>;
     detectionOrchestrator?: Record<string, jest.Mock>;
     configService?: Record<string, jest.Mock>;
@@ -191,9 +195,33 @@ describe('EventHandler (unit)', () => {
       }) as any,
       overrides?.caseRoleReleaseReconciliationService as any,
       overrides?.activeQuarantineCache,
-      overrides?.reportMemberDirectory
+      overrides?.reportMemberDirectory,
+      overrides?.welcomeCleanup
     );
   }
+
+  it('collects configured bot messages before the bot-message moderation exclusion', async () => {
+    const welcomeCleanup = mock<WelcomeMessageCleanupService>();
+    welcomeCleanup.collect.mockResolvedValue(undefined);
+    const handler = buildHandler({ welcomeCleanup });
+    const message = { author: { bot: true } } as Message;
+    await handler['handleMessage'](message);
+    expect(welcomeCleanup.collect).toHaveBeenCalledWith(message);
+  });
+
+  it('starts welcome cleanup on confirmed bans without blocking case reconciliation', async () => {
+    const welcomeCleanup = mock<WelcomeMessageCleanupService>();
+    welcomeCleanup.cleanupAfterBan.mockReturnValue(new Promise<void>(() => undefined));
+    const moderation = { recordObservedDiscordBan: jest.fn().mockResolvedValue(0) };
+    const handler = buildHandler({ welcomeCleanup, userModerationService: moderation });
+    const ban = {
+      guild: { id: 'guild', fetchAuditLogs: jest.fn().mockResolvedValue({ entries: new Map() }) },
+      user: { id: 'user' },
+    };
+    await handler['handleGuildBanAdd'](ban as unknown as GuildBan);
+    expect(welcomeCleanup.cleanupAfterBan).toHaveBeenCalledWith(ban.guild, ban.user);
+    expect(moderation.recordObservedDiscordBan).toHaveBeenCalled();
+  });
 
   function buildReadOnlyConfigService(
     serverConfig: Record<string, unknown>,

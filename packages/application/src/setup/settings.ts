@@ -304,6 +304,17 @@ export const serverSettingsSchema = z
       })
       .nullable()
       .optional(),
+    welcome_cleanup_enabled: z.boolean().optional(),
+    welcome_cleanup_bot_id: z
+      .string()
+      .regex(/^\d{17,20}$/)
+      .nullable()
+      .optional(),
+    welcome_cleanup_channel_id: z
+      .string()
+      .regex(/^\d{17,20}$/)
+      .nullable()
+      .optional(),
     message_deletion_enabled: z.boolean().optional(),
     message_deletion_source_message_enabled: z.boolean().optional(),
     message_deletion_watchlist_enabled: z.boolean().optional(),
@@ -534,6 +545,17 @@ export const guildSetupUpdateSchema = z
       .min(CASE_RESPONDER_MIN_THREAD_MEMBER_CAP)
       .max(CASE_RESPONDER_MAX_THREAD_MEMBER_CAP)
       .optional(),
+    welcomeCleanupEnabled: z.boolean().optional(),
+    welcomeCleanupBotId: z
+      .string()
+      .regex(/^\d{17,20}$/)
+      .nullable()
+      .optional(),
+    welcomeCleanupChannelId: z
+      .string()
+      .regex(/^\d{17,20}$/)
+      .nullable()
+      .optional(),
     messageDeletionEnabled: z.boolean().optional(),
     messageDeletionSourceMessageEnabled: z.boolean().optional(),
     messageDeletionWatchlistEnabled: z.boolean().optional(),
@@ -689,6 +711,9 @@ export const settingsSectionSchemas = {
       join_detection_auto_kick_enabled: true,
       report_intake_auto_kick_enabled: true,
       auto_kick_min_confidence_threshold: true,
+      welcome_cleanup_enabled: true,
+      welcome_cleanup_bot_id: true,
+      welcome_cleanup_channel_id: true,
       message_deletion_enabled: true,
       message_deletion_source_message_enabled: true,
       message_deletion_watchlist_enabled: true,
@@ -779,6 +804,9 @@ export function buildSetupSettingsPatch(update: GuildSetupUpdate): SettingsChang
       case_responder_role_ids: update.caseResponderRoleIds,
       case_responder_routing_mode: update.caseResponderRoutingMode,
       case_responder_thread_member_cap: update.caseResponderThreadMemberCap,
+      welcome_cleanup_enabled: update.welcomeCleanupEnabled,
+      welcome_cleanup_bot_id: update.welcomeCleanupBotId,
+      welcome_cleanup_channel_id: update.welcomeCleanupChannelId,
       message_deletion_enabled: update.messageDeletionEnabled,
       message_deletion_source_message_enabled: update.messageDeletionSourceMessageEnabled,
       message_deletion_watchlist_enabled: update.messageDeletionWatchlistEnabled,

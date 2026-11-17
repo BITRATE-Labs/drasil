@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   token: vi.fn(),
   assertCanManageGuild: vi.fn(),
   queue: vi.fn(),
+  welcomeMember: vi.fn(),
+  welcomeChannel: vi.fn(),
 }));
 
 vi.mock('@/lib/application/adapters/authority', () => ({
@@ -16,6 +18,12 @@ vi.mock('@/lib/application/adapters/authority', () => ({
         ? { guildId, userId, present: true, owner: true, permissions: '8', roleIds: [] }
         : null,
   }),
+}));
+
+vi.mock('@/lib/discordApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/discordApi')>()),
+  fetchDiscordGuildMember: mocks.welcomeMember,
+  fetchDiscordChannel: mocks.welcomeChannel,
 }));
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
@@ -140,4 +148,32 @@ it('rejects a member method selection before saving', async () => {
   const form = new FormData();
   form.set('captchaMethod', 'none');
   await expect(saveGuildSetup('guild-1', form)).rejects.toThrow(/actor_unavailable|Administrator/);
+});
+
+it('validates and saves welcome sources from this server', async () => {
+  vi.stubEnv('NODE_ENV', 'test');
+  vi.stubEnv('DRASIL_WEB_E2E_FIXTURE_MODE', 'true');
+  mocks.session.mockResolvedValue({ userId: 'fixture-admin' });
+  mocks.token.mockResolvedValue({ accessToken: 'token' });
+  mocks.assertCanManageGuild.mockResolvedValue({ owner: true, permissions: '8' });
+  mocks.welcomeMember.mockResolvedValue({ roles: [], user: { bot: true } });
+  mocks.welcomeChannel.mockResolvedValue({ guild_id: 'guild-1', type: 0 });
+  const form = new FormData();
+  form.set('welcomeCleanupEnabled', 'on');
+  form.set('welcomeCleanupBotId', '123456789012345678');
+  form.set('welcomeCleanupChannelId', '234567890123456789');
+  await saveGuildSetup('guild-1', form);
+  const { fixtureServerRecord } = await import('@/lib/e2eFixtures');
+  expect(fixtureServerRecord().settings).toMatchObject({
+    welcome_cleanup_enabled: true,
+    welcome_cleanup_bot_id: '123456789012345678',
+    welcome_cleanup_channel_id: '234567890123456789',
+  });
+  mocks.welcomeMember.mockResolvedValue({ roles: [], user: { bot: false } });
+  await expect(saveGuildSetup('guild-1', form)).rejects.toThrow('Choose a bot');
+  mocks.welcomeMember.mockResolvedValue({ roles: [], user: { bot: true } });
+  mocks.welcomeChannel.mockResolvedValue({ guild_id: 'another-server', type: 0 });
+  await expect(saveGuildSetup('guild-1', form)).rejects.toThrow('Choose a text channel');
+  mocks.welcomeChannel.mockResolvedValue({ guild_id: 'guild-1', type: 15 });
+  await expect(saveGuildSetup('guild-1', form)).rejects.toThrow('Choose a text channel');
 });

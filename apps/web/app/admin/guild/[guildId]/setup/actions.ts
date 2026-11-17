@@ -21,6 +21,7 @@ import {
   queueCompleteSetupVerificationRequestWithReceipt,
   queueReportInstructionsRepairRequest,
 } from '@/lib/setupArtifactActionQueue';
+import { fetchDiscordGuildMember, fetchDiscordChannel } from '@/lib/discordApi';
 import { createSetupDashboardService } from '@/lib/setupDashboardService';
 
 function readOptionalFormString(formData: FormData, key: string): string | null | undefined {
@@ -282,6 +283,21 @@ export async function saveGuildSetup(guildId: string, formData: FormData): Promi
 
   const service = createSetupDashboardService();
   await service.assertCanManageGuild(guildId, token.accessToken);
+  const welcomeBotId = guildSetupUpdateSchema.shape.welcomeCleanupBotId.parse(
+    readOptionalFormString(formData, 'welcomeCleanupBotId')
+  );
+  const welcomeChannelId = guildSetupUpdateSchema.shape.welcomeCleanupChannelId.parse(
+    readOptionalFormString(formData, 'welcomeCleanupChannelId')
+  );
+  if (welcomeBotId) {
+    const member = await fetchDiscordGuildMember(guildId, welcomeBotId);
+    if (!member.user?.bot) throw new Error('Choose a bot that belongs to this server.');
+  }
+  if (welcomeChannelId) {
+    const channel = await fetchDiscordChannel(welcomeChannelId);
+    if (channel.guild_id !== guildId || ![0, 5].includes(channel.type))
+      throw new Error('Choose a text channel in this server.');
+  }
   const update = guildSetupUpdateSchema.parse({
     guildId,
     updatedBy: session.userId,
@@ -398,6 +414,9 @@ export async function saveGuildSetup(guildId: string, formData: FormData): Promi
       formData,
       'caseResponderThreadMemberCap'
     ),
+    welcomeCleanupEnabled: formData.get('welcomeCleanupEnabled') === 'on',
+    welcomeCleanupBotId: welcomeBotId,
+    welcomeCleanupChannelId: welcomeChannelId,
     messageDeletionEnabled: formData.get('messageDeletionEnabled') === 'on',
     messageDeletionSourceMessageEnabled:
       formData.get('messageDeletionSourceMessageEnabled') === 'on',

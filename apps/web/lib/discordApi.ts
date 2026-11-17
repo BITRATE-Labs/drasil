@@ -5,6 +5,7 @@ import { readOptionalEnv, requireEnv } from './env';
 const DEFAULT_DISCORD_API_BASE_URL = 'https://discord.com/api/v10';
 const DISCORD_GUILD_PAGE_LIMIT = 200;
 const DISCORD_MESSAGE_PAGE_LIMIT = 100;
+const DISCORD_MEMBER_PAGE_LIMIT = 1000;
 
 export class DiscordApiError extends Error {
   public constructor(
@@ -19,6 +20,7 @@ export class DiscordApiError extends Error {
 export interface DiscordUser {
   readonly id: string;
   readonly username: string;
+  readonly bot?: boolean;
   readonly global_name?: string | null;
   readonly avatar?: string | null;
 }
@@ -279,6 +281,24 @@ export async function fetchDiscordGuildMember(
   userId: string
 ): Promise<DiscordGuildMember> {
   return fetchBotJson(`/guilds/${guildId}/members/${userId}`);
+}
+export async function fetchGuildBots(guildId: string): Promise<DiscordUser[]> {
+  assertDiscordId(guildId);
+  const bots = new Map<string, DiscordUser>();
+  let after: string | undefined;
+  while (true) {
+    const params = new URLSearchParams({ limit: String(DISCORD_MEMBER_PAGE_LIMIT) });
+    if (after) params.set('after', after);
+    const page = await fetchBotJson<DiscordGuildMember[]>(`/guilds/${guildId}/members?${params}`);
+    for (const member of page) if (member.user?.bot) bots.set(member.user.id, member.user);
+    if (page.length < DISCORD_MEMBER_PAGE_LIMIT) break;
+    const next = page.at(-1)?.user?.id;
+    if (!next || next === after) throw new Error('Discord member pagination did not advance.');
+    after = next;
+  }
+  return [...bots.values()].sort((a, b) =>
+    (a.global_name ?? a.username).localeCompare(b.global_name ?? b.username)
+  );
 }
 export async function fetchDiscordGuildChannels(guildId: string): Promise<DiscordChannel[]> {
   assertDiscordId(guildId);

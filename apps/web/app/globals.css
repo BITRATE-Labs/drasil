@@ -1876,3 +1876,37 @@ select {
     align-items: center;
   }
 }
+
+.welcome-source-picker {
+  border: 1px solid var(--border, #777);
+  border-radius: 6px;
+  padding: 0.6rem;
+}
+.welcome-source-picker summary {
+  cursor: pointer;
+}
+.welcome-source-picker input {
+  margin-top: 0.6rem;
+  width: 100%;
+}
+.welcome-source-options {
+  max-height: 16rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+.welcome-source-options button {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-align: left;
+}
+.welcome-source-options button[aria-pressed='true'] {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+}
+.welcome-source-options img {
+  border-radius: 50%;
+}

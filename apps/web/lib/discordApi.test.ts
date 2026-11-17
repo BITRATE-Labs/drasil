@@ -3,6 +3,7 @@ import {
   deleteBotMessage,
   exchangeDiscordCode,
   fetchDiscordUser,
+  fetchGuildBots,
   fetchBotChannelMessages,
   fetchDiscordGuilds,
   type DiscordGuildSummary,
@@ -41,6 +42,24 @@ describe('Discord API helpers', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it('lists bots across member pages, including bots without managed roles', async () => {
+    vi.stubEnv('DRASIL_WEB_BOT_TOKEN', 'bot-token');
+    vi.stubEnv('DISCORD_API_BASE_URL', 'https://discord.test/api/v10');
+    const bot = { id: '123456789012345678', username: 'welcome-bot', bot: true, avatar: 'pfp' };
+    const first = Array.from({ length: 1000 }, (_, i) => ({
+      roles: [],
+      user: { id: String(100000000000000000n + BigInt(i)), username: `member-${i}` },
+    }));
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(first))
+      .mockResolvedValueOnce(jsonResponse([{ roles: [], user: bot }]));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchGuildBots('234567890123456789')).resolves.toEqual([bot]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('after=100000000000000999');
   });
 
   it('paginates current user guilds', async () => {

@@ -47,6 +47,35 @@ describe('GPTService (unit)', () => {
     return { openai, parse };
   }
 
+  describe('welcome recipient extraction', () => {
+    it('extracts the visible recipient without sending target names or identifiers', async () => {
+      const output = { is_welcome: true, recipient_name: 'NEW_MEMBER_42', confidence: 0.99 };
+      const { openai, parse } = buildOpenAiMock(output);
+      await expect(
+        new GPTService(openai).extractWelcomeRecipient([
+          'https://cdn.discordapp.com/attachments/1/2/card.png',
+        ])
+      ).resolves.toEqual(output);
+      expect(parse.mock.calls[0]?.[0]).toMatchObject({
+        store: false,
+        text: { format: { type: 'json_schema', name: 'welcome_recipient' } },
+      });
+      expect(JSON.stringify(parse.mock.calls[0]?.[0])).not.toContain('NEW_MEMBER_42');
+    });
+    it('keeps malformed, refused, and failed extraction results non-actionable', async () => {
+      const { openai, parse } = buildOpenAiMock({ is_welcome: true });
+      const service = new GPTService(openai);
+      await expect(
+        service.extractWelcomeRecipient(['https://cdn.discordapp.com/attachments/1/2/card.png'])
+      ).resolves.toBeNull();
+      parse.mockRejectedValueOnce(new Error('Provider unavailable'));
+      jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await expect(
+        service.extractWelcomeRecipient(['https://cdn.discordapp.com/attachments/1/2/card.png'])
+      ).resolves.toBeNull();
+    });
+  });
+
   describe('source-associated report extraction', () => {
     const signal = new AbortController().signal;
     const textSource: ReportEvidenceSource = {
