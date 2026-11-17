@@ -14,6 +14,7 @@ import {
   type ApprovedRestrictionPlan,
   type RestrictionSelection,
   type RestrictionEffect,
+  type RestrictionChannelFact,
 } from '@drasil/application';
 import { encryptJson, decryptJson } from './crypto';
 import { createWebActionContext } from './application/context';
@@ -92,7 +93,11 @@ export async function requireRestrictionAccess(
     throw new Error('Administrator permission required');
   return createWebActionContext({ guildId, userId: session.userId });
 }
-async function restrictionNames(guildId: string, effects: readonly RestrictionEffect[] = []) {
+async function restrictionNames(
+  guildId: string,
+  effects: readonly RestrictionEffect[] = [],
+  assessedChannels?: readonly RestrictionChannelFact[]
+) {
   const caseIds = [...new Set(effects.flatMap((e) => ('caseId' in e ? [e.caseId] : [])))];
   const members = caseIds.length
     ? await getPostgresPool().query<{ discord_id: string; username: string | null }>(
@@ -105,6 +110,7 @@ async function restrictionNames(guildId: string, effects: readonly RestrictionEf
     fetchDiscordGuildRoles(guildId),
   ]);
   return {
+    assessedChannels,
     members: new Map(
       members.rows.filter((r) => r.username).map((r) => [r.discord_id, r.username!])
     ),
@@ -138,7 +144,8 @@ export function createRestrictionAuditDataAdapter() {
               projectRestrictionAudit(requestId, audit, diagnosticOffset),
               await restrictionNames(
                 guildId,
-                audit.fixes.flatMap((f) => f.effects)
+                audit.fixes.flatMap((f) => f.effects),
+                audit.facts.channels
               )
             )
           : null,
@@ -150,7 +157,7 @@ export function createRestrictionAuditDataAdapter() {
       const plan = await prepareRestrictionPlan(context, selection, deps);
       const audit = await deps.auditStore.load(plan.auditRequestId, guildId);
       if (!audit) throw new Error('Audit unavailable');
-      const names = await restrictionNames(guildId, plan.effects);
+      const names = await restrictionNames(guildId, plan.effects, audit.facts.channels);
       return {
         reference: createRestrictionReviewReference(plan, getOauthEncryptionSecret()),
         expiresAt: plan.expiresAt,
@@ -199,7 +206,15 @@ export function createRestrictionAuditDataAdapter() {
       const { createWebDelegationDatabase } = await import('./mcp/adapters/database');
       const plan = await createRestrictionStores(createWebDelegationDatabase()).loadPlan(requestId);
       if (!plan || plan.guildId !== guildId) return request;
-      const names = await restrictionNames(guildId, plan.effects);
+      const audit = await createWebRestrictionPlanDependencies().auditStore.load(
+        plan.auditRequestId,
+        guildId
+      );
+      const names = await restrictionNames(
+        guildId,
+        plan.effects,
+        audit?.revision === plan.auditRevision ? audit.facts.channels : undefined
+      );
       return {
         ...request,
         restrictionEffectDescriptions: plan.effects.map((effect) =>

@@ -3,11 +3,13 @@ import type {
   PublicRestrictionAudit,
   RestrictionEffect,
   RestrictionFix,
+  RestrictionChannelFact,
 } from '@drasil/application';
 export interface RestrictionNames {
   readonly channels: ReadonlyMap<string, string>;
   readonly roles: ReadonlyMap<string, string>;
   readonly members?: ReadonlyMap<string, string>;
+  readonly assessedChannels?: readonly RestrictionChannelFact[];
   readonly categories?: ReadonlySet<string>;
 }
 const permissionNames = [
@@ -26,8 +28,7 @@ function permissions(bits: bigint): string {
 }
 export function describeRestrictionEffect(
   effect: RestrictionEffect,
-  names: RestrictionNames,
-  affectedScope: readonly string[] = []
+  names: RestrictionNames
 ): string {
   const role = (id: string) => names.roles.get(id) ?? `role ${id}`;
   const channel = (id: string) =>
@@ -61,12 +62,15 @@ export function describeRestrictionEffect(
   switch (effect.kind) {
     case 'edit_overwrite':
       return `${overwrite(effect.expected, effect.desired)} for ${role(effect.roleId)} in ${channel(effect.channelId)}. Applies to ${role(effect.roleId)} holders.${
+        names.assessedChannels?.find((c) => c.id === effect.channelId)?.type === 'category' ||
         names.categories?.has(effect.channelId)
           ? ` Synchronized child channels also affected: ${
-              affectedScope
-                .filter((id) => id !== effect.channelId)
-                .map(channel)
-                .join(', ') || 'none in the assessed scope'
+              names.assessedChannels
+                ? names.assessedChannels
+                    .filter((c) => c.parentId === effect.channelId && c.permissionsLocked)
+                    .map((c) => channel(c.id))
+                    .join(', ') || 'none in the assessed scope'
+                : 'assessed child scope unavailable'
             }.`
           : ''
       }`;
@@ -98,7 +102,7 @@ export function presentRestrictionFix(
   return {
     ...fix,
     after: fix.effects.length
-      ? fix.effects.map((e) => describeRestrictionEffect(e, names, fix.affectedScope)).join(' ')
+      ? fix.effects.map((e) => describeRestrictionEffect(e, names)).join(' ')
       : fix.after,
     affectedScope: fix.affectedScope.map((id) =>
       names.channels.has(id) ? `#${names.channels.get(id)}` : (names.roles.get(id) ?? id)

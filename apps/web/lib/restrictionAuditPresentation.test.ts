@@ -47,3 +47,22 @@ it('describes both future policy and current member removal without claiming pop
   expect(member).toContain('Remove and save Community for member member');
   expect(member).toContain('Other members keep their roles');
 });
+it('keeps grouped category review descriptions scoped to each assessed synchronized child', async () => {
+  const { fixtureGroupedCategoryRestrictionAudit } = await import('./restrictionAuditFixtures');
+  const { presentRestrictionFix } = await import('./restrictionAuditPresentation');
+  const audit = fixtureGroupedCategoryRestrictionAudit();
+  const context = {
+    ...names,
+    channels: new Map(audit.facts.channels.map((c) => [c.id, c.name])),
+    categories: new Set(['category-a', 'category-b']),
+    assessedChannels: audit.facts.channels,
+  };
+  const copy = presentRestrictionFix(audit.fixes[0], context).after;
+  expect(copy).toContain(
+    'in #Category A. Applies to role 910000000000000021 holders. Synchronized child channels also affected: #a-child.'
+  );
+  expect(copy).toContain(
+    'in #Category B. Applies to role 910000000000000021 holders. Synchronized child channels also affected: #b-child.'
+  );
+  expect(copy).not.toContain('#a-independent');
+});

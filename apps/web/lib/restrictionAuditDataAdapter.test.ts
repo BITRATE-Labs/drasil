@@ -51,6 +51,8 @@ const mocks = vi.hoisted(() => ({
   fresh: vi.fn(),
   load: vi.fn(),
   request: vi.fn(),
+  channels: vi.fn(),
+  loadPlan: vi.fn(),
 }));
 vi.mock('./workspaceAccess', () => ({ loadWorkspaceAccess: mocks.access }));
 vi.mock('./session', () => ({
@@ -82,6 +84,7 @@ vi.mock('./mcp/adapters/restriction', () => ({
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.channels.mockResolvedValue([]);
   mocks.access.mockResolvedValue({ kind: 'ready', actor: { owner: true, permissions: '8' } });
   const audit = fixtureRestrictionAuditSnapshot();
   mocks.load.mockResolvedValue(audit);
@@ -153,10 +156,87 @@ it('projects later diagnostic pages without losing fixes or disclosing snapshots
 });
 
 vi.mock('./discordApi', () => ({
-  fetchDiscordGuildChannels: async () => [],
+  fetchDiscordGuildChannels: mocks.channels,
   fetchDiscordGuildRoles: async () => [],
 }));
 
 vi.mock('./setupDataAdapter', () => ({
   getPostgresPool: () => ({ query: async () => ({ rows: [] }) }),
 }));
+it('uses the original assessed per-category children for authoritative apply descriptions', async () => {
+  const { fixtureGroupedCategoryRestrictionAudit } = await import('./restrictionAuditFixtures');
+  const audit = fixtureGroupedCategoryRestrictionAudit();
+  mocks.load.mockResolvedValue(audit);
+  mocks.fresh.mockResolvedValue(audit.facts);
+  mocks.channels.mockResolvedValue(
+    audit.facts.channels.map((c) => ({
+      id: c.id,
+      name: c.name,
+      type: c.type === 'category' ? 4 : 0,
+      parent_id: 'different-current-parent',
+    }))
+  );
+  mocks.request.mockResolvedValue({
+    id: 'apply',
+    actionType: 'apply_case_role_lockdown',
+    status: 'completed',
+  });
+  mocks.loadPlan.mockResolvedValue({
+    ...plan,
+    guildId: audit.guildId,
+    auditRevision: audit.revision,
+    effects: audit.fixes[0].effects,
+  });
+  const adapter = createRestrictionAuditDataAdapter();
+  const review = await adapter.prepareSelection(audit.guildId, {
+    auditRequestId: 'audit',
+    auditRevision: audit.revision,
+    selectedFixIds: ['grouped'],
+  });
+  expect(review.fixes[0].after).toContain(
+    'in #Category A. Applies to role 910000000000000021 holders. Synchronized child channels also affected: #a-child.'
+  );
+  expect(review.fixes[0].after).toContain(
+    'in #Category B. Applies to role 910000000000000021 holders. Synchronized child channels also affected: #b-child.'
+  );
+  const result = await adapter.readApply(audit.guildId, 'apply');
+  const descriptions =
+    result && 'restrictionEffectDescriptions' in result ? result.restrictionEffectDescriptions : [];
+  expect(descriptions[0]).toContain('also affected: #a-child.');
+  expect(descriptions[0]).not.toContain('#b-child');
+  expect(descriptions[1]).toContain('also affected: #b-child.');
+  expect(descriptions[1]).not.toContain('#a-child');
+  expect(result).not.toHaveProperty('facts');
+});
+vi.mock('@drasil/application/postgres', () => ({
+  createRestrictionStores: () => ({ loadPlan: mocks.loadPlan }),
+}));
+vi.mock('./mcp/adapters/database', () => ({ createWebDelegationDatabase: () => ({}) }));
+
+it('does not claim zero affected children when the original apply snapshot is unavailable', async () => {
+  mocks.request.mockResolvedValue({
+    id: 'apply',
+    actionType: 'apply_case_role_lockdown',
+    status: 'completed',
+  });
+  mocks.loadPlan.mockResolvedValue({
+    ...plan,
+    effects: [
+      {
+        kind: 'edit_overwrite',
+        guildId: 'guild',
+        channelId: 'category',
+        roleId: 'role',
+        expected: null,
+        desired: { allow: '0', deny: '1024' },
+      },
+    ],
+  });
+  mocks.channels.mockResolvedValue([{ id: 'category', name: 'Category', type: 4 }]);
+  mocks.load.mockResolvedValue(null);
+  const result = await createRestrictionAuditDataAdapter().readApply('guild', 'apply');
+  const descriptions =
+    result && 'restrictionEffectDescriptions' in result ? result.restrictionEffectDescriptions : [];
+  expect(descriptions[0]).toContain('assessed child scope unavailable');
+  expect(descriptions[0]).not.toContain('none in the assessed scope');
+});

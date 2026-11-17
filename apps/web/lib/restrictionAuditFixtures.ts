@@ -288,3 +288,36 @@ export function fixtureRestrictionAuditSnapshot(now = new Date()): RestrictionAu
     },
   };
 }
+export function fixtureGroupedCategoryRestrictionAudit() {
+  const audit = fixtureRestrictionAuditSnapshot();
+  const base = audit.facts.channels[0];
+  audit.facts.channels = [
+    { ...base, id: 'category-a', name: 'Category A', type: 'category' },
+    { ...base, id: 'child-a', name: 'a-child', parentId: 'category-a', permissionsLocked: true },
+    {
+      ...base,
+      id: 'independent-a',
+      name: 'a-independent',
+      parentId: 'category-a',
+      permissionsLocked: false,
+    },
+    { ...base, id: 'category-b', name: 'Category B', type: 'category' },
+    { ...base, id: 'child-b', name: 'b-child', parentId: 'category-b', permissionsLocked: true },
+  ];
+  audit.fixes = [
+    {
+      ...audit.fixes[0],
+      id: 'grouped',
+      affectedScope: ['category-a', 'child-a', 'category-b', 'child-b'],
+      effects: ['category-a', 'category-b'].map((channelId) => ({
+        kind: 'edit_overwrite' as const,
+        guildId: audit.guildId,
+        channelId,
+        roleId: '910000000000000021',
+        expected: null,
+        desired: { allow: '0', deny: '1024' },
+      })),
+    },
+  ];
+  return audit;
+}
