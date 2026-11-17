@@ -21,7 +21,13 @@ import {
   queueCompleteSetupVerificationRequestWithReceipt,
   queueReportInstructionsRepairRequest,
 } from '@/lib/setupArtifactActionQueue';
-import { fetchDiscordGuildMember, fetchDiscordChannel } from '@/lib/discordApi';
+import {
+  fetchDiscordGuildMember,
+  fetchDiscordChannel,
+  searchGuildBots,
+  discordAvatarUrl,
+} from '@/lib/discordApi';
+import { createSetupDataAdapter } from '@/lib/setupDataAdapter';
 import { createSetupDashboardService } from '@/lib/setupDashboardService';
 
 function readOptionalFormString(formData: FormData, key: string): string | null | undefined {
@@ -289,11 +295,12 @@ export async function saveGuildSetup(guildId: string, formData: FormData): Promi
   const welcomeChannelId = guildSetupUpdateSchema.shape.welcomeCleanupChannelId.parse(
     readOptionalFormString(formData, 'welcomeCleanupChannelId')
   );
-  if (welcomeBotId) {
+  const storedWelcome = (await createSetupDataAdapter().getServer(guildId))?.settings;
+  if (welcomeBotId && welcomeBotId !== storedWelcome?.welcome_cleanup_bot_id) {
     const member = await fetchDiscordGuildMember(guildId, welcomeBotId);
     if (!member.user?.bot) throw new Error('Choose a bot that belongs to this server.');
   }
-  if (welcomeChannelId) {
+  if (welcomeChannelId && welcomeChannelId !== storedWelcome?.welcome_cleanup_channel_id) {
     const channel = await fetchDiscordChannel(welcomeChannelId);
     if (channel.guild_id !== guildId || ![0, 5].includes(channel.type))
       throw new Error('Choose a text channel in this server.');
@@ -466,4 +473,23 @@ function readCaptchaSettingsFormValues(formData: FormData) {
     ),
     captchaMaxSubmissions: readOptionalIntegerFormValue(formData, 'captchaMaxSubmissions'),
   };
+}
+
+export async function searchWelcomeBots(
+  guildId: string,
+  query: string
+): Promise<{ id: string; name: string; detail: string; avatarUrl: string }[]> {
+  const [session, token] = await Promise.all([getCurrentAdminSession(), getCurrentDiscordToken()]);
+  if (!session || !token) throw new Error('Sign in to search server bots.');
+  await createSetupDashboardService().assertCanManageGuild(guildId, token.accessToken);
+  if (typeof query !== 'string' || !query.trim() || query.length > 100) return [];
+  const bots = await searchGuildBots(guildId, query.trim());
+  return bots.map((bot) => ({
+    id: bot.id,
+    name: bot.global_name ?? bot.username,
+    detail: `@${bot.username}`,
+    avatarUrl:
+      discordAvatarUrl(bot) ??
+      `https://cdn.discordapp.com/embed/avatars/${Number((BigInt(bot.id) >> 22n) % 6n)}.png`,
+  }));
 }

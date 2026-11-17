@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   queue: vi.fn(),
   welcomeMember: vi.fn(),
   welcomeChannel: vi.fn(),
+  welcomeSearch: vi.fn(),
 }));
 
 vi.mock('@/lib/application/adapters/authority', () => ({
@@ -24,6 +25,7 @@ vi.mock('@/lib/discordApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/discordApi')>()),
   fetchDiscordGuildMember: mocks.welcomeMember,
   fetchDiscordChannel: mocks.welcomeChannel,
+  searchGuildBots: mocks.welcomeSearch,
 }));
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
@@ -45,6 +47,7 @@ vi.mock('@/lib/setupArtifactActionQueue', () => ({
 
 import {
   saveGuildSetup,
+  searchWelcomeBots,
   queueReportInstructionsRepair,
   queueReportInstructionsRepost,
 } from './actions';
@@ -169,11 +172,54 @@ it('validates and saves welcome sources from this server', async () => {
     welcome_cleanup_bot_id: '123456789012345678',
     welcome_cleanup_channel_id: '234567890123456789',
   });
+  form.set('welcomeCleanupBotId', '123456789012345679');
   mocks.welcomeMember.mockResolvedValue({ roles: [], user: { bot: false } });
   await expect(saveGuildSetup('guild-1', form)).rejects.toThrow('Choose a bot');
   mocks.welcomeMember.mockResolvedValue({ roles: [], user: { bot: true } });
+  form.set('welcomeCleanupChannelId', '234567890123456780');
   mocks.welcomeChannel.mockResolvedValue({ guild_id: 'another-server', type: 0 });
   await expect(saveGuildSetup('guild-1', form)).rejects.toThrow('Choose a text channel');
   mocks.welcomeChannel.mockResolvedValue({ guild_id: 'guild-1', type: 15 });
   await expect(saveGuildSetup('guild-1', form)).rejects.toThrow('Choose a text channel');
+});
+
+it('saves unrelated settings without revalidating unchanged welcome sources', async () => {
+  vi.stubEnv('NODE_ENV', 'test');
+  vi.stubEnv('DRASIL_WEB_E2E_FIXTURE_MODE', 'true');
+  mocks.session.mockResolvedValue({ userId: 'fixture-admin' });
+  mocks.token.mockResolvedValue({ accessToken: 'token' });
+  mocks.assertCanManageGuild.mockResolvedValue({ owner: true, permissions: '8' });
+  mocks.welcomeMember.mockResolvedValue({ roles: [], user: { bot: true } });
+  mocks.welcomeChannel.mockResolvedValue({ guild_id: 'guild-1', type: 0 });
+  const form = new FormData();
+  form.set('welcomeCleanupBotId', '123456789012345678');
+  form.set('welcomeCleanupChannelId', '234567890123456789');
+  await saveGuildSetup('guild-1', form);
+  mocks.welcomeMember.mockClear().mockRejectedValue(new Error('Discord unavailable'));
+  mocks.welcomeChannel.mockClear().mockRejectedValue(new Error('Discord unavailable'));
+  form.set('heuristicMessageThreshold', '17');
+  await saveGuildSetup('guild-1', form);
+  expect(mocks.welcomeMember).not.toHaveBeenCalled();
+  expect(mocks.welcomeChannel).not.toHaveBeenCalled();
+});
+
+it('authenticates bot-name search and returns only safe picker fields', async () => {
+  mocks.session.mockResolvedValue(null);
+  mocks.token.mockResolvedValue(null);
+  await expect(searchWelcomeBots('234567890123456789', 'helper')).rejects.toThrow('Sign in');
+  mocks.session.mockResolvedValue({ userId: 'fixture-admin' });
+  mocks.token.mockResolvedValue({ accessToken: 'token' });
+  mocks.assertCanManageGuild.mockResolvedValue({ owner: true, permissions: '8' });
+  mocks.welcomeSearch.mockResolvedValue([
+    { id: '123456789012345678', username: 'helper', bot: true, avatar: null },
+  ]);
+  expect(await searchWelcomeBots('234567890123456789', ' helper ')).toEqual([
+    {
+      id: '123456789012345678',
+      name: 'helper',
+      detail: '@helper',
+      avatarUrl: expect.stringContaining('cdn.discordapp.com/embed/avatars/'),
+    },
+  ]);
+  expect(mocks.welcomeSearch).toHaveBeenCalledWith('234567890123456789', 'helper');
 });

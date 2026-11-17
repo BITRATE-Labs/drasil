@@ -13,6 +13,11 @@ export interface WelcomeCandidate {
   channel_id: string;
   bot_id: string;
   created_at: Date;
+  snapshots_complete: boolean;
+  verification_attempted: boolean;
+  recipient_id: string | null;
+  verified_edited_at: Date | null;
+  expires_at: Date;
   member_snapshots: Partial<Record<string, WelcomeMemberSnapshot>>;
 }
 
@@ -24,9 +29,9 @@ export class WelcomeMessageRepository {
     const snapshots = JSON.stringify(candidate.member_snapshots);
     await this.prisma.$executeRaw`
       INSERT INTO public.welcome_message_candidates
-        (server_id, message_id, channel_id, bot_id, created_at, member_snapshots)
+        (server_id, message_id, channel_id, bot_id, created_at, member_snapshots, snapshots_complete, expires_at)
       VALUES (${candidate.server_id}, ${candidate.message_id}, ${candidate.channel_id},
-        ${candidate.bot_id}, ${candidate.created_at}, CAST(${snapshots} AS jsonb))
+        ${candidate.bot_id}, ${candidate.created_at}, CAST(${snapshots} AS jsonb), ${candidate.snapshots_complete}, ${candidate.expires_at})
       ON CONFLICT (server_id, message_id) DO NOTHING
     `;
   }
@@ -42,9 +47,24 @@ export class WelcomeMessageRepository {
     return this.prisma.$queryRaw<WelcomeCandidate[]>`
       SELECT * FROM public.welcome_message_candidates
       WHERE server_id = ${serverId} AND channel_id = ${channelId} AND bot_id = ${botId}
+        AND expires_at > now()
+        AND (NOT verification_attempted OR recipient_id = ${userId})
         AND (member_snapshots ? ${userId}
           OR (created_at >= ${joinedAt}::timestamptz AND created_at <= ${until}::timestamptz))
       ORDER BY created_at
+    `;
+  }
+
+  async recordRecipient(
+    serverId: string,
+    messageId: string,
+    recipientId: string | null,
+    editedAt: Date | null
+  ): Promise<void> {
+    await this.prisma.$executeRaw`
+      UPDATE public.welcome_message_candidates
+      SET verification_attempted = true, recipient_id = ${recipientId}, verified_edited_at = ${editedAt}
+      WHERE server_id = ${serverId} AND message_id = ${messageId}
     `;
   }
 

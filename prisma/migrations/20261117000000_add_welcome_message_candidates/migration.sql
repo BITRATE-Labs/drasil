@@ -5,6 +5,11 @@ CREATE TABLE public.welcome_message_candidates (
   bot_id TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
   member_snapshots JSONB NOT NULL DEFAULT '{}',
+  snapshots_complete BOOLEAN NOT NULL DEFAULT FALSE,
+  verification_attempted BOOLEAN NOT NULL DEFAULT FALSE,
+  recipient_id TEXT,
+  verified_edited_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (server_id, message_id)
 );
 CREATE INDEX welcome_message_candidates_source_time_idx

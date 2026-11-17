@@ -35,3 +35,11 @@ test('unavailable bot lists preserve saved configuration', async ({ page }) => {
   await expect(page.getByRole('status')).toContainText('saved selection is preserved');
   await expect(page.locator('input[name="welcomeCleanupBotId"]')).toHaveValue('123456789012345678');
 });
+
+test('bot typeahead finds bots outside the initial known-role list', async ({ page }) => {
+  await page.goto('/iframe.html?id=setup-welcome-cleanup--bot-search&viewMode=story');
+  await page.locator('summary').filter({ hasText: 'Choose welcome bot' }).click();
+  await page.getByRole('searchbox', { name: 'Search welcome bot' }).fill('other');
+  await page.getByRole('button', { name: 'Other Bot @other' }).click();
+  await expect(page.locator('input[name="welcomeCleanupBotId"]')).toHaveValue('123456789012345670');
+});

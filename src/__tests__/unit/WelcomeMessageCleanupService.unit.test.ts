@@ -62,6 +62,11 @@ function setup() {
     channel_id: 'welcome',
     bot_id: 'bot',
     created_at: message.createdAt,
+    snapshots_complete: true,
+    verification_attempted: false,
+    recipient_id: null,
+    verified_edited_at: null,
+    expires_at: new Date('2099-01-01'),
     member_snapshots: structuredClone(snapshots),
   };
   repository.findForBan.mockResolvedValue([candidate]);
@@ -234,6 +239,67 @@ describe('welcome cleanup', () => {
     await f.service.cleanupAfterBan(f.guild, f.user);
     expect(f.repository.collect).not.toHaveBeenCalled();
     expect(f.message.delete).not.toHaveBeenCalled();
+  });
+
+  it('does not use image matching when the member cache was incomplete', async () => {
+    const f = setup();
+    f.candidate.snapshots_complete = false;
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.gpt.extractWelcomeRecipient).not.toHaveBeenCalled();
+    expect(f.message.delete).not.toHaveBeenCalled();
+  });
+
+  it('reuses each message image result across different bans', async () => {
+    const f = setup();
+    f.candidate.member_snapshots.other = {
+      names: ['other_member'],
+      joinedAt: joined.toISOString(),
+    };
+    f.gpt.extractWelcomeRecipient.mockResolvedValue({
+      is_welcome: true,
+      recipient_name: 'OTHER_MEMBER',
+      confidence: 1,
+    });
+    f.repository.recordRecipient.mockImplementation(async (_server, _message, id, editedAt) => {
+      f.candidate.verification_attempted = true;
+      f.candidate.recipient_id = id;
+      f.candidate.verified_edited_at = editedAt;
+    });
+    f.repository.findForBan.mockImplementation(async (_server, id) =>
+      !f.candidate.verification_attempted || f.candidate.recipient_id === id ? [f.candidate] : []
+    );
+    await f.service.cleanupAfterBan(f.guild, f.user);
+    expect(f.message.delete).not.toHaveBeenCalled();
+    await f.service.cleanupAfterBan(f.guild, { id: 'other' } as User);
+    expect(f.message.delete).toHaveBeenCalledTimes(1);
+    expect(f.gpt.extractWelcomeRecipient).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes different bans in a guild and stops after deleting a welcome', async () => {
+    const f = setup();
+    let finish = (value: {
+      is_welcome: boolean;
+      recipient_name: string;
+      confidence: number;
+    }): void => {
+      void value;
+    };
+    f.gpt.extractWelcomeRecipient.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+    );
+    f.repository.findForBan
+      .mockResolvedValueOnce([f.candidate, f.candidate])
+      .mockResolvedValueOnce([]);
+    const first = f.service.cleanupAfterBan(f.guild, f.user);
+    const second = f.service.cleanupAfterBan(f.guild, { id: 'other' } as User);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(f.repository.findForBan).toHaveBeenCalledTimes(1);
+    finish({ is_welcome: true, recipient_name: 'NEW_MEMBER_42', confidence: 1 });
+    await Promise.all([first, second]);
+    expect(f.gpt.extractWelcomeRecipient).toHaveBeenCalledTimes(1);
+    expect(f.message.delete).toHaveBeenCalledTimes(1);
   });
 
   it('shares concurrent cleanup for the same ban', async () => {

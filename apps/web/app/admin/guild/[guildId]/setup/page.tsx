@@ -80,6 +80,7 @@ import {
   queueReportInstructionsRepair,
   queueReportInstructionsRepost,
   saveGuildSetup,
+  searchWelcomeBots,
 } from './actions';
 import { InstallInvitePanel } from '@/components/InstallInvitePanel';
 import { getCurrentAdminSession, getCurrentDiscordToken } from '@/lib/session';
@@ -200,7 +201,7 @@ export default async function GuildSetupPage({ params }: PageProps) {
   let welcomeBots: DiscordUser[] = [];
   let welcomeBotsUnavailable = false;
   try {
-    welcomeBots = await fetchGuildBots(guildId);
+    welcomeBots = await fetchGuildBots(guildId, roles, server?.settings.welcome_cleanup_bot_id);
   } catch {
     welcomeBotsUnavailable = true;
   }
@@ -1191,7 +1192,10 @@ export default async function GuildSetupPage({ params }: PageProps) {
               .filter((channel) => [0, 5].includes(channel.type))
               .map((channel) => ({ id: channel.id, name: `#${channel.name}` }))}
             botsUnavailable={welcomeBotsUnavailable}
+            searchBots={searchWelcomeBots.bind(null, guildId)}
           />
+        </div>
+        <div>
           <h2>Message Deletion</h2>
           <p className="muted">
             High-confidence watchlist deletion preserves moderator evidence, then removes the source

@@ -128,7 +128,7 @@ export class MessageContextRepository implements IMessageContextRepository {
 
   async pruneExpired(now = new Date()): Promise<number> {
     try {
-      const [expiredCount, overflowCount] = await this.prisma.$transaction([
+      const [expiredCount, overflowCount, welcomeCount] = await this.prisma.$transaction([
         this.prisma.$executeRaw`
           DELETE FROM public.message_contexts
           WHERE expires_at <= ${now}
@@ -148,8 +148,17 @@ export class MessageContextRepository implements IMessageContextRepository {
             WHERE ranked.row_number > ${MESSAGE_CONTEXT_SERVER_LIMIT}
           )
         `,
+        this.prisma.$executeRaw`
+          DELETE FROM public.welcome_message_candidates w USING public.servers s
+          WHERE w.server_id = s.guild_id AND (
+            w.expires_at <= ${now}
+            OR s.settings->>'welcome_cleanup_enabled' = 'false'
+            OR w.channel_id IS DISTINCT FROM s.settings->>'welcome_cleanup_channel_id'
+            OR w.bot_id IS DISTINCT FROM s.settings->>'welcome_cleanup_bot_id'
+          )
+        `,
       ]);
-      return Number(expiredCount) + Number(overflowCount);
+      return Number(expiredCount) + Number(overflowCount) + Number(welcomeCount);
     } catch (error) {
       this.handleError(error, 'pruneExpired');
     }

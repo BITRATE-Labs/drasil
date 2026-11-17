@@ -1295,6 +1295,11 @@ model welcome_message_candidates {
   bot_id           String
   created_at       DateTime @db.Timestamptz(6)
   member_snapshots Json     @default("{}")
+  snapshots_complete Boolean @default(false)
+  verification_attempted Boolean @default(false)
+  recipient_id String?
+  verified_edited_at DateTime? @db.Timestamptz(6)
+  expires_at DateTime @db.Timestamptz(6)
 
   @@id([server_id, message_id])
   @@index([server_id, channel_id, bot_id, created_at], map: "welcome_message_candidates_source_time_idx")

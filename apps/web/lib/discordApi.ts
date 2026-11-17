@@ -46,6 +46,7 @@ export interface DiscordRole {
   readonly permissions: string;
   readonly position: number;
   readonly managed: boolean;
+  readonly tags?: { readonly bot_id?: string };
 }
 
 export interface DiscordChannel {
@@ -282,23 +283,40 @@ export async function fetchDiscordGuildMember(
 ): Promise<DiscordGuildMember> {
   return fetchBotJson(`/guilds/${guildId}/members/${userId}`);
 }
-export async function fetchGuildBots(guildId: string): Promise<DiscordUser[]> {
+export async function fetchGuildBots(
+  guildId: string,
+  roles: readonly DiscordRole[],
+  savedId?: string | null
+): Promise<DiscordUser[]> {
+  const ids = [
+    ...new Set([
+      ...roles.flatMap((role) => (role.tags?.bot_id ? [role.tags.bot_id] : [])),
+      ...(savedId ? [savedId] : []),
+    ]),
+  ];
+  if (!ids.length) return [];
   assertDiscordId(guildId);
-  const bots = new Map<string, DiscordUser>();
-  let after: string | undefined;
-  while (true) {
-    const params = new URLSearchParams({ limit: String(DISCORD_MEMBER_PAGE_LIMIT) });
-    if (after) params.set('after', after);
-    const page = await fetchBotJson<DiscordGuildMember[]>(`/guilds/${guildId}/members?${params}`);
-    for (const member of page) if (member.user?.bot) bots.set(member.user.id, member.user);
-    if (page.length < DISCORD_MEMBER_PAGE_LIMIT) break;
-    const next = page.at(-1)?.user?.id;
-    if (!next || next === after) throw new Error('Discord member pagination did not advance.');
-    after = next;
-  }
-  return [...bots.values()].sort((a, b) =>
-    (a.global_name ?? a.username).localeCompare(b.global_name ?? b.username)
+  const users = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        return (await fetchDiscordGuildMember(guildId, id)).user;
+      } catch (error) {
+        if (error instanceof DiscordApiError && error.status === 404) return undefined;
+        throw error;
+      }
+    })
   );
+  return users
+    .filter((user): user is DiscordUser => user?.bot === true)
+    .sort((a, b) => (a.global_name ?? a.username).localeCompare(b.global_name ?? b.username));
+}
+export async function searchGuildBots(guildId: string, query: string): Promise<DiscordUser[]> {
+  assertDiscordId(guildId);
+  const params = new URLSearchParams({ query, limit: String(DISCORD_MEMBER_PAGE_LIMIT) });
+  const members = await fetchBotJson<DiscordGuildMember[]>(
+    `/guilds/${guildId}/members/search?${params}`
+  );
+  return members.flatMap((member) => (member.user?.bot ? [member.user] : []));
 }
 export async function fetchDiscordGuildChannels(guildId: string): Promise<DiscordChannel[]> {
   assertDiscordId(guildId);

@@ -8,6 +8,7 @@ import {
   type WelcomeMemberSnapshot,
 } from '../repositories/WelcomeMessageRepository';
 import type { IServerMemberRepository } from '../repositories/ServerMemberRepository';
+import { MESSAGE_CONTEXT_RETENTION_DAYS } from '../repositories/MessageContextRepository';
 import type { IGPTService } from './GPTService';
 
 const MIN_WELCOME_CONFIDENCE = 0.98;
@@ -56,6 +57,7 @@ export function welcomeNameMatches(
 @injectable()
 export class WelcomeMessageCleanupService {
   private readonly running = new Map<string, Promise<void>>();
+  private readonly guildRuns = new Map<string, Promise<void>>();
   constructor(
     @inject(TYPES.ConfigService) private readonly config: IConfigService,
     @inject(TYPES.WelcomeMessageRepository) private readonly repository: WelcomeMessageRepository,
@@ -64,8 +66,16 @@ export class WelcomeMessageCleanupService {
   ) {}
 
   async collect(message: Message): Promise<void> {
-    if (!message.guild || !message.author.bot) return;
-    const { settings, is_active } = await this.config.getServerConfig(message.guild.id);
+    if (!message.guild || !message.author.bot || !welcomeImageUrls(message).length) return;
+    const cached = this.config.getCachedServerConfig(message.guild.id);
+    if (
+      cached &&
+      (cached.settings.welcome_cleanup_enabled === false ||
+        cached.settings.welcome_cleanup_bot_id !== message.author.id ||
+        cached.settings.welcome_cleanup_channel_id !== message.channelId)
+    )
+      return;
+    const { settings, is_active } = cached ?? (await this.config.getServerConfig(message.guild.id));
     if (
       is_active === false ||
       settings.welcome_cleanup_enabled === false ||
@@ -97,6 +107,18 @@ export class WelcomeMessageCleanupService {
       bot_id: message.author.id,
       created_at: message.createdAt,
       member_snapshots: snapshots,
+      snapshots_complete: message.guild.members.cache.size === message.guild.memberCount,
+      verification_attempted: false,
+      recipient_id: null,
+      verified_edited_at: null,
+      expires_at: new Date(
+        message.createdTimestamp +
+          Math.max(0, settings.message_retention_days ?? MESSAGE_CONTEXT_RETENTION_DAYS) *
+            24 *
+            60 *
+            60 *
+            1000
+      ),
     });
   }
 
@@ -104,7 +126,9 @@ export class WelcomeMessageCleanupService {
     const key = `${guild.id}:${user.id}`;
     const existing = this.running.get(key);
     if (existing) return existing;
-    const run = this.cleanup(guild, user)
+    const previous = this.guildRuns.get(guild.id) ?? Promise.resolve();
+    const run = previous
+      .then(() => this.cleanup(guild, user))
       .catch((error: unknown) => {
         console.warn(
           `Welcome cleanup failed for banned member ${user.id} in guild ${guild.id}:`,
@@ -113,8 +137,10 @@ export class WelcomeMessageCleanupService {
       })
       .finally(() => {
         this.running.delete(key);
+        if (this.guildRuns.get(guild.id) === run) this.guildRuns.delete(guild.id);
       });
     this.running.set(key, run);
+    this.guildRuns.set(guild.id, run);
     return run;
   }
 
@@ -154,20 +180,35 @@ export class WelcomeMessageCleanupService {
         )
           continue;
         const mentions = [...message.mentions.users.keys()];
-        let confirmed = mentions.length === 1 && mentions[0] === user.id;
-        if (!confirmed && mentions.length === 0) {
-          const urls = welcomeImageUrls(message);
-          if (!urls.length) continue;
-          // shortcut: missing join snapshots leave image-only cards untouched; add persisted join snapshots if missed coverage matters.
-          if (!candidate.member_snapshots[user.id]) continue;
-          const recipient = await this.gpt.extractWelcomeRecipient(urls);
-          confirmed =
-            recipient?.is_welcome === true &&
-            recipient.confidence >= MIN_WELCOME_CONFIDENCE &&
-            recipient.recipient_name !== null &&
-            welcomeNameMatches(recipient.recipient_name, user.id, candidate.member_snapshots);
+        let recipientId: string | null = null;
+        const editedAt = message.editedAt ?? null;
+        if (mentions.length === 1) recipientId = mentions[0];
+        else if (mentions.length === 0) {
+          if (
+            candidate.verification_attempted &&
+            (candidate.verified_edited_at?.getTime() ?? null) === (message.editedTimestamp ?? null)
+          ) {
+            recipientId = candidate.recipient_id;
+          } else if (candidate.snapshots_complete) {
+            const urls = welcomeImageUrls(message);
+            if (urls.length) {
+              const recipient = await this.gpt.extractWelcomeRecipient(urls);
+              if (
+                recipient?.is_welcome &&
+                recipient.confidence >= MIN_WELCOME_CONFIDENCE &&
+                recipient.recipient_name
+              ) {
+                const name = recipient.recipient_name;
+                recipientId =
+                  Object.keys(candidate.member_snapshots).find((id) =>
+                    welcomeNameMatches(name, id, candidate.member_snapshots)
+                  ) ?? null;
+              }
+            }
+          }
         }
-        if (!confirmed) continue;
+        await this.repository.recordRecipient(guild.id, message.id, recipientId, editedAt);
+        if (recipientId !== user.id) continue;
         const current = await this.config.getServerConfig(guild.id, {
           forceRefresh: true,
           failOnReadError: true,
@@ -191,6 +232,7 @@ export class WelcomeMessageCleanupService {
           continue;
         await fresh.delete();
         await this.repository.remove(guild.id, message.id);
+        return;
       } catch (error) {
         if ((error as { code?: number } | null)?.code === 10008)
           await this.repository.remove(guild.id, candidate.message_id);

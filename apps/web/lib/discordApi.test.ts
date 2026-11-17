@@ -4,6 +4,7 @@ import {
   exchangeDiscordCode,
   fetchDiscordUser,
   fetchGuildBots,
+  searchGuildBots,
   fetchBotChannelMessages,
   fetchDiscordGuilds,
   type DiscordGuildSummary,
@@ -44,22 +45,32 @@ describe('Discord API helpers', () => {
     vi.unstubAllGlobals();
   });
 
-  it('lists bots across member pages, including bots without managed roles', async () => {
+  it('loads known bots directly and searches bots without managed roles by name', async () => {
     vi.stubEnv('DRASIL_WEB_BOT_TOKEN', 'bot-token');
     vi.stubEnv('DISCORD_API_BASE_URL', 'https://discord.test/api/v10');
     const bot = { id: '123456789012345678', username: 'welcome-bot', bot: true, avatar: 'pfp' };
-    const first = Array.from({ length: 1000 }, (_, i) => ({
-      roles: [],
-      user: { id: String(100000000000000000n + BigInt(i)), username: `member-${i}` },
-    }));
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(first))
-      .mockResolvedValueOnce(jsonResponse([{ roles: [], user: bot }]));
+      .mockResolvedValueOnce(jsonResponse({ roles: [], user: bot }))
+      .mockResolvedValueOnce(
+        jsonResponse([{ roles: [], user: bot }, { user: { id: 'human', username: 'human' } }])
+      );
     vi.stubGlobal('fetch', fetchMock);
-    await expect(fetchGuildBots('234567890123456789')).resolves.toEqual([bot]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('after=100000000000000999');
+    await expect(
+      fetchGuildBots('234567890123456789', [
+        {
+          id: 'role',
+          name: 'Bot',
+          permissions: '0',
+          position: 1,
+          managed: true,
+          tags: { bot_id: bot.id },
+        },
+      ])
+    ).resolves.toEqual([bot]);
+    await expect(searchGuildBots('234567890123456789', 'welcome')).resolves.toEqual([bot]);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/members/123456789012345678');
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/members/search?query=welcome');
   });
 
   it('paginates current user guilds', async () => {

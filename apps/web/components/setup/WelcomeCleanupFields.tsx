@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 
 export interface WelcomeSourceOption {
   readonly id: string;
@@ -13,17 +13,47 @@ function SourcePicker({
   name,
   options,
   savedId,
+  searchOptions,
 }: {
   readonly label: string;
   readonly name: string;
   readonly options: readonly WelcomeSourceOption[];
   readonly savedId: string | null;
+  readonly searchOptions?: (query: string) => Promise<readonly WelcomeSourceOption[]>;
 }) {
   const id = useId();
   const [selected, setSelected] = useState(savedId ?? '');
   const [search, setSearch] = useState('');
-  const current = options.find((option) => option.id === selected);
-  const filtered = options.filter((option) =>
+  const [remote, setRemote] = useState<readonly WelcomeSourceOption[]>([]);
+  const [searchFailed, setSearchFailed] = useState(false);
+  useEffect(() => {
+    if (!searchOptions || !search.trim()) {
+      setRemote([]);
+      return;
+    }
+    let active = true;
+    const timer = setTimeout(() => {
+      searchOptions(search)
+        .then((results) => {
+          if (active) {
+            setRemote(results);
+            setSearchFailed(false);
+          }
+        })
+        .catch(() => {
+          if (active) setSearchFailed(true);
+        });
+    }, 300);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [search, searchOptions]);
+  const available = [
+    ...new Map([...options, ...remote].map((option) => [option.id, option])).values(),
+  ];
+  const current = available.find((option) => option.id === selected);
+  const filtered = available.filter((option) =>
     `${option.name} ${option.detail ?? ''}`.toLowerCase().includes(search.toLowerCase())
   );
   return (
@@ -76,6 +106,9 @@ function SourcePicker({
             </p>
           ) : null}
         </div>
+        {searchFailed ? (
+          <p role="status">Bot search is unavailable. Your saved selection is preserved.</p>
+        ) : null}
       </details>
     </div>
   );
@@ -87,6 +120,7 @@ export function WelcomeCleanupFields({
   bots,
   channels,
   botsUnavailable = false,
+  searchBots,
 }: {
   readonly enabled: boolean;
   readonly botId: string | null;
@@ -94,6 +128,7 @@ export function WelcomeCleanupFields({
   readonly bots: readonly WelcomeSourceOption[];
   readonly channels: readonly WelcomeSourceOption[];
   readonly botsUnavailable?: boolean;
+  readonly searchBots?: (query: string) => Promise<readonly WelcomeSourceOption[]>;
 }) {
   return (
     <section aria-labelledby="welcome-cleanup-title">
@@ -112,6 +147,7 @@ export function WelcomeCleanupFields({
           name="welcomeCleanupBotId"
           options={bots}
           savedId={botId}
+          searchOptions={searchBots}
         />
         <SourcePicker
           label="Welcome channel"
@@ -123,6 +159,16 @@ export function WelcomeCleanupFields({
       {botsUnavailable ? (
         <p role="status">
           The bot list could not be loaded. Your saved selection is preserved. Reload to try again.
+        </p>
+      ) : null}
+      {channelId && !channels.some((c) => c.id === channelId) ? (
+        <p role="status">
+          The saved welcome channel is unavailable in this server. Choose a current text channel.
+        </p>
+      ) : null}
+      {botId && !botsUnavailable && !bots.some((b) => b.id === botId) ? (
+        <p role="status">
+          The saved welcome bot is unavailable in this server. Choose a current bot.
         </p>
       ) : null}
       <p className="muted">
