@@ -33,8 +33,28 @@ export const fullStatement =
 export const fullSource =
   'Complete channel source.\nSecond paragraph with the original link https://example.invalid/review and the complete closing sentence.';
 const id = workspaceIds;
-export function workspaceFixtures() {
-  const pool = new Pool({ connectionString: ownedTestDatabase() });
+interface WorkspaceFixtureOptions {
+  readonly sandboxDatabaseUrl?: string;
+  readonly preserveData?: boolean;
+  readonly secret?: string;
+}
+export function workspaceFixtures(options: WorkspaceFixtureOptions = {}) {
+  function databaseUrl(): string {
+    if (!options.sandboxDatabaseUrl) return ownedTestDatabase();
+    const url = new URL(options.sandboxDatabaseUrl);
+    if (
+      url.protocol !== 'postgresql:' ||
+      url.hostname !== '127.0.0.1' ||
+      url.port !== '55434' ||
+      url.pathname !== '/drasil_sandbox_web' ||
+      url.searchParams.get('schema') !== 'public' ||
+      url.searchParams.size !== 1
+    )
+      throw new Error('Sandbox fixtures require their owned local web database.');
+    return options.sandboxDatabaseUrl;
+  }
+  const cookieSecret = options.secret ?? workspaceSecret;
+  const pool = new Pool({ connectionString: databaseUrl() });
   let server: Server | undefined;
   let unavailable = false;
   let unauthorized = false;
@@ -153,8 +173,36 @@ export function workspaceFixtures() {
       server!.listen(34568, '127.0.0.1', resolve);
     });
   }
+  async function addSessionCookies(context: BrowserContext, origin: string) {
+    const expiresAt = Date.now() + (options.preserveData ? 12 : 1) * 3600000;
+    await context.addCookies([
+      {
+        name: 'drasil_admin_session',
+        value: encodeSignedJson(
+          {
+            userId: id.actor,
+            username: 'Test moderator',
+            avatarUrl: null,
+            issuedAt: Date.now(),
+            expiresAt,
+          },
+          cookieSecret
+        ),
+        url: origin,
+        httpOnly: true,
+        sameSite: 'Lax',
+      },
+      {
+        name: 'drasil_discord_oauth',
+        value: encryptJson({ accessToken: 'controlled-provider-token', expiresAt }, cookieSecret),
+        url: origin,
+        httpOnly: true,
+        sameSite: 'Lax',
+      },
+    ]);
+  }
   async function reset(context: BrowserContext, origin: string) {
-    ownedTestDatabase();
+    databaseUrl();
     unavailable = false;
     unauthorized = false;
     calls.length = 0;
@@ -164,6 +212,13 @@ export function workspaceFixtures() {
     identityId = id.actor;
     failures.clear();
     malformedResponses.clear();
+    if (options.preserveData) {
+      const existing = await pool.query('SELECT 1 FROM servers WHERE guild_id=$1', [id.guild]);
+      if (existing.rowCount) {
+        await addSessionCookies(context, origin);
+        return;
+      }
+    }
     await pool.query(
       'update detection_events set latest_verification_event_id=null where server_id=any($1::text[])',
       [[id.guild, id.foreignGuild]]
@@ -269,35 +324,7 @@ export function workspaceFixtures() {
       "insert into moderation_queue_items(id,server_id,user_id,item_type,detection_event_id) values($1,$2,$3,'observed_alert_mirror',$4)",
       [id.observedQueue, id.guild, id.member, id.observed]
     );
-    const expiresAt = Date.now() + 3600000;
-    await context.addCookies([
-      {
-        name: 'drasil_admin_session',
-        value: encodeSignedJson(
-          {
-            userId: id.actor,
-            username: 'Test moderator',
-            avatarUrl: null,
-            issuedAt: Date.now(),
-            expiresAt,
-          },
-          workspaceSecret
-        ),
-        url: origin,
-        httpOnly: true,
-        sameSite: 'Lax',
-      },
-      {
-        name: 'drasil_discord_oauth',
-        value: encryptJson(
-          { accessToken: 'controlled-provider-token', expiresAt },
-          workspaceSecret
-        ),
-        url: origin,
-        httpOnly: true,
-        sameSite: 'Lax',
-      },
-    ]);
+    await addSessionCookies(context, origin);
   }
   async function finishCase(status: 'verified' | 'banned' = 'verified') {
     const result = await pool.query(
