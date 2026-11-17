@@ -1,7 +1,7 @@
 import { caseFact } from './restrictionTestData';
 import { prepareRestrictionPlan } from './restrictionActions';
 import { context, fixture, fix } from './restrictionExecutionTestData';
-import type { RestrictionFix } from './restrictionTypes';
+import { restrictionCaseFactSchema, type RestrictionFix } from './restrictionTypes';
 test.each([
   { selectedFixIds: [] },
   { selectedFixIds: ['repair', 'repair'] },
@@ -47,7 +47,7 @@ test('renames are cosmetic, permission changes are material', async () => {
 test('grouped policy and current-member repair freezes both effects and membership identity', async () => {
   const f = fixture();
   const member = caseFact({ roleIds: ['case', 'member'] });
-  f.state.cases = [member];
+  f.state.cases = [restrictionCaseFactSchema.parse(member)];
   f.audit.fixes[0] = {
     ...fix,
     effects: [
@@ -75,6 +75,20 @@ test('grouped policy and current-member repair freezes both effects and membersh
     'update_quarantine_policy',
     'quarantine_case_roles',
   ]);
+  const { repairEligibility, ...memberFields } = member;
+  f.deps.readFresh.mockResolvedValue({
+    ...f.state,
+    cases: [
+      {
+        repairEligibility: repairEligibility
+          ? { blockedRoles: repairEligibility.blockedRoles, reason: repairEligibility.reason }
+          : undefined,
+        ...memberFields,
+        roleIds: [...memberFields.roleIds].reverse(),
+      },
+    ],
+  });
+  await expect(prepareRestrictionPlan(context, f.selection, f.deps)).resolves.toEqual(plan);
   f.deps.readFresh.mockResolvedValue({
     ...f.state,
     cases: [

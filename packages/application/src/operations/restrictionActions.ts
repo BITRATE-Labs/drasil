@@ -5,6 +5,7 @@ import type { RestrictionAuditStore } from './restrictionPersistence';
 import { normalizeRestrictionEffects } from './restrictionProposals';
 import {
   restrictionSelectionSchema,
+  restrictionCaseFactSchema,
   type ApprovedRestrictionPlan,
   type RestrictionSelection,
   type RestrictionFacts,
@@ -91,7 +92,7 @@ export function restrictionMaterialFingerprint(
     })),
     cases: [...cases]
       .sort((a, b) => a.caseId.localeCompare(b.caseId))
-      .map((c) => ({ ...c, roleIds: [...c.roleIds].sort() })),
+      .map((c) => restrictionCaseFactSchema.parse({ ...c, roleIds: [...c.roleIds].sort() })),
     threads: sorted(facts.threads.filter((t) => threadIds.has(t.id))).map((t) => ({
       ...t,
       memberIds: [...t.memberIds].sort(),

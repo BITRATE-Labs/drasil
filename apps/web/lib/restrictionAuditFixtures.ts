@@ -277,6 +277,7 @@ export function fixtureRestrictionAuditSnapshot(now = new Date()): RestrictionAu
           owner: false,
           metadataAvailable: true,
           threadId: null,
+          repairEligibility: { reason: null, blockedRoles: [] },
         },
       ],
       casesComplete: true,
