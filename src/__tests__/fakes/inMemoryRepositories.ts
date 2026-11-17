@@ -2834,6 +2834,12 @@ export class InMemoryModerationOutcomeRepository implements IModerationOutcomeRe
 }
 
 export class InMemoryRoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshotRepository {
+  async appendRestrictionRepairRoles(): Promise<RoleQuarantineSnapshot | null> {
+    throw new Error('Repair ownership requires the real database fixture.');
+  }
+  async recordRestrictionRepairOutcome(): Promise<RoleQuarantineSnapshot | null> {
+    throw new Error('Repair ownership requires the real database fixture.');
+  }
   private snapshots: RoleQuarantineSnapshot[] = [];
   private idCounter = 0;
 

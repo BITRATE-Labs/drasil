@@ -13,6 +13,7 @@ import { Prisma } from '../../db/prisma';
 import { randomUUID } from 'crypto';
 import {
   getReportBanAttemptToken,
+  getRestrictionAttemptToken,
   IModerationActionRequestRepository,
 } from '../../repositories/ModerationActionRequestRepository';
 import {
@@ -29,11 +30,21 @@ export class InMemoryModerationActionRequestRepository implements IModerationAct
     }
   ) {}
   public rows = new Map<string, ModerationActionRequest>();
+  private ownsRestriction(row: ModerationActionRequest, token?: string): boolean {
+    return (
+      (row.metadata as Prisma.JsonObject).restriction_schema_version !== 1 ||
+      (row.status === 'processing' &&
+        getRestrictionAttemptToken(row) === token &&
+        Boolean(row.updated_at && row.updated_at.getTime() >= Date.now() - 15 * 60_000))
+    );
+  }
   async enqueue(input: ModerationActionRequestCreate): Promise<ModerationActionRequest> {
     const existing = [...this.rows.values()].find(
       (row) => row.idempotency_key === input.idempotencyKey
     );
     if (existing) {
+      if ((existing.metadata as Prisma.JsonObject).restriction_schema_version === 1)
+        return existing;
       if (
         existing.status !== ModerationActionRequestStatus.FAILED ||
         parseReportBanState(existing.metadata).report_ban_phase ||
@@ -124,20 +135,37 @@ export class InMemoryModerationActionRequestRepository implements IModerationAct
     if (!row) return null;
     const claimed = {
       ...row,
+      metadata: {
+        ...(row.metadata as Prisma.JsonObject),
+        ...((row.metadata as Prisma.JsonObject).restriction_schema_version === 1
+          ? { restriction_attempt_token: randomUUID() }
+          : {}),
+      },
       status: ModerationActionRequestStatus.PROCESSING,
       updated_at: new Date(),
     };
     this.rows.set(row.id, claimed);
     return claimed;
   }
-  async heartbeat(id: string): Promise<ModerationActionRequest | null> {
-    return this.findById(id);
+  async heartbeat(
+    id: string,
+    expectedAttemptToken?: string
+  ): Promise<ModerationActionRequest | null> {
+    const row = await this.findById(id);
+    if (row && this.ownsRestriction(row, expectedAttemptToken)) {
+      const next = { ...row, updated_at: new Date() };
+      this.rows.set(id, next);
+      return next;
+    }
+    return row;
   }
   async mergeMetadata(
     id: string,
     metadata: Prisma.JsonObject
   ): Promise<ModerationActionRequest | null> {
     assertUnrelatedReportBanMetadata(metadata);
+    if (Object.keys(metadata).some((key) => key.startsWith('restriction_')))
+      throw new Error('Restriction metadata is immutable.');
     const row = this.rows.get(id);
     if (!row) return null;
     const next = {
@@ -193,6 +221,7 @@ export class InMemoryModerationActionRequestRepository implements IModerationAct
   ): Promise<ModerationActionRequest | null> {
     const row = this.rows.get(id);
     if (!row) return null;
+    if (!this.ownsRestriction(row, expectedAttemptToken)) return row;
     if (
       row.action_type === 'ban_observed_detection' &&
       getReportBanAttemptToken(row) !== expectedAttemptToken
@@ -224,6 +253,7 @@ export class InMemoryModerationActionRequestRepository implements IModerationAct
   ): Promise<ModerationActionRequest | null> {
     const row = this.rows.get(id);
     if (!row) return null;
+    if (!this.ownsRestriction(row, expectedAttemptToken)) return row;
     if (
       row.action_type === 'ban_observed_detection' &&
       getReportBanAttemptToken(row) !== expectedAttemptToken
@@ -247,6 +277,7 @@ export class InMemoryModerationActionRequestRepository implements IModerationAct
   ): Promise<ModerationActionRequest | null> {
     const row = this.rows.get(id);
     if (!row) return null;
+    if (!this.ownsRestriction(row, expectedAttemptToken)) return row;
     if (
       row.action_type === 'ban_observed_detection' &&
       getReportBanAttemptToken(row) !== expectedAttemptToken

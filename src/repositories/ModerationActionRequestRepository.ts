@@ -34,6 +34,14 @@ export function getReportBanAttemptToken(request: ModerationActionRequest): stri
   return typeof token === 'string' ? token : undefined;
 }
 
+export function getRestrictionAttemptToken(request: ModerationActionRequest): string | undefined {
+  const metadata = request.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+  return typeof metadata.restriction_attempt_token === 'string'
+    ? metadata.restriction_attempt_token
+    : undefined;
+}
+
 export interface ReportBanReviewDisposition {
   operationId: string;
   attemptToken: string;
@@ -184,7 +192,7 @@ export class ModerationActionRequestRepository implements IModerationActionReque
         update moderation_action_requests
         set status = 'processing'::moderation_action_request_status,
             attempts = attempts + 1,
-            metadata = CASE WHEN action_type = 'ban_observed_detection' THEN coalesce(metadata, '{}'::jsonb) || jsonb_build_object('report_ban_attempt_token', coalesce(metadata->>'report_ban_attempt_token', gen_random_uuid()::text)) ELSE metadata END,
+            metadata = CASE WHEN action_type = 'ban_observed_detection' THEN coalesce(metadata, '{}'::jsonb) || jsonb_build_object('report_ban_attempt_token', coalesce(metadata->>'report_ban_attempt_token', gen_random_uuid()::text)) WHEN metadata->>'restriction_schema_version'='1' AND action_type in ('audit_case_role_lockdown','apply_case_role_lockdown') THEN coalesce(metadata, '{}'::jsonb) || jsonb_build_object('restriction_attempt_token', gen_random_uuid()::text) ELSE metadata END,
             started_at = now(),
             updated_at = now()
         where id = (
@@ -195,13 +203,13 @@ export class ModerationActionRequestRepository implements IModerationActionReque
              or (
                status = 'processing'::moderation_action_request_status
                and actor_surface <> 'mcp'
-               and action_type in (
+               and (metadata->>'restriction_schema_version'='1' and action_type in ('audit_case_role_lockdown','apply_case_role_lockdown') or action_type in (
                  'preview_account_quarantine'::moderation_action_request_type,
                  'quarantine_compromised_account'::moderation_action_request_type,
                  'preview_case_message_deletion'::moderation_action_request_type,
                  'execute_case_message_deletion'::moderation_action_request_type,
                  'ban_case_user_with_message_cleanup'::moderation_action_request_type
-               )
+               ))
                and updated_at < now() - interval '15 minutes'
              )
           order by
@@ -228,6 +236,7 @@ export class ModerationActionRequestRepository implements IModerationActionReque
         set updated_at = now(),
             metadata = case when metadata->>'report_ban_phase' is not null then metadata || jsonb_build_object('report_ban_lease_until', (now() + interval '15 minutes')::text) else metadata end
         where id = ${id}::uuid
+          AND (not (coalesce(metadata->>'restriction_schema_version','')='1' and action_type in ('audit_case_role_lockdown','apply_case_role_lockdown')) OR (status='processing' AND metadata->>'restriction_attempt_token'=${expectedAttemptToken ?? null}::text AND updated_at >= clock_timestamp()-interval '15 minutes' AND (actor_surface<>'mcp' OR EXISTS (SELECT 1 FROM mcp_executions e WHERE e.queue_request_id=moderation_action_requests.id AND metadata->'delegation'->>'executionId'=e.id::text AND e.started_at IS NOT NULL AND e.completed_at IS NULL))))
           AND (action_type <> 'ban_observed_detection' OR metadata->>'report_ban_attempt_token' IS NOT DISTINCT FROM ${expectedAttemptToken ?? null}::text)
           and not (actor_surface = 'mcp' and updated_at < clock_timestamp() - interval '15 minutes')
           and (status = 'processing'::moderation_action_request_status or metadata->>'report_ban_phase' is not null)
@@ -245,6 +254,8 @@ export class ModerationActionRequestRepository implements IModerationActionReque
   ): Promise<ModerationActionRequest | null> {
     try {
       assertUnrelatedReportBanMetadata(metadata);
+      if (Object.keys(metadata).some((key) => key.startsWith('restriction_')))
+        throw new Error('Restriction metadata is immutable.');
       const rows = await this.prisma.$queryRaw<ModerationActionRequest[]>`
         update moderation_action_requests
         set metadata = coalesce(metadata, '{}'::jsonb) || ${JSON.stringify(metadata)}::jsonb,
@@ -634,6 +645,7 @@ export class ModerationActionRequestRepository implements IModerationActionReque
             last_error = null,
             result = CASE WHEN action_type = 'ban_observed_detection' AND metadata->>'report_ban_phase' = 'discord_confirmed' AND ${JSON.stringify(result ?? {})}::jsonb->'observed_ban_result'->>'status' = 'ban_outcome_unknown' THEN jsonb_set(${JSON.stringify(result ?? {})}::jsonb, '{observed_ban_result,status}', '"banned_updates_pending"'::jsonb) ELSE ${JSON.stringify(result ?? {})}::jsonb END
         where id = ${id}::uuid
+          AND (not (coalesce(metadata->>'restriction_schema_version','')='1' and action_type in ('audit_case_role_lockdown','apply_case_role_lockdown')) OR (status='processing' AND metadata->>'restriction_attempt_token'=${expectedAttemptToken ?? null}::text AND updated_at >= clock_timestamp()-interval '15 minutes' AND (actor_surface<>'mcp' OR EXISTS (SELECT 1 FROM mcp_executions e WHERE e.queue_request_id=moderation_action_requests.id AND metadata->'delegation'->>'executionId'=e.id::text AND e.started_at IS NOT NULL AND e.completed_at IS NULL))))
           AND (action_type <> 'ban_observed_detection' OR metadata->>'report_ban_attempt_token' IS NOT DISTINCT FROM ${expectedAttemptToken ?? null}::text)
           AND NOT (actor_surface='mcp' AND status='completed' AND action_type <> 'ban_observed_detection')
           AND NOT (action_type = 'ban_observed_detection' AND coalesce(result->'observed_ban_result'->>'status', '') = 'banned')
@@ -659,6 +671,7 @@ export class ModerationActionRequestRepository implements IModerationActionReque
             updated_at = now(),
             last_error = ${errorMessage}
         where id = ${id}::uuid
+          AND (not (coalesce(metadata->>'restriction_schema_version','')='1' and action_type in ('audit_case_role_lockdown','apply_case_role_lockdown')) OR (status='processing' AND metadata->>'restriction_attempt_token'=${expectedAttemptToken ?? null}::text AND updated_at >= clock_timestamp()-interval '15 minutes' AND (actor_surface<>'mcp' OR EXISTS (SELECT 1 FROM mcp_executions e WHERE e.queue_request_id=moderation_action_requests.id AND metadata->'delegation'->>'executionId'=e.id::text AND e.started_at IS NOT NULL AND e.completed_at IS NULL))))
           AND (action_type <> 'ban_observed_detection' OR metadata->>'report_ban_attempt_token' IS NOT DISTINCT FROM ${expectedAttemptToken ?? null}::text)
           AND NOT ((actor_surface='mcp' OR action_type in ('ban_user', 'kick_user')) AND status = 'completed')
           AND NOT (action_type = 'ban_observed_detection' AND (metadata->>'report_ban_phase' IS NOT NULL OR coalesce(result->'observed_ban_result'->>'status', '') IN ('banned', 'banned_updates_pending', 'ban_outcome_unknown')))

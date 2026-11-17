@@ -733,6 +733,16 @@ async function validateQueuedAdmission(
   const persisted = rows.rows[0];
   if (!persisted || !matchesQueueAdmission(execution, queue, persisted))
     return { kind: 'denied', code: 'binding_mismatch' };
+  if (
+    persisted.metadata?.restriction_schema_version === 1 &&
+    persisted.metadata.restriction_attempt_token !==
+      queue.request.metadata?.restriction_attempt_token
+  )
+    return {
+      kind: 'denied',
+      code: 'execution_interrupted_before_send',
+      persistence: 'observe_only',
+    };
   // A stale owner cannot admit new work after its queue lease expires.
   // Already-admitted executions remain read-only observations, including after revocation.
   if (!execution.startedAt && !execution.completedAt) {
@@ -1042,9 +1052,14 @@ export async function settleMcpQueue(
           ))
       )
         return null;
-      if (await hasCommittedContainment(client, execution, request)) {
+      if (
+        (request.metadata?.restriction_schema_version === 1 &&
+          ['audit_case_role_lockdown', 'apply_case_role_lockdown'].includes(request.action_type) &&
+          !execution.completedAt) ||
+        (await hasCommittedContainment(client, execution, request))
+      ) {
         const claimed = await client.query(
-          `update moderation_action_requests set status='processing',attempts=attempts+1,updated_at=clock_timestamp() where id=$1::uuid returning *`,
+          `update moderation_action_requests set status='processing',attempts=attempts+1,updated_at=clock_timestamp(),metadata=case when metadata->>'restriction_schema_version'='1' and action_type in ('audit_case_role_lockdown','apply_case_role_lockdown') then metadata || jsonb_build_object('restriction_attempt_token',gen_random_uuid()::text) else metadata end where id=$1::uuid returning *`,
           [request.id]
         );
         return claimed.rows[0];

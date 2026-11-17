@@ -4,6 +4,7 @@ import { inject, injectable } from 'inversify';
 import { TYPES } from '../di/symbols';
 import {
   getReportBanAttemptToken,
+  getRestrictionAttemptToken,
   IModerationActionRequestRepository,
 } from '../repositories/ModerationActionRequestRepository';
 import { ModerationActionRequest } from '../repositories/types';
@@ -113,7 +114,10 @@ export class ModerationActionRequestService implements IModerationActionRequestS
   private async processClaimedRequest(request: ModerationActionRequest): Promise<void> {
     const heartbeat = setInterval(() => {
       void this.repository
-        .heartbeat(request.id, getReportBanAttemptToken(request))
+        .heartbeat(
+          request.id,
+          getRestrictionAttemptToken(request) ?? getReportBanAttemptToken(request)
+        )
         .catch((error) => {
           if (request.actor_surface === 'mcp') console.warn('Delegated heartbeat unavailable.');
           else console.warn(`Failed to heartbeat moderation action request ${request.id}:`, error);
@@ -126,7 +130,7 @@ export class ModerationActionRequestService implements IModerationActionRequestS
       await this.repository.fail(
         request.id,
         this.errorMessage(error),
-        getReportBanAttemptToken(request)
+        getRestrictionAttemptToken(request) ?? getReportBanAttemptToken(request)
       );
     } finally {
       clearInterval(heartbeat);
@@ -169,12 +173,13 @@ export class ModerationActionRequestService implements IModerationActionRequestS
     const completed = await this.repository.complete(
       request.id,
       outcome,
-      getReportBanAttemptToken(request)
+      getRestrictionAttemptToken(request) ?? getReportBanAttemptToken(request)
     );
     if (
       !completed ||
       completed.status !== 'completed' ||
-      getReportBanAttemptToken(completed) !== getReportBanAttemptToken(request)
+      (getRestrictionAttemptToken(completed) ?? getReportBanAttemptToken(completed)) !==
+        (getRestrictionAttemptToken(request) ?? getReportBanAttemptToken(request))
     )
       return;
     try {

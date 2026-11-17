@@ -102,3 +102,8 @@ export * from './operations/restrictionTypes';
 export * from './operations/restrictionPolicy';
 export * from './operations/restrictionAssessment';
 export * from './operations/restrictionProposals';
+
+export type {
+  RestrictionAuditStore,
+  RestrictionExecutionStore,
+} from './operations/restrictionPersistence';

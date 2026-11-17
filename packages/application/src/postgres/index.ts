@@ -20,3 +20,5 @@ export { createCaptchaCompletionStore } from './captchaCompletion';
 export type { CaptchaCompletionStore, CaptchaStoredAttemptCompletion } from './captchaCompletion';
 
 export { applyCaptchaMethodChange } from './captchaConfiguration';
+
+export { createRestrictionStores, restrictionActiveFenceSql } from './restriction';
