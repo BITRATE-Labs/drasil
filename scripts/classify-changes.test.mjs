@@ -182,6 +182,40 @@ test('deployment decisions retain changes since the last actual successful rollo
           : { jobs: jobs[path.match(/runs\/(\d+)/)[1]], total_count: 1 };
       const run = (id, sha, event = 'push') => ({ id, head_sha: sha, event });
       const job = (conclusion) => [{ name, conclusion, completed_at: '2026-11-18T00:00:00Z' }];
+      const uncertainJobs = {
+        2: [{ name, conclusion: 'failure', completed_at: '2026-11-18T01:00:00Z' }],
+        1: job('success'),
+      };
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(2, old, 'workflow_dispatch'), run(1, released)], uncertainJobs),
+          cwd
+        ),
+        true
+      );
+      uncertainJobs[2][0].completed_at = null;
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(2, old, 'workflow_dispatch'), run(1, released)], uncertainJobs),
+          cwd
+        ),
+        true
+      );
+      uncertainJobs[2][0].completed_at = '2026-11-17T00:00:00Z';
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(2, old, 'workflow_dispatch'), run(1, released)], uncertainJobs),
+          cwd
+        ),
+        false
+      );
+
       assert.equal(
         await deploymentRequired(
           { after },

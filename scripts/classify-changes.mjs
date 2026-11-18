@@ -78,19 +78,24 @@ export async function deploymentRequired(event, target, api, cwd = process.cwd()
       [...main.workflow_runs, ...manual.workflow_runs].map((run) => [run.id, run])
     );
     let receipt;
+    let uncertain = -Infinity;
     for (const run of runs.values()) {
       if (String(run.id) === process.env.GITHUB_RUN_ID) continue;
       if (!['push', 'workflow_dispatch'].includes(run.event)) continue;
       const { jobs, total_count: total } = await api(`/actions/runs/${run.id}/jobs?per_page=100`);
       if (total > jobs.length) return true;
-      const job = jobs.find((entry) => entry.name === jobName && entry.conclusion === 'success');
-      if (!job) continue;
+      const job = jobs.find((entry) => entry.name === jobName);
+      if (!job || job.conclusion === 'skipped') continue;
       const completed = Date.parse(job.completed_at);
       if (!Number.isFinite(completed)) return true;
+      if (job.conclusion !== 'success') {
+        uncertain = Math.max(uncertain, completed);
+        continue;
+      }
       if (!receipt || completed > receipt.completed) receipt = { run, completed };
     }
     // Manual recovery can deploy a ref different from the workflow's head SHA.
-    if (receipt?.run.event === 'push') {
+    if (receipt?.run.event === 'push' && uncertain < receipt.completed) {
       return classifyChanges(
         readChanges({ before: receipt.run.head_sha, after: event.after }, cwd)
       )[target];
