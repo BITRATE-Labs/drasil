@@ -1,3 +1,5 @@
+import { readAutomaticModerationResponse } from '@drasil/application';
+import { IDetectionEventsRepository } from '../repositories/DetectionEventsRepository';
 import { isDiscordUnknownBanError } from '../utils/discordErrors';
 import { randomUUID } from 'node:crypto';
 import { Guild, GuildMember, PartialGuildMember, User } from 'discord.js';
@@ -14,6 +16,7 @@ import { IVerificationEventRepository } from '../repositories/VerificationEventR
 import { ICaptchaChallengeRepository } from '../repositories/CaptchaChallengeRepository';
 import {
   AdminActionType,
+  DetectionType,
   CaseAttentionState,
   CaseContainmentStatus,
   CaseKind,
@@ -314,7 +317,10 @@ export class UserModerationService implements IUserModerationService, ICombinedB
     roleQuarantineService?: IRoleQuarantineService,
     @inject(TYPES.CaptchaChallengeRepository)
     @optional()
-    captchaChallengeRepository?: ICaptchaChallengeRepository
+    captchaChallengeRepository?: ICaptchaChallengeRepository,
+    @inject(TYPES.DetectionEventsRepository)
+    @optional()
+    private readonly detectionEventsRepository?: IDetectionEventsRepository
   ) {
     this.serverMemberRepository = serverMemberRepository;
     this.notificationManager = notificationManager;
@@ -2168,6 +2174,69 @@ export class UserModerationService implements IUserModerationService, ICombinedB
     }
   }
 
+  private async reconcileBannedObservedAlerts(
+    guildId: string,
+    userId: string,
+    moderator: User
+  ): Promise<void> {
+    if (!this.detectionEventsRepository) return;
+    try {
+      const detections = await this.detectionEventsRepository.findByServerAndUser(guildId, userId);
+      for (const detection of detections) {
+        const metadata = detection.metadata ?? {};
+        // Linked reports keep their own ban lifecycle and reconciliation owner.
+        if (
+          detection.detection_type === DetectionType.USER_REPORT ||
+          detection.latest_verification_event_id ||
+          !metadata.observed_notification_message_id
+        )
+          continue;
+        const claimed = await this.detectionEventsRepository.claimObservedAction(detection.id, {
+          observed_action: AdminActionType.BAN,
+          observed_action_by: moderator.id,
+          observed_action_at: new Date().toISOString(),
+        });
+        if (!claimed) continue;
+        try {
+          const updated = await this.notificationManager.markObservedDetectionActionTaken(
+            detection.id,
+            'banned this user',
+            moderator,
+            AdminActionType.BAN
+          );
+          if (!updated) throw new Error('Observed ban notification update is incomplete.');
+          const response = readAutomaticModerationResponse(claimed.metadata);
+          if (response) {
+            const completed =
+              await this.detectionEventsRepository.completeAutomaticResponseAttention({
+                detectionEventId: detection.id,
+                serverId: guildId,
+                userId,
+                expectedResponse: response,
+                actorId: moderator.id,
+                completedAt: new Date(),
+              });
+            if (!completed)
+              throw new Error('Observed ban attention changed during reconciliation.');
+          }
+          await this.moderationQueueService?.deleteObservedAlertMirror(detection.id);
+        } catch (error) {
+          await this.detectionEventsRepository.releaseObservedAction(
+            detection.id,
+            AdminActionType.BAN,
+            moderator.id
+          );
+          console.warn(
+            `Ban succeeded but observed alert ${detection.id} reconciliation failed:`,
+            error
+          );
+        }
+      }
+    } catch (error) {
+      console.warn('Ban succeeded but observed alert reconciliation failed:', error);
+    }
+  }
+
   public async finalizeSuccessfulMemberBan(
     member: GuildMember,
     reason: string,
@@ -2236,6 +2305,8 @@ export class UserModerationService implements IUserModerationService, ICombinedB
         recordWithoutVerificationEvent: true,
       }
     );
+
+    await this.reconcileBannedObservedAlerts(member.guild.id, member.id, moderator);
 
     this.captureModerationAction(
       member,
@@ -2691,6 +2762,7 @@ export class UserModerationService implements IUserModerationService, ICombinedB
         );
       }
 
+      await this.reconcileBannedObservedAlerts(guild.id, userId, moderator);
       return true;
     } catch (error) {
       console.error(`Failed to ban user ${userId} by ID:`, error);
@@ -2708,6 +2780,8 @@ export class UserModerationService implements IUserModerationService, ICombinedB
       if (!existingBan) {
         throw new Error(`User ${userId} is not banned in guild ${guild.id}`);
       }
+
+      await this.reconcileBannedObservedAlerts(guild.id, userId, moderator);
 
       const verificationEvents = await this.verificationEventRepository.findByUserAndServer(
         userId,

@@ -121,7 +121,8 @@ describe('UserModerationService (unit)', () => {
       dependencies.moderationOutcomeService,
       dependencies.moderationQueueService,
       dependencies.roleQuarantineService,
-      dependencies.captchaChallengeRepository
+      dependencies.captchaChallengeRepository,
+      detectionEventsRepository
     );
   }
 
@@ -2505,6 +2506,153 @@ describe('UserModerationService (unit)', () => {
         quarantine_attempt_id: null,
         metadata: { terminal_completed: true },
       })
+    );
+  });
+
+  it('marks a no-case observed alert handled after a direct Drasil ban', async () => {
+    const guildId = 'guild-observed-direct-ban';
+    const userId = 'user-observed-direct-ban';
+    const moderator = { id: 'moderator-direct-ban' } as User;
+    await serverRepository.getOrCreateServer(guildId);
+    await userRepository.getOrCreateUser(userId, 'test-user');
+    const detection = await createDetection(guildId, userId);
+    await detectionEventsRepository.patchMetadata(detection.id, {
+      observed_notification_message_id: 'observed-message',
+      observed_notification_channel_id: 'observed-channel',
+    });
+
+    await expect(
+      buildService().banUser(buildMember(guildId, userId), 'Moderator decision', moderator)
+    ).resolves.toBe(true);
+
+    expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledWith(
+      detection.id,
+      'banned this user',
+      moderator,
+      AdminActionType.BAN
+    );
+    expect(await verificationEventRepository.findByUserAndServer(userId, guildId)).toHaveLength(0);
+  });
+
+  async function observedBanFixture() {
+    const f = preemptiveBanFixture();
+    await serverRepository.getOrCreateServer(f.guild.id);
+    await userRepository.getOrCreateUser(f.userId, 'outside-user');
+    const detection = await createDetection(f.guild.id, f.userId);
+    await detectionEventsRepository.patchMetadata(detection.id, {
+      observed_notification_message_id: 'observed-message',
+    });
+    return { ...f, detection };
+  }
+
+  it('reconciles a no-case alert after a confirmed ban by ID', async () => {
+    const f = await observedBanFixture();
+    await expect(f.run()).resolves.toBe(true);
+    expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledWith(
+      f.detection.id,
+      'banned this user',
+      f.moderator,
+      AdminActionType.BAN
+    );
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.BAN,
+      observed_action_by: f.moderator.id,
+    });
+  });
+
+  it('resolves automatic attention and removes its live queue mirror after a ban', async () => {
+    const f = await observedBanFixture();
+    await detectionEventsRepository.patchMetadata(f.detection.id, {
+      automatic_moderation_response: {
+        action: 'notify',
+        outcome: 'notified',
+        attention: 'required',
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [],
+      },
+    });
+    const queue = { deleteObservedAlertMirror: jest.fn().mockResolvedValue(undefined) };
+    const service = buildService({
+      moderationQueueService: queue as unknown as IModerationQueueService,
+    });
+    await service.banUserById(f.guild as unknown as Guild, f.userId, 'Reason', f.moderator);
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).toMatchObject({
+      automatic_moderation_response: { attention: 'resolved' },
+    });
+    expect(queue.deleteObservedAlertMirror).toHaveBeenCalledWith(f.detection.id);
+  });
+
+  it('does not handle an observed alert when the Discord ban fails', async () => {
+    const f = await observedBanFixture();
+    f.guild.bans.create.mockRejectedValueOnce(new Error('Missing permissions'));
+    await expect(f.run()).rejects.toThrow('Missing permissions');
+    expect(notificationManager.markObservedDetectionActionTaken).not.toHaveBeenCalled();
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).not.toHaveProperty(
+      'observed_action'
+    );
+  });
+
+  it('preserves a successful ban and lets existing-ban sync retry a failed alert edit', async () => {
+    const f = await observedBanFixture();
+    notificationManager.markObservedDetectionActionTaken.mockResolvedValueOnce(false);
+    await expect(f.run()).resolves.toBe(true);
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).not.toHaveProperty(
+      'observed_action'
+    );
+    f.guild.bans.fetch.mockResolvedValueOnce({ user: f.target });
+    await expect(
+      f.service.syncAlreadyBannedUser(f.guild as unknown as Guild, f.userId, f.moderator)
+    ).resolves.toBe(0);
+    expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledTimes(2);
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.BAN,
+    });
+    expect(f.guild.bans.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconciles each pending alert while leaving linked report ownership intact', async () => {
+    const f = await observedBanFixture();
+    const second = await createDetection(f.guild.id, f.userId);
+    await detectionEventsRepository.patchMetadata(second.id, {
+      observed_notification_message_id: 'second-message',
+    });
+    const report = await detectionEventsRepository.create({
+      server_id: f.guild.id,
+      user_id: f.userId,
+      detection_type: DetectionType.USER_REPORT,
+      confidence: 0.8,
+      metadata: { observed_notification_message_id: 'report-message' },
+    });
+    notificationManager.markObservedDetectionActionTaken.mockResolvedValueOnce(false);
+    await f.run();
+    expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledTimes(2);
+    expect((await detectionEventsRepository.findById(second.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.BAN,
+    });
+    expect((await detectionEventsRepository.findById(report.id))?.metadata).not.toHaveProperty(
+      'observed_action'
+    );
+  });
+
+  it('leaves claimed alerts and other-server alerts untouched', async () => {
+    const f = await observedBanFixture();
+    await detectionEventsRepository.claimObservedAction(f.detection.id, {
+      observed_action: AdminActionType.OPEN_CASE,
+      observed_action_by: 'another-moderator',
+    });
+    await serverRepository.getOrCreateServer('other-guild');
+    const other = await createDetection('other-guild', f.userId);
+    await detectionEventsRepository.patchMetadata(other.id, {
+      observed_notification_message_id: 'other-message',
+    });
+    await f.run();
+    expect(notificationManager.markObservedDetectionActionTaken).not.toHaveBeenCalled();
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.OPEN_CASE,
+    });
+    expect((await detectionEventsRepository.findById(other.id))?.metadata).not.toHaveProperty(
+      'observed_action'
     );
   });
 

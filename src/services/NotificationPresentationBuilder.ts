@@ -1500,7 +1500,7 @@ export class NotificationPresentationBuilder {
       case AdminActionType.BAN:
         embed.setColor(CASE_COLOR_BANNED);
         embed.setTitle('Observed Alert Handled: Banned');
-        embed.setDescription(`${userReference} was banned from this observed alert.`);
+        embed.setDescription(`${userReference} was banned.`);
         return;
       case AdminActionType.RESTRICT:
         embed.setColor(CASE_COLOR_PENDING);
