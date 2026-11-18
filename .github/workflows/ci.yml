@@ -36,9 +36,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .cache/jest
-          key: ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}-
+          key: ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}
       - name: Build application and bot once
         run: npm run application:build && npm --ignore-scripts run build
       - name: Static and unit checks
@@ -99,9 +97,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .cache/jest
-          key: ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}-
+          key: ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}
       - name: Build application and bot once
         run: npm run application:build && npm --ignore-scripts run build
       - name: Serial database acceptance
@@ -176,9 +172,9 @@ jobs:
           load: true
           tags: drasil-action-boundary:ci
           cache-from: type=gha,scope=package-smoke
-          cache-to: type=gha,scope=package-smoke,mode=max,ignore-error=true,timeout=2m
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=package-smoke,mode=max,ignore-error=true,timeout=2m' || '' }}
       - name: Production application package smoke
-        run: docker run --rm --entrypoint node drasil-action-boundary:ci scripts/check-application-imports.mjs
+        run: docker run --rm --network none --entrypoint node drasil-action-boundary:ci scripts/check-application-imports.mjs
 
   build-test:
     if: always()

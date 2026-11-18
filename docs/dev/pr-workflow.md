@@ -50,11 +50,14 @@ application CI and its required aggregate still run all four execution jobs for 
 Browser jobs install only the headless Chromium shell used by the tests, retaining OS libraries
 and fonts. Functional and visual fixture tests share one server invocation. Isolated Storybook
 checks use two workers in CI; database browser checks stay serial. Jest caches transformed
-code, not test results; every test still executes, with separate caches for static and database jobs.
+code, not test results; every test still executes, with separate caches for static and database jobs
+keyed by dependency and tool configuration rather than each commit.
 
 The bot image installs only the root, application and contracts workspaces. Its build inputs exclude
-web source and documentation, preserving cached layers for unrelated changes. Docker smoke exports
-build layers when available, with a two-minute export limit, and still runs the import check.
+web source and documentation, preserving cached layers for unrelated changes. Main CI exports
+Docker build layers when available, with a two-minute export limit; PRs only read them. Docker
+smoke loads application and bot bootstrap dependencies without starting services, with networking
+disabled in the final image check.
 Production builds read those CI layers without exporting a cache during deployment. Cache misses
 use a normal build. Image-tag reuse, migrations, the single-bot rollout policy and ECS stability
 checks are unchanged.
