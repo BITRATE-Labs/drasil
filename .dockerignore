@@ -5,11 +5,14 @@ coverage
 **/coverage
 **/dist
 **/.next
+**/.next-legacy-test
 **/storybook-static
 **/playwright-report
 **/storybook-playwright-report
 **/test-results
 .superpowers
+.debug
+.cache
 
 # Git / CI
 .git
