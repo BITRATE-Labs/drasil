@@ -119,8 +119,8 @@ npm run test:integration
 
 The test guard accepts only this local target or CI's loopback `5432/drasil_test`,
 with an absent or `public` schema parameter. Run database consumers serially,
-including across worktrees. `npm run check:ci` prepares the database before web
-coverage, then runs the native, web issuer/DB and MCP browser suites in order.
+including across worktrees. `npm run check:ci` runs native integration, workspace, MCP,
+persisted web coverage and fixture browser smoke serially.
 `npm run db:reset:local` retains its separate development-database behavior.
 
 ## Repo settings (one-time)
