@@ -11,8 +11,9 @@ on:
         required: false
         default: 'main'
 
-permissions:
-  contents: read
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
 
 env:
   GIT_CONFIG_COUNT: 1
@@ -20,21 +21,7 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 jobs:
-  impact:
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/change-impact.yml
-    with:
-      deployment: bot
-
   deploy:
-    needs: [impact]
-    if: needs.impact.outputs.bot == 'true'
-    # Local-only pushes must not replace a pending production deployment.
-    concurrency:
-      group: deploy-prod
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       id-token: write

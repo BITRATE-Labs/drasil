@@ -34,22 +34,21 @@ Every PR should include:
 - Scope boundaries (what you did NOT change).
 - Any migration/setup notes if applicable.
 
-Keep diffs tight. Batch coherent small local tooling fixes with their tests and docs in one
-issue/PR. Split independent product behavior or separately releasable work. Run formatting and
-affected checks before pushing a batch of review repairs. Drafts still run CI, but defer shared
-and automatic Copilot review until the PR is ready.
+Keep diffs tight. Batch coherent small tooling fixes with their tests and docs in one issue/PR.
+Split independent product behavior or separately releasable work. Run formatting and affected
+checks before pushing a batch of review repairs. Drafts still run CI, but defer shared and
+automatic Copilot review until the PR is ready.
 
 ## Local quality gate
 
-`npm run check:ci` builds prerequisites once and runs the prepared static, database and browser groups sequentially. Standalone commands retain their normal build prerequisites. Hosted CI runs static/unit, serial database acceptance, isolated browser checks and production Docker smoke concurrently.
+`npm run check:ci` builds prerequisites once and runs the prepared static, database and browser groups sequentially. Standalone commands retain their normal build prerequisites. Hosted CI runs static/unit, serial database acceptance, isolated browser checks and production Docker smoke concurrently. The required `build-test` aggregate succeeds only when all four jobs succeed. Only the database job has Postgres and test database URLs.
 
-The required `build-test` aggregate always reports. Production, mixed and unknown changes require all four jobs to succeed. A small exact allowlist of sandbox tools and local workflow docs retains static/unit and production Docker smoke checks; changes to the shared workspace fixture or its sandbox test also retain database acceptance. Only explicitly excluded jobs may be skipped. Empty diffs, unavailable history and type changes use full coverage. Only the database job has Postgres and test database URLs.
-
-The shared change-impact workflow reads the complete PR merge-base diff or push before/after diff, treating renames as deletions/additions so both paths are checked. Root manifests, lockfiles, Prisma, shared packages, build configuration and all unclassified paths keep full checks and bot/web deployment handling.
-
-PRs targeting main execute its base version of the classifier script and allowlist. Other PR bases always receive full coverage. Changing that script cannot narrow its own checks. Workflow definitions and the aggregate gate still come from the PR head, so edits to those controls require review.
-
-Proven local-only changes skip both production deployments only when the diff from the last successful deployment job also contains no production changes. Failed or skipped deployments are not release receipts. An incomplete rollout or a failure newer than the successful receipt also requires deployment, since it may have partially changed production. Missing, old, manual-ref or unreadable receipts require deployment. The workflow checks ten recent main runs and ten manual runs, including manual recovery from other branches; it does not query live cloud state, and out-of-band operator changes still need explicit recovery. This preserves recovery when a production push failed before the local push; manual recovery dispatch retains full deployment handling and the web approval gate is unchanged. IaC validation runs conservatively if classification fails or omits an output, unless the workflow is canceled. Superseded PR CI/IaC runs are canceled; main and production deployment runs are not canceled by this policy.
+Superseded PR CI and IaC runs are canceled. Main runs and production deployments retain their
+existing non-canceling behavior. IaC checks use native workflow path filters for infrastructure,
+workflow definitions and their lint configuration; they are not required merge checks. The
+application CI and its required aggregate still run all four execution jobs for every change.
+Browser jobs install only the headless Chromium shell used by the tests, retaining OS libraries
+and fonts. Docker smoke reuses build layers when available and still runs the import check.
 
 Before pushing (when feasible):
 
@@ -136,9 +135,3 @@ Before merging, ensure:
 
 - Prefer squash merges.
 - After merge: delete the branch and remove the local worktree.
-
-An intentionally skipped local commit has no production image tag. The running release SHA
-continues to identify the image actually deployed, rather than the latest main commit. Local
-files may still be copied into that image; local classification describes runtime behavior,
-not identical image bytes. Docker smoke remains required, and manual recovery builds the
-requested ref when its image does not already exist.
