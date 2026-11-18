@@ -59,8 +59,9 @@ touching the ECS service stack.
 
 The same stack can also be run from GitHub using the manual `Deploy Domain DNS (prod)` workflow.
 That workflow is `workflow_dispatch` only, so merging changes is a no-op until an operator runs it.
-It uses the protected `Deploy - web-prod` environment and imports the existing hosted zone into the
-remote domain state if it is not tracked yet.
+The `Deploy - DNS prod` environment requires approval before Terraform starts. Terraform uses
+`Deploy - web-prod` for AWS OIDC and imports the existing hosted zone into the remote domain state
+if it is not tracked yet.
 
 ## Optional intelligence bucket
 

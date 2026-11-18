@@ -30,8 +30,19 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 jobs:
-  terraform-domain:
+  approve-dns:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: Deploy - DNS prod
+    permissions: {}
+    steps:
+      - name: Record DNS approval
+        run: 'true'
+
+  terraform-domain:
+    needs: approve-dns
+    runs-on: ubuntu-latest
+    # The AWS role's OIDC trust still names this environment.
     environment: Deploy - web-prod
     permissions:
       id-token: write

@@ -219,7 +219,7 @@ GitHub Actions production deploy variables/secrets:
 - `VERCEL_TOKEN` secret.
 - `VERCEL_ORG_ID` variable.
 - `VERCEL_PROJECT_ID` variable.
-- GitHub environment `Deploy - web-prod` should require approval before production web deploys.
+- GitHub environment `Deploy - web-prod` allows only `main` and has no required reviewer. After a push to `main`, the website deploys when `build-test` and `metrics` pass.
 
 In Vercel, set the project root to `apps/web`. The checked-in `apps/web/vercel.json` disables Git-triggered deploys so GitHub Actions remains the production authority.
 
