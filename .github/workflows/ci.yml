@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -21,6 +22,7 @@ env:
 jobs:
   # Keep 24.04 until this Playwright version supports Ubuntu 26.04.
   static-unit:
+    name: Static and unit
     runs-on: ubuntu-24.04
     env:
       NODE_ENV: test
@@ -36,13 +38,103 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .cache/jest
-          key: ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}
+          key: ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package.json', 'package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}
       - name: Build application and bot once
         run: npm run application:build && npm --ignore-scripts run build
       - name: Static and unit checks
         run: npm --ignore-scripts run ci:static:prepared
 
   database-acceptance:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: native-database
+            name: Native integration
+          - lane: workspace
+            name: Workspace (1 of 2)
+            shard: 1/2
+          - lane: workspace
+            name: Workspace (2 of 2)
+            shard: 2/2
+          - lane: mcp
+            name: MCP
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: drasil_test
+          POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
+        ports:
+          - 5432:5432
+        # Fixture resets create many relations; test data is disposable.
+        options: >-
+          --tmpfs /var/lib/postgresql/data:rw,size=1g
+          --health-cmd="pg_isready -U postgres -d drasil_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      NODE_ENV: test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
+      POSTGRES_DB_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Use Ubuntu archive mirror
+        if: matrix.lane != 'native-database'
+        run: |
+          # Regional mirror downloads can stall before Chromium installation.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i -E \
+              's#https?://(azure|[[:alnum:]-]+\.ec2)\.archive\.ubuntu\.com/ubuntu([/[:space:]]|$)#https://archive.ubuntu.com/ubuntu\2#g' \
+              /etc/apt/apt-mirrors.txt
+          fi
+      - name: Install Playwright browsers
+        if: matrix.lane != 'native-database'
+        timeout-minutes: 10
+        run: npm exec --workspace apps/web -- playwright install --with-deps --only-shell chromium
+      - name: Restore Jest transforms
+        if: matrix.lane == 'native-database'
+        uses: actions/cache@v5
+        with:
+          path: .cache/jest
+          key: ${{ runner.os }}-node24-jest-${{ matrix.lane }}-${{ hashFiles('package.json', 'package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}
+      - name: Build application and bot once
+        run: npm run application:build && npm --ignore-scripts run build
+      - name: Serial database acceptance
+        if: matrix.lane != 'workspace'
+        run: npm --ignore-scripts run ci:${{ matrix.lane }}:prepared
+      - name: Workspace acceptance
+        if: matrix.lane == 'workspace'
+        run: npm --ignore-scripts run ci:workspace:build && npm --ignore-scripts run web:e2e:workspace -- --fully-parallel --workers=1 --shard=${{ matrix.shard }} && npm --ignore-scripts run db:check:rls
+      - name: Log workspace screenshot differences on failure
+        if: failure()
+        run: node scripts/log-workspace-screenshot-diffs.mjs
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ${{ matrix.name }}-playwright-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+            apps/web/workspace-test-results
+
+  browser-smoke:
+    name: Browser smoke
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -54,16 +146,15 @@ jobs:
           POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
         ports:
           - 5432:5432
+        # Fixture resets create many relations; test data is disposable.
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw,size=1g
           --health-cmd="pg_isready -U postgres -d drasil_test"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
     env:
       NODE_ENV: test
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
-      POSTGRES_DB_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -83,41 +174,35 @@ jobs:
       - name: Install Playwright browsers
         timeout-minutes: 10
         run: npm exec --workspace apps/web -- playwright install --with-deps --only-shell chromium
-      - name: Install Postgres client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - name: Wait for Postgres
-        run: |
-          for attempt in {1..10}; do
-            pg_isready -h localhost -p 5432 -U postgres -d drasil_test && exit 0
-            echo "Postgres not ready yet (attempt ${attempt}/10)"
-            sleep 2
-          done
-          exit 1
-      - name: Restore Jest transforms
-        uses: actions/cache@v5
-        with:
-          path: .cache/jest
-          key: ${{ runner.os }}-node24-jest-${{ github.job }}-${{ hashFiles('package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}
-      - name: Build application and bot once
-        run: npm run application:build && npm --ignore-scripts run build
-      - name: Serial database acceptance
-        run: npm --ignore-scripts run ci:database:prepared
-      - name: Log workspace screenshot differences on failure
+      - name: Build application once
+        run: npm run application:build
+      - name: Persisted web coverage
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
+          POSTGRES_DB_URL: postgresql://postgres:postgres@localhost:5432/drasil_test?schema=public
+        run: npm --ignore-scripts run test:db:prepare && npm --ignore-scripts run web:test:coverage
+      - name: Browser smoke
+        run: npm --ignore-scripts run web:e2e -- smoke.spec.ts
+      - name: Log legacy screenshot differences on failure
         if: failure()
-        run: node scripts/log-workspace-screenshot-diffs.mjs
+        run: node scripts/log-workspace-screenshot-diffs.mjs apps/web/test-results
       - name: Upload Playwright artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: database-playwright-artifacts
+          name: browser-playwright-artifacts
           if-no-files-found: ignore
           retention-days: 7
           path: |
             apps/web/playwright-report
             apps/web/test-results
-            apps/web/workspace-test-results
+            apps/web/storybook-test-results
+            apps/web/storybook-playwright-report
 
-  isolated-browsers:
+  visual-checks:
+    name: Visual checks (ci:visuals)
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:visuals')
     runs-on: ubuntu-24.04
     env:
       NODE_ENV: test
@@ -142,8 +227,8 @@ jobs:
         run: npm exec --workspace apps/web -- playwright install --with-deps --only-shell chromium
       - name: Build application once
         run: npm run application:build
-      - name: Isolated browser and visual checks
-        run: npm --ignore-scripts run ci:browsers:prepared
+      - name: Full visual checks
+        run: npm --ignore-scripts run ci:visuals:prepared
       - name: Log legacy screenshot differences on failure
         if: failure()
         run: node scripts/log-workspace-screenshot-diffs.mjs apps/web/test-results
@@ -151,7 +236,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: isolated-playwright-artifacts
+          name: visual-playwright-artifacts
           if-no-files-found: ignore
           retention-days: 7
           path: |
@@ -178,7 +263,7 @@ jobs:
 
   build-test:
     if: always()
-    needs: [static-unit, database-acceptance, isolated-browsers, package-smoke]
+    needs: [static-unit, database-acceptance, browser-smoke, package-smoke]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -211,8 +296,11 @@ jobs:
           bash scripts/check-metrics.sh
 
   snapshot-preview:
-    if: ${{ github.event_name == 'pull_request' && !cancelled() }}
-    needs: [build-test]
+    concurrency:
+      group: drasil-snapshot-comment-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    if: ${{ github.event_name == 'pull_request' && !cancelled() && contains(github.event.pull_request.labels.*.name, 'ci:visuals') }}
+    needs: [visual-checks]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -302,11 +390,13 @@ jobs:
               : 'Artifact: not generated';
 
             const body = [
+              '[AGENT]',
               marker,
               '## Snapshot Preview',
               hasFiles
                 ? `${files.length} changed Playwright/Storybook visual snapshot file(s) in this PR.`
                 : 'No changed Playwright or Storybook visual snapshot files were detected in this PR.',
+              `Commit: \`${headSha}\``,
               `Run: ${runUrl}`,
               artifactLine,
               '',
@@ -319,6 +409,8 @@ jobs:
               issue_number,
               per_page: 100,
             });
+            const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+            if (current.head.sha !== headSha || !current.labels.some(label => label.name === 'ci:visuals')) return;
             const existing = comments.find(
               (comment) => comment.user?.type === 'Bot' && comment.body?.includes(marker),
             );

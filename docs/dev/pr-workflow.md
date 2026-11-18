@@ -41,17 +41,44 @@ use them deliberately and defer shared and automatic Copilot review until ready.
 
 ## Local quality gate
 
-`npm run check:ci` builds prerequisites once and runs the prepared static, database and browser groups sequentially. Standalone commands retain their normal build prerequisites. Hosted CI runs static/unit, serial database acceptance, isolated browser checks and production Docker smoke concurrently. The required `build-test` aggregate succeeds only when all four jobs succeed. Only the database job has Postgres and test database URLs.
+`npm run check:ci` builds prerequisites once and runs the prepared static, database and browser
+smoke groups sequentially. `ci:database:prepared` composes native integration, workspace and MCP
+groups for local use. Standalone commands retain their normal build prerequisites.
+
+Hosted CI keeps four required job groups, with database acceptance expanded to four isolated
+matrix runners:
+
+- **Static and unit** runs static checks and isolated unit coverage without a database.
+- **Native integration** runs bot integration, web integration and RLS.
+- **Workspace** runs production build/packaging/graph checks, all workspace browsers and RLS.
+  Two Playwright shards each get their own runner, database and one worker.
+  Standalone/local workspace acceptance remains unsharded.
+- **MCP** runs all MCP browser acceptance and RLS.
+- **Browser smoke** runs persisted web coverage against its own disposable database, then the nine
+  functional fixture journeys on every PR. Database URLs are scoped to the coverage step.
+- **Production package smoke** checks the pruned bot image and its offline runtime imports.
+
+The required `build-test` aggregate succeeds only when every required runner succeeds. Visual checks
+are a separate, informational job outside its dependencies. Add `ci:visuals` before a normal PR
+run to request all page visual and Storybook checks, including Storybook interaction/accessibility
+tests. Label edits alone do not rerun or cancel application CI. Opening, synchronizing, reopening
+or marking a PR ready runs CI with that event's labels. The selected suite tests that run's head;
+preview publication also checks the current head and label. Removing the label only updates an
+existing preview comment, preserving historical check results. Creating the label is an operator
+step, not part of this workflow. To run full visuals locally after building prerequisites, use
+`npm --ignore-scripts run ci:visuals:prepared`.
+
+Each database acceptance runner deploys migrations and checks RLS independently. Its disposable Postgres
+data directory uses a 1 GiB memory-backed filesystem to avoid disk-bound fixture resets; normal
+transaction and durability settings remain enabled. This does not test storage survival across
+container loss. No database or artifacts are shared between runners. Tests sharing one database
+remain serial. Browser jobs retain OS libraries/fonts and install only the headless Chromium
+shell. Full Storybook checks use two workers in CI; database browser checks stay serial. Jest
+caches transformed code, not results, under job/dependency/tool configuration keys.
 
 Superseded PR CI and IaC runs are canceled. Main runs and production deployments retain their
-existing non-canceling behavior. IaC checks use native workflow path filters for infrastructure,
-workflow definitions and their lint configuration; they are not required merge checks. The
-application CI and its required aggregate still run all four execution jobs for every change.
-Browser jobs install only the headless Chromium shell used by the tests, retaining OS libraries
-and fonts. Functional and visual fixture tests share one server invocation. Isolated Storybook
-checks use two workers in CI; database browser checks stay serial. Jest caches transformed
-code, not test results; every test still executes, with separate caches for static and database jobs
-keyed by dependency and tool configuration rather than each commit.
+existing non-canceling behavior. IaC uses native workflow path filters and is not a required merge
+check. Optional visual failures are visible in their own check and do not change `build-test`.
 
 The bot image installs only the root, application and contracts workspaces. Its build inputs exclude
 web source and documentation, preserving cached layers for unrelated changes. Main CI exports
