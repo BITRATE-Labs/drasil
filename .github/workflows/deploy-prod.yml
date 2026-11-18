@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 env:
   GIT_CONFIG_COUNT: 1
@@ -22,6 +21,9 @@ env:
 
 jobs:
   impact:
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/change-impact.yml
     with:
       deployment: bot

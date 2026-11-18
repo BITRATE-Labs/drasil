@@ -49,8 +49,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = pull_request ]; then
-            # A PR cannot narrow its own checks by changing the classifier allowlist.
-            if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$BASE_SHA:scripts/classify-changes.mjs" 2>/dev/null; then
+            # Main-targeted PRs use main policy; other bases always receive full coverage.
+            if [ "$GITHUB_BASE_REF" = main ] && [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$BASE_SHA:scripts/classify-changes.mjs" 2>/dev/null; then
               git show "$BASE_SHA:scripts/classify-changes.mjs" > "$RUNNER_TEMP/classify-changes.mjs"
               node "$RUNNER_TEMP/classify-changes.mjs"
             else
