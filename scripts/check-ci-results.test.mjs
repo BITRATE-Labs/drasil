@@ -138,3 +138,25 @@ test('IaC runs on failed classification or missing outputs, and respects workflo
     }
   }
 });
+
+test('cancellation fails the required aggregate without publishing stale snapshots', () => {
+  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8').replaceAll('\r', '');
+  const block = (job) =>
+    workflow.split(/(?=^ {2}[a-z][\w-]*:)/m).find((entry) => entry.startsWith(`  ${job}:\n`));
+  const raw = block('build-test').match(/^ {4}if: (.+)$/m)[1];
+  const required = raw.startsWith('${{') ? raw.slice(3, -2).trim() : raw;
+  const snapshot = block('snapshot-preview').match(/^ {4}if: \$\{\{ (.+) \}\}$/m)[1];
+  for (const canceled of [false, true]) {
+    assert.equal(
+      runInNewContext(required, { always: () => true, cancelled: () => canceled }),
+      true
+    );
+    assert.equal(
+      runInNewContext(snapshot, {
+        github: { event_name: 'pull_request' },
+        cancelled: () => canceled,
+      }),
+      !canceled
+    );
+  }
+});
