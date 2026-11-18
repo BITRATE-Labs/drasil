@@ -83,7 +83,7 @@
     "ci:prepared": "npm run ci:static:prepared && npm run ci:database:prepared && npm run ci:browsers:prepared",
     "ci:static:prepared": "npm run format:check && node --test scripts/run-integration-tests.test.js scripts/check-ci-results.test.mjs scripts/sandbox.test.js && npm run application:lint && npm run application:typecheck && npm run application:test:coverage && npm run action:boundary && npm run lint && npm test && npm run contracts:lint && npm run contracts:typecheck && npm run contracts:test:coverage && npm run web:lint && npm run web:typecheck",
     "ci:database:prepared": "npm run test:db:prepare && npm run web:test:coverage && npm run web:build && npm run web:check:packaging && npm run web:check:graph && npm run web:e2e:workspace && node scripts/run-integration-tests.js --prepared && npm run web:test:integration && node scripts/run-mcp-e2e.js && npm run db:check:rls",
-    "ci:browsers:prepared": "npm run web:storybook:build && npm run web:e2e && npm run web:e2e:visual && npm run web:storybook:visual",
+    "ci:browsers:prepared": "npm run web:storybook:build && npm exec --workspace apps/web -- playwright test && npm run web:storybook:visual",
     "sandbox": "node scripts/sandbox.js"
   },
   "keywords": [

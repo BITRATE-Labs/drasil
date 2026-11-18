@@ -35,9 +35,9 @@ Every PR should include:
 - Any migration/setup notes if applicable.
 
 Keep diffs tight. Batch coherent small tooling fixes with their tests and docs in one issue/PR.
-Split independent product behavior or separately releasable work. Run formatting and affected
-checks before pushing a batch of review repairs. Drafts still run CI, but defer shared and
-automatic Copilot review until the PR is ready.
+Split independent product behavior or separately releasable work. Assemble the batch locally
+and run formatting and affected checks before opening or updating a PR. Drafts still run CI;
+use them deliberately and defer shared and automatic Copilot review until ready.
 
 ## Local quality gate
 
@@ -48,7 +48,16 @@ existing non-canceling behavior. IaC checks use native workflow path filters for
 workflow definitions and their lint configuration; they are not required merge checks. The
 application CI and its required aggregate still run all four execution jobs for every change.
 Browser jobs install only the headless Chromium shell used by the tests, retaining OS libraries
-and fonts. Docker smoke reuses build layers when available and still runs the import check.
+and fonts. Functional and visual fixture tests share one server invocation. Isolated Storybook
+checks use two workers in CI; database browser checks stay serial. Jest caches transformed
+code, not test results; every test still executes, with separate caches for static and database jobs.
+
+The bot image installs only the root, application and contracts workspaces. Its build inputs exclude
+web source and documentation, preserving cached layers for unrelated changes. Docker smoke exports
+build layers when available, with a two-minute export limit, and still runs the import check.
+Production builds read those CI layers without exporting a cache during deployment. Cache misses
+use a normal build. Image-tag reuse, migrations, the single-bot rollout policy and ECS stability
+checks are unchanged.
 
 Before pushing (when feasible):
 

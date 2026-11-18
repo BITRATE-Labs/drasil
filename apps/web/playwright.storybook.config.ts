@@ -9,7 +9,7 @@ export default defineConfig({
   testDir: './storybook-e2e',
   outputDir: 'storybook-test-results',
   fullyParallel: true,
-  workers: 1,
+  workers: process.env.CI ? 2 : 1,
   timeout: 30_000,
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'storybook-playwright-report' }]],
   expect: {
