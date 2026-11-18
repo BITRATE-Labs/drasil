@@ -2620,6 +2620,9 @@ describe('UserModerationService (unit)', () => {
     });
     f.guild.bans.fetch.mockResolvedValueOnce({ user: f.target });
     await service.syncAlreadyBannedUser(f.guild as unknown as Guild, f.userId, f.moderator);
+    f.guild.bans.fetch.mockResolvedValueOnce({ user: f.target });
+    await service.syncAlreadyBannedUser(f.guild as unknown as Guild, f.userId, f.moderator);
+    expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledTimes(2);
     expect(queue.deleteObservedAlertMirror).toHaveBeenCalledTimes(2);
     expect(f.guild.bans.create).toHaveBeenCalledTimes(1);
   });
@@ -2680,6 +2683,16 @@ describe('UserModerationService (unit)', () => {
 
   it('preserves a shared message already owned by a dismissed detection', async () => {
     const f = await observedBanFixture();
+    await detectionEventsRepository.patchMetadata(f.detection.id, {
+      automatic_moderation_response: {
+        action: 'notify',
+        outcome: 'notified',
+        attention: 'required',
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [],
+      },
+    });
     const sibling = await createDetection(f.guild.id, f.userId);
     await detectionEventsRepository.patchMetadata(sibling.id, {
       observed_notification_message_id: 'observed-message',
@@ -2687,11 +2700,21 @@ describe('UserModerationService (unit)', () => {
     await detectionEventsRepository.claimObservedAction(sibling.id, {
       observed_action: AdminActionType.DISMISS,
     });
-    await f.run();
+    const queue = { deleteObservedAlertMirror: jest.fn().mockResolvedValue(undefined) };
+    const service = buildService({
+      moderationQueueService: queue as unknown as IModerationQueueService,
+    });
+    await service.banUserById(f.guild as unknown as Guild, f.userId, 'Reason', f.moderator);
     expect(notificationManager.markObservedDetectionActionTaken).not.toHaveBeenCalled();
-    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).not.toHaveProperty(
-      'observed_action'
-    );
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.BAN,
+      observed_ban_reconciliation_pending: false,
+      automatic_moderation_response: { attention: 'resolved' },
+    });
+    expect(queue.deleteObservedAlertMirror).toHaveBeenCalledWith(f.detection.id);
+    expect((await detectionEventsRepository.findById(sibling.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.DISMISS,
+    });
   });
 
   it('does not handle an observed alert when the Discord ban fails', async () => {

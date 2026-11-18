@@ -2179,7 +2179,10 @@ export class UserModerationService implements IUserModerationService, ICombinedB
     userId: string,
     moderator: User
   ): Promise<void> {
-    if (!this.detectionEventsRepository) return;
+    if (!this.detectionEventsRepository) {
+      console.warn('Observed ban reconciliation skipped: detection repository is unavailable.');
+      return;
+    }
     try {
       const detections = await this.detectionEventsRepository.findByServerAndUser(guildId, userId);
       const ownedMessages = new Set(
@@ -2189,7 +2192,9 @@ export class UserModerationService implements IUserModerationService, ICombinedB
             const response = readAutomaticModerationResponse(metadata);
             return Boolean(
               metadata.report_ban_operation_id ||
-              (metadata.observed_action && metadata.observed_action !== AdminActionType.BAN) ||
+              (metadata.observed_action &&
+                (metadata.observed_action !== AdminActionType.BAN ||
+                  metadata.observed_ban_reconciliation_pending !== true)) ||
               response?.caseId ||
               (response?.attention === 'resolved' &&
                 metadata.observed_action !== AdminActionType.BAN)
@@ -2206,7 +2211,9 @@ export class UserModerationService implements IUserModerationService, ICombinedB
           detection.detection_type === DetectionType.USER_REPORT ||
           detection.latest_verification_event_id ||
           typeof messageId !== 'string' ||
-          ownedMessages.has(messageId)
+          metadata.report_ban_operation_id ||
+          (metadata.observed_action === AdminActionType.BAN &&
+            metadata.observed_ban_reconciliation_pending !== true)
         )
           continue;
         const resuming = metadata.observed_action === AdminActionType.BAN;
@@ -2216,9 +2223,10 @@ export class UserModerationService implements IUserModerationService, ICombinedB
               observed_action: AdminActionType.BAN,
               observed_action_by: moderator.id,
               observed_action_at: new Date().toISOString(),
+              observed_ban_reconciliation_pending: true,
             });
         if (!claimed) continue;
-        let presentationUpdated = editedMessages.has(messageId);
+        let presentationUpdated = ownedMessages.has(messageId) || editedMessages.has(messageId);
         try {
           if (!presentationUpdated) {
             const updated = await this.notificationManager.markObservedDetectionActionTaken(
@@ -2246,6 +2254,9 @@ export class UserModerationService implements IUserModerationService, ICombinedB
               throw new Error('Observed ban attention changed during reconciliation.');
           }
           await this.moderationQueueService?.deleteObservedAlertMirror(detection.id);
+          await this.detectionEventsRepository.patchMetadata(detection.id, {
+            observed_ban_reconciliation_pending: false,
+          });
         } catch (error) {
           // A successful Discord edit is committed evidence, even if later bookkeeping fails.
           if (!presentationUpdated && !resuming)
