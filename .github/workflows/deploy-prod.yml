@@ -11,6 +11,10 @@ on:
         required: false
         default: 'main'
 
+permissions:
+  contents: read
+  actions: read
+
 env:
   GIT_CONFIG_COUNT: 1
   GIT_CONFIG_KEY_0: init.defaultBranch
@@ -19,6 +23,8 @@ env:
 jobs:
   impact:
     uses: ./.github/workflows/change-impact.yml
+    with:
+      deployment: bot
 
   deploy:
     needs: [impact]

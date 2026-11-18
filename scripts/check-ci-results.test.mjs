@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { assertCiResults } from './check-ci-results.mjs';
 
@@ -57,7 +58,6 @@ test('only explicitly excluded local checks may be skipped', () => {
     const results = successful();
     results.impact.outputs.profile = profile;
     results['isolated-browsers'].result = 'skipped';
-    results['package-smoke'].result = 'skipped';
     if (profile === 'local') results['database-acceptance'].result = 'skipped';
     assert.doesNotThrow(() => assertCiResults(results));
     for (const job of jobs) {
@@ -86,4 +86,29 @@ test('failed or invalid classification cannot select a lightweight gate', () => 
   results.impact.outputs.profile = 'local-database';
   results['database-acceptance'].result = 'skipped';
   assert.throws(() => assertCiResults(results));
+});
+
+test('workflow job conditions agree with the aggregate skip contract for every profile', () => {
+  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8').replaceAll('\r', '');
+  for (const profile of ['full', 'local', 'local-database']) {
+    const results = successful();
+    results.impact.outputs.profile = profile;
+    for (const job of jobs) {
+      const block = workflow
+        .split(/(?=^  [a-z][\w-]*:)/m)
+        .find((entry) => entry.startsWith(`  ${job}:\n`));
+      assert.ok(block, `${job} must exist in the workflow`);
+      const condition = block.match(/^    if: needs\.impact\.outputs\.profile (==|!=) '([^']+)'$/m);
+      assert.equal(
+        block.includes('    if:'),
+        Boolean(condition),
+        `${job} needs an understood condition`
+      );
+      const runs =
+        !condition || (condition[1] === '==' ? profile === condition[2] : profile !== condition[2]);
+      const attempt = { ...results, [job]: { result: 'skipped' } };
+      if (runs) assert.throws(() => assertCiResults(attempt), job);
+      else assert.doesNotThrow(() => assertCiResults(attempt), job);
+    }
+  }
 });

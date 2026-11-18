@@ -2,6 +2,10 @@ name: Change impact
 
 on:
   workflow_call:
+    inputs:
+      deployment:
+        type: string
+        default: ''
     outputs:
       profile:
         value: ${{ jobs.classify.outputs.profile }}
@@ -16,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   classify:
@@ -35,4 +40,22 @@ jobs:
           node-version: 24
       - name: Classify the complete event diff
         id: impact
-        run: node scripts/classify-changes.mjs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEPLOYMENT_TARGET: ${{ inputs.deployment }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = pull_request ]; then
+            # A PR cannot narrow its own checks by changing the classifier allowlist.
+            if git cat-file -e "$BASE_SHA:scripts/classify-changes.mjs" 2>/dev/null; then
+              git show "$BASE_SHA:scripts/classify-changes.mjs" > "$RUNNER_TEMP/classify-changes.mjs"
+              node "$RUNNER_TEMP/classify-changes.mjs"
+            else
+              printf '%s\n' profile=full bot=true web=true iac=true actionlint=true >> "$GITHUB_OUTPUT"
+            fi
+          else
+            node scripts/classify-changes.mjs
+          fi

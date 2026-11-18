@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { test } from 'node:test';
-import { classifyChanges, readChanges } from './classify-changes.mjs';
+import { classifyChanges, readChanges, deploymentRequired } from './classify-changes.mjs';
 
 const changes = (...paths) => paths.map((path) => ({ status: 'M', path }));
 
@@ -148,6 +148,110 @@ test('missing history and invalid event input default the CLI to full coverage',
       });
       assert.equal(result.status, 0);
       assert.equal(JSON.parse(result.stdout).profile, 'full');
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('deployment decisions retain changes since the last actual successful rollout', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'drasil-deployment-impact-'));
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  const commit = () => {
+    git('add', '.');
+    git('commit', '-qm', 'fixture');
+    return git('rev-parse', 'HEAD');
+  };
+  try {
+    git('init', '-q');
+    git('config', 'core.autocrlf', 'false');
+    git('config', 'user.name', 'CI test');
+    git('config', 'user.email', 'ci@example.invalid');
+    writeFileSync(join(cwd, 'production.js'), 'old');
+    const old = commit();
+    writeFileSync(join(cwd, 'production.js'), 'new');
+    const released = commit();
+    mkdirSync(join(cwd, 'scripts'));
+    writeFileSync(join(cwd, 'scripts/sandbox.js'), 'local');
+    const after = commit();
+    for (const target of ['bot', 'web']) {
+      const name = target === 'bot' ? 'deploy' : 'deploy-web-prod';
+      const api = (runs, jobs) => async (path) =>
+        path.includes('/workflows/')
+          ? { workflow_runs: runs }
+          : { jobs: jobs[path.match(/runs\/(\d+)/)[1]], total_count: 1 };
+      const run = (id, sha, event = 'push') => ({ id, head_sha: sha, event });
+      const job = (conclusion) => [{ name, conclusion, completed_at: '2026-11-18T00:00:00Z' }];
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(2, released), run(1, old)], {
+            2: job('success'),
+            1: [{ name, conclusion: 'success', completed_at: '2026-11-18T01:00:00Z' }],
+          }),
+          cwd
+        ),
+        true
+      );
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(1, 'a'.repeat(40))], { 1: job('success') }),
+          cwd
+        ),
+        true
+      );
+
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(1, released)], { 1: job('success') }),
+          cwd
+        ),
+        false
+      );
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(2, released), run(1, old)], { 2: job('failure'), 1: job('success') }),
+          cwd
+        ),
+        true
+      );
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(2, after), run(1, released)], { 2: job('skipped'), 1: job('success') }),
+          cwd
+        ),
+        false
+      );
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          api([run(1, released, 'workflow_dispatch')], { 1: job('success') }),
+          cwd
+        ),
+        true
+      );
+      assert.equal(await deploymentRequired({ after }, target, api([], {}), cwd), true);
+      assert.equal(
+        await deploymentRequired(
+          { after },
+          target,
+          async () => {
+            throw new Error('offline');
+          },
+          cwd
+        ),
+        true
+      );
     }
   } finally {
     rmSync(cwd, { recursive: true, force: true });

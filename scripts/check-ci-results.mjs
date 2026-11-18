@@ -8,7 +8,7 @@ export function assertCiResults(results) {
     ['full', 'local', 'local-database'].includes(profile),
     'Expected a valid impact profile'
   );
-  const excluded = new Set(profile === 'full' ? [] : ['isolated-browsers', 'package-smoke']);
+  const excluded = new Set(profile === 'full' ? [] : ['isolated-browsers']);
   if (profile === 'local') excluded.add('database-acceptance');
   for (const job of ['static-unit', 'database-acceptance', 'isolated-browsers', 'package-smoke']) {
     assert.ok(results[job], `${job} must be present`);

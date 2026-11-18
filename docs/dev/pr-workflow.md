@@ -43,11 +43,13 @@ and automatic Copilot review until the PR is ready.
 
 `npm run check:ci` builds prerequisites once and runs the prepared static, database and browser groups sequentially. Standalone commands retain their normal build prerequisites. Hosted CI runs static/unit, serial database acceptance, isolated browser checks and production Docker smoke concurrently.
 
-The required `build-test` aggregate always reports. Production, mixed and unknown changes require all four jobs to succeed. A small exact allowlist of sandbox tools and local workflow docs retains static/unit checks; changes to the shared workspace fixture or its sandbox test also retain database acceptance. Only explicitly excluded jobs may be skipped. Empty diffs, unavailable history and type changes use full coverage. Only the database job has Postgres and test database URLs.
+The required `build-test` aggregate always reports. Production, mixed and unknown changes require all four jobs to succeed. A small exact allowlist of sandbox tools and local workflow docs retains static/unit and production Docker smoke checks; changes to the shared workspace fixture or its sandbox test also retain database acceptance. Only explicitly excluded jobs may be skipped. Empty diffs, unavailable history and type changes use full coverage. Only the database job has Postgres and test database URLs.
 
 The shared change-impact workflow reads the complete PR merge-base diff or push before/after diff, treating renames as deletions/additions so both paths are checked. Root manifests, lockfiles, Prisma, shared packages, build configuration and all unclassified paths keep full checks and bot/web deployment handling.
 
-Proven local-only changes skip both production deployments; manual recovery dispatch retains full deployment handling and the web approval gate is unchanged. Superseded PR CI/IaC runs are canceled; main and production deployment runs are not canceled by this policy.
+PR classification uses the base version of the allowlist, so changing the classifier cannot narrow its own checks.
+
+Proven local-only changes skip both production deployments only when the diff from the last successful deployment job also contains no production changes. Failed or skipped deployments are not release receipts. Missing, old, manual-ref or unreadable receipts require deployment. The workflow checks ten recent runs; it does not query live cloud state, and out-of-band operator changes still need explicit recovery. This preserves recovery when a production push failed before the local push; manual recovery dispatch retains full deployment handling and the web approval gate is unchanged. Superseded PR CI/IaC runs are canceled; main and production deployment runs are not canceled by this policy.
 
 Before pushing (when feasible):
 

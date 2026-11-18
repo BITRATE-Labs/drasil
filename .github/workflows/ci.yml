@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   GIT_CONFIG_COUNT: 1
@@ -21,6 +22,8 @@ env:
 jobs:
   impact:
     uses: ./.github/workflows/change-impact.yml
+    with:
+      deployment: web
 
   # Keep 24.04 until this Playwright version supports Ubuntu 26.04.
   static-unit:
@@ -160,7 +163,6 @@ jobs:
 
   package-smoke:
     needs: [impact]
-    if: needs.impact.outputs.profile == 'full'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6

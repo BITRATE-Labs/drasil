@@ -65,13 +65,59 @@ export function readChanges(event, cwd = process.cwd()) {
   return changes;
 }
 
+export async function deploymentRequired(event, target, api, cwd = process.cwd()) {
+  const [workflow, jobName] =
+    target === 'bot' ? ['deploy-prod.yml', 'deploy'] : ['ci.yml', 'deploy-web-prod'];
+  try {
+    // shortcut: inspect ten recent runs; an older or uncertain receipt requires deployment.
+    const { workflow_runs: runs } = await api(`/actions/workflows/${workflow}/runs?per_page=10`);
+    let receipt;
+    for (const run of runs) {
+      if (String(run.id) === process.env.GITHUB_RUN_ID) continue;
+      if (!['push', 'workflow_dispatch'].includes(run.event)) continue;
+      const { jobs, total_count: total } = await api(`/actions/runs/${run.id}/jobs?per_page=100`);
+      if (total > jobs.length) return true;
+      const job = jobs.find((entry) => entry.name === jobName && entry.conclusion === 'success');
+      if (!job) continue;
+      const completed = Date.parse(job.completed_at);
+      if (!Number.isFinite(completed)) return true;
+      if (!receipt || completed > receipt.completed) receipt = { run, completed };
+    }
+    // Manual recovery can deploy a ref different from the workflow's head SHA.
+    if (receipt?.run.event === 'push') {
+      return classifyChanges(readChanges({ before: receipt.run.head_sha, after: event.after }, cwd))
+        .bot;
+    }
+  } catch (error) {
+    console.warn(`Deployment receipt unavailable: ${error.message}`);
+  }
+  return true;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let impact = classifyChanges([]);
   try {
-    impact = classifyChanges(
-      readChanges(JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')))
-    );
+    const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+    impact = classifyChanges(readChanges(event));
+    const target = process.env.DEPLOYMENT_TARGET;
+    if (impact.profile !== 'full' && process.env.GITHUB_EVENT_NAME === 'push' && target) {
+      assert.ok(['bot', 'web'].includes(target), 'Unknown deployment target');
+      const api = async (path) => {
+        const response = await fetch(
+          `${process.env.GITHUB_API_URL}/repos/${process.env.GITHUB_REPOSITORY}${path}`,
+          {
+            headers: { authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
+            signal: AbortSignal.timeout(10000),
+          }
+        );
+        assert.ok(response.ok, `Deployment history read failed: HTTP ${response.status}`);
+        return response.json();
+      };
+      impact[target] = await deploymentRequired(event, target, api);
+      if (impact[target]) impact.profile = 'full';
+    }
   } catch (error) {
+    impact = classifyChanges([]);
     console.warn(`Using full coverage: ${error.message}`);
   }
   console.log(JSON.stringify(impact));
