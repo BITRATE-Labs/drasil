@@ -1768,6 +1768,10 @@ describe('UserModerationService (unit)', () => {
     await userRepository.getOrCreateUser(userId, 'test-user');
     const detectionEvent = await createDetection(guildId, userId);
     const verificationEvent = await createPendingCase(guildId, userId, detectionEvent.id);
+    const observed = await createDetection(guildId, userId);
+    await detectionEventsRepository.patchMetadata(observed.id, {
+      observed_notification_message_id: 'combined-observed-message',
+    });
     const service = buildService();
 
     await service.markCombinedBanCleanupPending(verificationEvent.id, 'cleanup-job-1');
@@ -1797,6 +1801,12 @@ describe('UserModerationService (unit)', () => {
       detectionEvent.id
     );
 
+    expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledWith(
+      observed.id,
+      'banned this user',
+      moderator,
+      AdminActionType.BAN
+    );
     const finalizedEvent = await verificationEventRepository.findById(verificationEvent.id);
     expect(finalizedEvent).toEqual(
       expect.objectContaining({
@@ -2581,6 +2591,107 @@ describe('UserModerationService (unit)', () => {
       automatic_moderation_response: { attention: 'resolved' },
     });
     expect(queue.deleteObservedAlertMirror).toHaveBeenCalledWith(f.detection.id);
+  });
+
+  it('keeps completed ban evidence when queue deletion fails and retries cleanup on sync', async () => {
+    const f = await observedBanFixture();
+    await detectionEventsRepository.patchMetadata(f.detection.id, {
+      automatic_moderation_response: {
+        action: 'notify',
+        outcome: 'notified',
+        attention: 'required',
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [],
+      },
+    });
+    const queue = {
+      deleteObservedAlertMirror: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Missing permissions'))
+        .mockResolvedValue(undefined),
+    };
+    const service = buildService({
+      moderationQueueService: queue as unknown as IModerationQueueService,
+    });
+    await service.banUserById(f.guild as unknown as Guild, f.userId, 'Reason', f.moderator);
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.BAN,
+    });
+    f.guild.bans.fetch.mockResolvedValueOnce({ user: f.target });
+    await service.syncAlreadyBannedUser(f.guild as unknown as Guild, f.userId, f.moderator);
+    expect(queue.deleteObservedAlertMirror).toHaveBeenCalledTimes(2);
+    expect(f.guild.bans.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the ban marker and retries attention completion after a conflicting update', async () => {
+    const f = await observedBanFixture();
+    await detectionEventsRepository.patchMetadata(f.detection.id, {
+      automatic_moderation_response: {
+        action: 'notify',
+        outcome: 'notified',
+        attention: 'required',
+        caseId: null,
+        updatedAt: '2026-11-11T00:00:00.000Z',
+        failures: [],
+      },
+    });
+    jest
+      .spyOn(detectionEventsRepository, 'completeAutomaticResponseAttention')
+      .mockResolvedValueOnce(null);
+    await f.run();
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.BAN,
+      automatic_moderation_response: { attention: 'required' },
+    });
+    f.guild.bans.fetch.mockResolvedValueOnce({ user: f.target });
+    await f.service.syncAlreadyBannedUser(f.guild as unknown as Guild, f.userId, f.moderator);
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.BAN,
+      automatic_moderation_response: { attention: 'resolved' },
+    });
+  });
+
+  it('validates quarantine state before updating alerts during existing-ban sync', async () => {
+    const f = await observedBanFixture();
+    const verification = await createPendingCase(f.guild.id, f.userId);
+    await verificationEventRepository.update(verification.id, {
+      containment_status: CaseContainmentStatus.IN_PROGRESS,
+    });
+    f.guild.bans.fetch.mockResolvedValueOnce({ user: f.target });
+    await expect(
+      f.service.syncAlreadyBannedUser(f.guild as unknown as Guild, f.userId, f.moderator)
+    ).rejects.toThrow('Account quarantine is currently in progress');
+    expect(notificationManager.markObservedDetectionActionTaken).not.toHaveBeenCalled();
+  });
+
+  it('edits a shared alert once but completes every unclaimed detection', async () => {
+    const f = await observedBanFixture();
+    const sibling = await createDetection(f.guild.id, f.userId);
+    await detectionEventsRepository.patchMetadata(sibling.id, {
+      observed_notification_message_id: 'observed-message',
+    });
+    await f.run();
+    expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledTimes(1);
+    expect((await detectionEventsRepository.findById(sibling.id))?.metadata).toMatchObject({
+      observed_action: AdminActionType.BAN,
+    });
+  });
+
+  it('preserves a shared message already owned by a dismissed detection', async () => {
+    const f = await observedBanFixture();
+    const sibling = await createDetection(f.guild.id, f.userId);
+    await detectionEventsRepository.patchMetadata(sibling.id, {
+      observed_notification_message_id: 'observed-message',
+    });
+    await detectionEventsRepository.claimObservedAction(sibling.id, {
+      observed_action: AdminActionType.DISMISS,
+    });
+    await f.run();
+    expect(notificationManager.markObservedDetectionActionTaken).not.toHaveBeenCalled();
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).not.toHaveProperty(
+      'observed_action'
+    );
   });
 
   it('does not handle an observed alert when the Discord ban fails', async () => {

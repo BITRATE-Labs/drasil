@@ -2182,31 +2182,57 @@ export class UserModerationService implements IUserModerationService, ICombinedB
     if (!this.detectionEventsRepository) return;
     try {
       const detections = await this.detectionEventsRepository.findByServerAndUser(guildId, userId);
+      const ownedMessages = new Set(
+        detections
+          .filter((detection) => {
+            const metadata = detection.metadata ?? {};
+            const response = readAutomaticModerationResponse(metadata);
+            return Boolean(
+              metadata.report_ban_operation_id ||
+              (metadata.observed_action && metadata.observed_action !== AdminActionType.BAN) ||
+              response?.caseId ||
+              (response?.attention === 'resolved' &&
+                metadata.observed_action !== AdminActionType.BAN)
+            );
+          })
+          .map((detection) => detection.metadata?.observed_notification_message_id)
+      );
+      const editedMessages = new Set<string>();
       for (const detection of detections) {
         const metadata = detection.metadata ?? {};
-        // Linked reports keep their own ban lifecycle and reconciliation owner.
+        const messageId = metadata.observed_notification_message_id;
+        // Report and case notifications keep their own reconciliation owner.
         if (
           detection.detection_type === DetectionType.USER_REPORT ||
           detection.latest_verification_event_id ||
-          !metadata.observed_notification_message_id
+          typeof messageId !== 'string' ||
+          ownedMessages.has(messageId)
         )
           continue;
-        const claimed = await this.detectionEventsRepository.claimObservedAction(detection.id, {
-          observed_action: AdminActionType.BAN,
-          observed_action_by: moderator.id,
-          observed_action_at: new Date().toISOString(),
-        });
+        const resuming = metadata.observed_action === AdminActionType.BAN;
+        const claimed = resuming
+          ? detection
+          : await this.detectionEventsRepository.claimObservedAction(detection.id, {
+              observed_action: AdminActionType.BAN,
+              observed_action_by: moderator.id,
+              observed_action_at: new Date().toISOString(),
+            });
         if (!claimed) continue;
+        let presentationUpdated = editedMessages.has(messageId);
         try {
-          const updated = await this.notificationManager.markObservedDetectionActionTaken(
-            detection.id,
-            'banned this user',
-            moderator,
-            AdminActionType.BAN
-          );
-          if (!updated) throw new Error('Observed ban notification update is incomplete.');
+          if (!presentationUpdated) {
+            const updated = await this.notificationManager.markObservedDetectionActionTaken(
+              detection.id,
+              resuming ? 'confirmed this user is banned' : 'banned this user',
+              moderator,
+              AdminActionType.BAN
+            );
+            if (!updated) throw new Error('Observed ban notification update is incomplete.');
+            editedMessages.add(messageId);
+            presentationUpdated = true;
+          }
           const response = readAutomaticModerationResponse(claimed.metadata);
-          if (response) {
+          if (response && response.attention !== 'resolved') {
             const completed =
               await this.detectionEventsRepository.completeAutomaticResponseAttention({
                 detectionEventId: detection.id,
@@ -2221,11 +2247,13 @@ export class UserModerationService implements IUserModerationService, ICombinedB
           }
           await this.moderationQueueService?.deleteObservedAlertMirror(detection.id);
         } catch (error) {
-          await this.detectionEventsRepository.releaseObservedAction(
-            detection.id,
-            AdminActionType.BAN,
-            moderator.id
-          );
+          // A successful Discord edit is committed evidence, even if later bookkeeping fails.
+          if (!presentationUpdated && !resuming)
+            await this.detectionEventsRepository.releaseObservedAction(
+              detection.id,
+              AdminActionType.BAN,
+              moderator.id
+            );
           console.warn(
             `Ban succeeded but observed alert ${detection.id} reconciliation failed:`,
             error
@@ -2410,6 +2438,8 @@ export class UserModerationService implements IUserModerationService, ICombinedB
         }
       );
     }
+
+    await this.reconcileBannedObservedAlerts(guild.id, userId, moderator);
 
     await this.tryRecordModerationOutcomes(
       target,
@@ -2781,8 +2811,6 @@ export class UserModerationService implements IUserModerationService, ICombinedB
         throw new Error(`User ${userId} is not banned in guild ${guild.id}`);
       }
 
-      await this.reconcileBannedObservedAlerts(guild.id, userId, moderator);
-
       const verificationEvents = await this.verificationEventRepository.findByUserAndServer(
         userId,
         guild.id
@@ -2791,6 +2819,7 @@ export class UserModerationService implements IUserModerationService, ICombinedB
         (event) => event.status === VerificationStatus.PENDING
       );
       this.assertNoQuarantineInProgress(pendingVerificationEvents);
+      await this.reconcileBannedObservedAlerts(guild.id, userId, moderator);
       if (pendingVerificationEvents.length === 0) {
         await this.tryAbandonRoleQuarantine(
           guild.id,
