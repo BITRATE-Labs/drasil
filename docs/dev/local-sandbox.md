@@ -38,9 +38,10 @@ ignored by Git. Never paste its contents into logs or a PR.
 
 Use a dedicated worktree without another `.env` or web dotenv file. The launcher refuses competing
 dotenv files and does not inherit production database, Discord, provider or Vercel settings. The
-database is bound only to `127.0.0.1:55434`. The bot uses `drasil_sandbox`; synthetic web data uses
+database is bound only to `127.0.0.1:15434`. The bot uses `drasil_sandbox`; synthetic web data uses
 `drasil_sandbox_web`. Integration-test databases and the shared development Supabase database are
-separate targets. Both sandbox schemas use the current migrations; neither is reset on startup.
+separate targets. If an existing `.env.sandbox.local` uses port `55434`, change only its database
+URL port to `15434`; the named volume and stored data remain the same. Both sandbox schemas use the current migrations; neither is reset on startup.
 
 For the real bot, set the selected development guild ID in `.env.sandbox.local`, then run
 `npm run sandbox -- credentials`. This reads only the documented `drasil/dev/DISCORD_TOKEN` route,

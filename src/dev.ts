@@ -19,7 +19,7 @@ async function startDevelopment(): Promise<void> {
     const databaseUrl = new URL(process.env.DATABASE_URL ?? '');
     if (
       databaseUrl.hostname !== '127.0.0.1' ||
-      databaseUrl.port !== '55434' ||
+      databaseUrl.port !== '15434' ||
       databaseUrl.pathname !== '/drasil_sandbox' ||
       databaseUrl.searchParams.size !== 1 ||
       databaseUrl.searchParams.get('schema') !== 'public'
