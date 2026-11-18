@@ -22,16 +22,17 @@ test('sandbox excludes inherited live endpoints, tokens and database routes', ()
   assert.equal(env.PGHOST, undefined);
   assert.equal(env.OPENAI_BASE_URL, 'http://127.0.0.1:9/v1');
   assert.equal(env.OPENAI_API_KEY, 'sandbox-provider-disabled');
-  assert.match(env.DATABASE_URL, /127\.0\.0\.1:55434\/drasil_sandbox/);
+  assert.match(env.DATABASE_URL, /127\.0\.0\.1:15434\/drasil_sandbox/);
   assert.equal(env.DRASIL_WEB_DATABASE_URL, env.DATABASE_URL);
 });
 
 test('sandbox refuses remote, shared and disposable integration databases', () => {
   for (const url of [
     'postgresql://user@remote/drasil_sandbox?schema=public',
-    'postgresql://user@127.0.0.1:55434/postgres?schema=public',
+    'postgresql://postgres:sandbox@127.0.0.1:55434/drasil_sandbox?schema=public',
+    'postgresql://user@127.0.0.1:15434/postgres?schema=public',
     'postgresql://user@127.0.0.1:55433/drasil_mcp_test?schema=public',
-    'postgresql://user@127.0.0.1:55434/drasil_sandbox?schema=other',
+    'postgresql://user@127.0.0.1:15434/drasil_sandbox?schema=other',
   ])
     assert.throws(() => sandboxEnvironment({}, `DATABASE_URL=${url}`), /Sandbox requires/);
   assert.throws(

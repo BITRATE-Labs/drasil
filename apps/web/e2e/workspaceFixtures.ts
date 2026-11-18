@@ -45,7 +45,7 @@ export function workspaceFixtures(options: WorkspaceFixtureOptions = {}) {
     if (
       url.protocol !== 'postgresql:' ||
       url.hostname !== '127.0.0.1' ||
-      url.port !== '55434' ||
+      url.port !== '15434' ||
       url.pathname !== '/drasil_sandbox_web' ||
       url.searchParams.get('schema') !== 'public' ||
       url.searchParams.size !== 1

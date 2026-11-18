@@ -8,7 +8,7 @@ const dotenv = require('dotenv');
 
 const root = path.resolve(__dirname, '..');
 const envFile = path.join(root, '.env.sandbox.local');
-const databaseUrl = 'postgresql://postgres:sandbox@127.0.0.1:55434/drasil_sandbox?schema=public';
+const databaseUrl = 'postgresql://postgres:sandbox@127.0.0.1:15434/drasil_sandbox?schema=public';
 const parts = ['web', 'bot', 'db', 'shared', 'credentials'];
 
 function sandboxEnvironment(inherited, contents) {
@@ -24,7 +24,7 @@ function sandboxEnvironment(inherited, contents) {
   Object.assign(env, dotenv.parse(contents));
   const target = new URL(env.DATABASE_URL || databaseUrl);
   if (target.toString() !== databaseUrl)
-    throw new Error('Sandbox requires its owned 127.0.0.1:55434/drasil_sandbox database.');
+    throw new Error('Sandbox requires its owned 127.0.0.1:15434/drasil_sandbox database.');
   if (env.DRASIL_WEB_DATABASE_URL && env.DRASIL_WEB_DATABASE_URL !== target.toString())
     throw new Error('Sandbox web and bot must use the same owned database.');
   Object.assign(env, {

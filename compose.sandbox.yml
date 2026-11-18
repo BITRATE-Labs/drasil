@@ -6,8 +6,9 @@ services:
       POSTGRES_DB: drasil_sandbox
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: sandbox
+    # Stay below Windows' default dynamic port range to avoid exclusions after restart.
     ports:
-      - '127.0.0.1:55434:5432'
+      - '127.0.0.1:15434:5432'
     volumes:
       - sandbox-data:/var/lib/postgresql/data
     healthcheck:
