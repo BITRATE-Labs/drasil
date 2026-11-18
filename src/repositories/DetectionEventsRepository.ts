@@ -602,6 +602,7 @@ export class DetectionEventsRepository implements IDetectionEventsRepository {
             - 'observed_action'
             - 'observed_action_by'
             - 'observed_action_at'
+            - 'observed_ban_reconciliation_pending'
             - 'report_ban_operation_id'
             - ${DETECTION_ACCOUNTING_EXCLUDED_METADATA_KEY}
             - ${DETECTION_ACCOUNTING_EXCLUSION_SCOPE_METADATA_KEY}
@@ -612,6 +613,7 @@ export class DetectionEventsRepository implements IDetectionEventsRepository {
             - 'observed_action'
             - 'observed_action_by'
             - 'observed_action_at'
+            - 'observed_ban_reconciliation_pending'
             - 'report_ban_operation_id'
         END
         WHERE id = ${detectionEventId}::uuid

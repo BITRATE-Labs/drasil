@@ -2177,7 +2177,8 @@ export class UserModerationService implements IUserModerationService, ICombinedB
   private async reconcileBannedObservedAlerts(
     guildId: string,
     userId: string,
-    moderator: User
+    moderator: User,
+    actionDescription = 'banned this user'
   ): Promise<void> {
     if (!this.detectionEventsRepository) {
       console.warn('Observed ban reconciliation skipped: detection repository is unavailable.');
@@ -2231,7 +2232,7 @@ export class UserModerationService implements IUserModerationService, ICombinedB
           if (!presentationUpdated) {
             const updated = await this.notificationManager.markObservedDetectionActionTaken(
               detection.id,
-              resuming ? 'confirmed this user is banned' : 'banned this user',
+              resuming ? 'confirmed this user is banned' : actionDescription,
               moderator,
               AdminActionType.BAN
             );
@@ -2830,7 +2831,12 @@ export class UserModerationService implements IUserModerationService, ICombinedB
         (event) => event.status === VerificationStatus.PENDING
       );
       this.assertNoQuarantineInProgress(pendingVerificationEvents);
-      await this.reconcileBannedObservedAlerts(guild.id, userId, moderator);
+      await this.reconcileBannedObservedAlerts(
+        guild.id,
+        userId,
+        moderator,
+        'confirmed this user is banned'
+      );
       if (pendingVerificationEvents.length === 0) {
         await this.tryAbandonRoleQuarantine(
           guild.id,

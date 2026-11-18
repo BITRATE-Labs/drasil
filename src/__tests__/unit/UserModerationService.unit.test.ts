@@ -2655,6 +2655,20 @@ describe('UserModerationService (unit)', () => {
     });
   });
 
+  it('attributes existing-ban sync as confirmation rather than a new ban', async () => {
+    const f = await observedBanFixture();
+    const syncingModerator = { id: 'syncing-moderator' } as User;
+    f.guild.bans.fetch.mockResolvedValueOnce({ user: f.target });
+    await f.service.syncAlreadyBannedUser(f.guild as unknown as Guild, f.userId, syncingModerator);
+    expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledWith(
+      f.detection.id,
+      'confirmed this user is banned',
+      syncingModerator,
+      AdminActionType.BAN
+    );
+    expect(f.guild.bans.create).not.toHaveBeenCalled();
+  });
+
   it('validates quarantine state before updating alerts during existing-ban sync', async () => {
     const f = await observedBanFixture();
     const verification = await createPendingCase(f.guild.id, f.userId);
@@ -2733,6 +2747,9 @@ describe('UserModerationService (unit)', () => {
     await expect(f.run()).resolves.toBe(true);
     expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).not.toHaveProperty(
       'observed_action'
+    );
+    expect((await detectionEventsRepository.findById(f.detection.id))?.metadata).not.toHaveProperty(
+      'observed_ban_reconciliation_pending'
     );
     f.guild.bans.fetch.mockResolvedValueOnce({ user: f.target });
     await expect(
