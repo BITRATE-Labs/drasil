@@ -142,10 +142,7 @@ it('projects the injected shared audit and reuses the existing member audit cont
   const input = facts({ channels: [{ ...facts().channels[0], metadataAvailable: false }] });
   const audit = await new RestrictionAuditService(readPort(input)).auditGuild('guild');
   const shared = { auditGuild: jest.fn().mockResolvedValue(audit) };
-  const service = new CaseRoleLockdownService(
-    { getServerConfig: jest.fn(), updateServerSettings: jest.fn() },
-    shared
-  );
+  const service = new CaseRoleLockdownService(shared);
   const report = await service.auditGuild({ id: 'guild' } as import('discord.js').Guild);
   expect(report.issues.some((i) => i.code === 'metadata_unavailable')).toBe(true);
   const context = { siblingThreadsByParentId: new Map() };

@@ -6,7 +6,6 @@ import {
   type RestrictionFacts,
   type CaseRoleLockdownIssue,
   type CaseRoleLockdownPlannedAction,
-  type CaseRoleLockdownApplyFailure,
   type CaseRoleLockdownReport,
 } from '@drasil/application';
 import { IRestrictionAuditService } from './RestrictionAuditService';
@@ -20,7 +19,6 @@ export type {
 } from '@drasil/application';
 import { Guild, GuildMember, PermissionFlagsBits, ThreadChannel } from 'discord.js';
 import { inject, injectable } from 'inversify';
-import { IConfigService } from '../config/ConfigService';
 import { TYPES } from '../di/symbols';
 export interface CaseRoleLockdownAuditContext {
   readonly siblingThreadsByParentId: Map<string, Promise<readonly ThreadChannel[]>>;
@@ -65,11 +63,6 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
     Map<string, Promise<RestrictionAudit>>
   >();
   constructor(
-    @inject(TYPES.ConfigService)
-    private readonly configService: Pick<
-      IConfigService,
-      'getServerConfig' | 'updateServerSettings'
-    >,
     @inject(TYPES.RestrictionAuditService)
     private readonly restrictionAuditService: IRestrictionAuditService
   ) {}
@@ -130,7 +123,8 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
     caseRoleId?: string | null
   ): CaseRoleLockdownReport {
     const facts = this.restrictionFacts(audit, recoveryThreadId, caseRoleId);
-    const setup = assessRestrictionFacts(facts).setup;
+    const assessment = assessRestrictionFacts(facts);
+    const setup = assessment.setup;
     const issues: CaseRoleLockdownIssue[] = setup.findings.map((finding) => ({
       severity: finding.kind === 'limitation' ? 'warning' : 'error',
       code: finding.code,
@@ -147,7 +141,7 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
       });
     const plannedActions: CaseRoleLockdownPlannedAction[] = proposeRestrictionFixes(
       facts,
-      assessRestrictionFacts(facts)
+      assessment
     ).flatMap((fix) =>
       fix.effects
         .filter((effect) => effect.kind === 'edit_overwrite')
@@ -163,20 +157,20 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
     );
     return {
       assessment: setup,
-      ...this.toReport({
-        guildId: audit.guildId,
-        checkedAt: new Date(audit.completedAt),
-        enabled: setup.status === 'verified',
-        allowedChannelIds: facts.exceptionChannelIds,
-        allowedCategoryIds: [],
-        autoAllowedChannelIds: facts.recoveryParentId ? [facts.recoveryParentId] : [],
-        issues,
-        plannedActions,
-        appliedActions: [],
-        failedActions: [],
-        syncedAllowedChannels: [],
-        unsyncedAllowedChannels: [],
-      }),
+      guildId: audit.guildId,
+      checkedAt: new Date(audit.completedAt),
+      enabled: setup.status === 'verified',
+      allowedChannelIds: facts.exceptionChannelIds,
+      allowedCategoryIds: [],
+      autoAllowedChannelIds: facts.recoveryParentId ? [facts.recoveryParentId] : [],
+      issues,
+      plannedActions,
+      appliedActions: [],
+      failedActions: [],
+      syncedAllowedChannels: [],
+      unsyncedAllowedChannels: [],
+      errorCount: issues.filter((issue) => issue.severity === 'error').length,
+      warningCount: issues.filter((issue) => issue.severity === 'warning').length,
     };
   }
 
@@ -237,27 +231,6 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
       unremovablePrivilegeReasons: assessment.findingCodes.filter(
         (code) => code === 'owner_bypass' || code === 'administrator_bypass'
       ),
-    };
-  }
-
-  private toReport(input: {
-    readonly guildId: string;
-    readonly checkedAt: Date;
-    readonly enabled: boolean;
-    readonly allowedChannelIds: readonly string[];
-    readonly allowedCategoryIds: readonly string[];
-    readonly autoAllowedChannelIds: readonly string[];
-    readonly issues: readonly CaseRoleLockdownIssue[];
-    readonly plannedActions: readonly CaseRoleLockdownPlannedAction[];
-    readonly appliedActions: readonly CaseRoleLockdownPlannedAction[];
-    readonly failedActions: readonly CaseRoleLockdownApplyFailure[];
-    readonly syncedAllowedChannels: readonly CaseRoleLockdownPlannedAction[];
-    readonly unsyncedAllowedChannels: readonly CaseRoleLockdownPlannedAction[];
-  }): CaseRoleLockdownReport {
-    return {
-      ...input,
-      errorCount: input.issues.filter((issue) => issue.severity === 'error').length,
-      warningCount: input.issues.filter((issue) => issue.severity === 'warning').length,
     };
   }
 }

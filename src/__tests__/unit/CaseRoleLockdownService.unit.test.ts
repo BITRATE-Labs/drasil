@@ -4,7 +4,7 @@ import { fixture } from '../../../packages/application/src/operations/restrictio
 
 test('compatibility reports consume the shared assessment without coarse write methods', async () => {
   const f = fixture();
-  const service = new CaseRoleLockdownService({} as never, { auditGuild: async () => f.audit });
+  const service = new CaseRoleLockdownService({ auditGuild: async () => f.audit });
   const report = await service.auditGuild({ id: 'guild' } as Guild);
   expect(report.issues.map((i) => i.code)).toEqual(f.audit.setup.findings.map((i) => i.code));
   expect('applyGuild' in service).toBe(false);
@@ -18,7 +18,7 @@ test('member assessment keeps staff privilege diagnostics while ignoring removed
     roles: { cache: new Collection([['case', {}]]) },
     joinedAt: new Date(),
   } as unknown as GuildMember;
-  const service = new CaseRoleLockdownService({} as never, { auditGuild: async () => f.audit });
+  const service = new CaseRoleLockdownService({ auditGuild: async () => f.audit });
   const audit = await service.auditMemberBypasses(member);
   expect(audit.retainedAdministratorRoleIds).toEqual(['case']);
 });
@@ -36,7 +36,7 @@ test.each(['case', 'guild'])(
       roles: { cache: new Collection([['case', {}]]) },
       joinedAt: new Date(),
     } as unknown as GuildMember;
-    const service = new CaseRoleLockdownService({} as never, { auditGuild: async () => f.audit });
+    const service = new CaseRoleLockdownService({ auditGuild: async () => f.audit });
     const audit = await service.auditMemberBypasses(member);
     expect(audit.retainedPrivilegedRoleIds).toContain(target);
     expect(audit.assessment?.findingCodes).toContain('retained_privileged_permissions');
