@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -15,8 +19,12 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 jobs:
+  impact:
+    uses: ./.github/workflows/change-impact.yml
+
   # Keep 24.04 until this Playwright version supports Ubuntu 26.04.
   static-unit:
+    needs: [impact]
     runs-on: ubuntu-24.04
     env:
       NODE_ENV: test
@@ -34,6 +42,8 @@ jobs:
         run: npm --ignore-scripts run ci:static:prepared
 
   database-acceptance:
+    needs: [impact]
+    if: needs.impact.outputs.profile != 'local'
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -104,6 +114,8 @@ jobs:
             apps/web/workspace-test-results
 
   isolated-browsers:
+    needs: [impact]
+    if: needs.impact.outputs.profile == 'full'
     runs-on: ubuntu-24.04
     env:
       NODE_ENV: test
@@ -147,6 +159,8 @@ jobs:
             apps/web/storybook-playwright-report
 
   package-smoke:
+    needs: [impact]
+    if: needs.impact.outputs.profile == 'full'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -157,7 +171,7 @@ jobs:
 
   build-test:
     if: always()
-    needs: [static-unit, database-acceptance, isolated-browsers, package-smoke]
+    needs: [impact, static-unit, database-acceptance, isolated-browsers, package-smoke]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -308,8 +322,8 @@ jobs:
             }
 
   deploy-web-prod:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [build-test, metrics]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.impact.outputs.web == 'true'
+    needs: [impact, build-test, metrics]
     runs-on: ubuntu-latest
     environment: Deploy - web-prod
     permissions:

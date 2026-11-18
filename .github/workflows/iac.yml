@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -15,7 +19,12 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 jobs:
+  impact:
+    uses: ./.github/workflows/change-impact.yml
+
   terraform:
+    needs: [impact]
+    if: needs.impact.outputs.iac == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -46,6 +55,8 @@ jobs:
         run: terraform init -backend=false && terraform validate
 
   checkov:
+    needs: [impact]
+    if: needs.impact.outputs.iac == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -58,6 +69,8 @@ jobs:
           soft_fail: false
 
   actionlint:
+    needs: [impact]
+    if: needs.impact.outputs.actionlint == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

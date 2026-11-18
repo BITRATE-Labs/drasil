@@ -4,7 +4,10 @@ import { spawnSync } from 'node:child_process';
 import { assertCiResults } from './check-ci-results.mjs';
 
 const jobs = ['static-unit', 'database-acceptance', 'isolated-browsers', 'package-smoke'];
-const successful = () => Object.fromEntries(jobs.map((job) => [job, { result: 'success' }]));
+const successful = () => ({
+  impact: { result: 'success', outputs: { profile: 'full' } },
+  ...Object.fromEntries(jobs.map((job) => [job, { result: 'success' }])),
+});
 
 test('accepts success from every required execution job', () => {
   assert.doesNotThrow(() => assertCiResults(successful()));
@@ -47,4 +50,40 @@ test('CLI rejects missing or malformed JSON and propagates failure', () => {
     });
     assert.equal(result.status, value === JSON.stringify(successful()) ? 0 : 1);
   }
+});
+
+test('only explicitly excluded local checks may be skipped', () => {
+  for (const profile of ['local', 'local-database']) {
+    const results = successful();
+    results.impact.outputs.profile = profile;
+    results['isolated-browsers'].result = 'skipped';
+    results['package-smoke'].result = 'skipped';
+    if (profile === 'local') results['database-acceptance'].result = 'skipped';
+    assert.doesNotThrow(() => assertCiResults(results));
+    for (const job of jobs) {
+      for (const result of ['failure', 'cancelled', 'in_progress', undefined]) {
+        assert.throws(() => assertCiResults({ ...results, [job]: { result } }));
+      }
+      const missing = { ...results };
+      delete missing[job];
+      assert.throws(() => assertCiResults(missing));
+    }
+    results['static-unit'].result = 'skipped';
+    assert.throws(() => assertCiResults(results));
+  }
+});
+
+test('failed or invalid classification cannot select a lightweight gate', () => {
+  for (const result of ['failure', 'cancelled', 'skipped', undefined])
+    assert.throws(() =>
+      assertCiResults({ ...successful(), impact: { result, outputs: { profile: 'local' } } })
+    );
+  for (const profile of ['', 'unknown', undefined])
+    assert.throws(() =>
+      assertCiResults({ ...successful(), impact: { result: 'success', outputs: { profile } } })
+    );
+  const results = successful();
+  results.impact.outputs.profile = 'local-database';
+  results['database-acceptance'].result = 'skipped';
+  assert.throws(() => assertCiResults(results));
 });

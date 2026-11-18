@@ -1,0 +1,38 @@
+name: Change impact
+
+on:
+  workflow_call:
+    outputs:
+      profile:
+        value: ${{ jobs.classify.outputs.profile }}
+      bot:
+        value: ${{ jobs.classify.outputs.bot }}
+      web:
+        value: ${{ jobs.classify.outputs.web }}
+      iac:
+        value: ${{ jobs.classify.outputs.iac }}
+      actionlint:
+        value: ${{ jobs.classify.outputs.actionlint }}
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    runs-on: ubuntu-24.04
+    outputs:
+      profile: ${{ steps.impact.outputs.profile }}
+      bot: ${{ steps.impact.outputs.bot }}
+      web: ${{ steps.impact.outputs.web }}
+      iac: ${{ steps.impact.outputs.iac }}
+      actionlint: ${{ steps.impact.outputs.actionlint }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Classify the complete event diff
+        id: impact
+        run: node scripts/classify-changes.mjs
