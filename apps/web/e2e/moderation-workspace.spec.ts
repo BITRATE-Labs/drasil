@@ -1,15 +1,6 @@
 import axe from 'axe-core';
-import { expect, test } from '@playwright/test';
-import {
-  fullSource,
-  fullStatement,
-  workspaceIds as id,
-  workspaceFixtures,
-} from './workspaceFixtures';
-const fixtures = workspaceFixtures();
-test.beforeAll(() => fixtures.start());
-test.afterAll(() => fixtures.stop());
-test.beforeEach(async ({ context, baseURL }) => fixtures.reset(context, baseURL!));
+import { expect, test, fixtures } from './workspaceTest';
+import { fullSource, fullStatement, workspaceIds as id } from './workspaceFixtures';
 
 for (const surface of ['inbox', 'canonical'] as const)
   test(`${surface} confirmation explains all pending cases and shared server context`, async ({

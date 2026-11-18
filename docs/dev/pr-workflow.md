@@ -34,11 +34,63 @@ Every PR should include:
 - Scope boundaries (what you did NOT change).
 - Any migration/setup notes if applicable.
 
-Keep diffs tight. If the PR is doing two things, split it.
+Keep diffs tight. Batch coherent small tooling fixes with their tests and docs in one issue/PR.
+Split independent product behavior or separately releasable work. Assemble the batch locally
+and run formatting and affected checks before opening or updating a PR. Drafts still run CI;
+use them deliberately and defer shared and automatic Copilot review until ready.
 
 ## Local quality gate
 
-`npm run check:ci` builds prerequisites once and runs the prepared static, database and browser groups sequentially. Standalone commands retain their normal build prerequisites. Hosted CI runs static/unit, serial database acceptance, isolated browser checks and production Docker smoke concurrently. The required `build-test` aggregate succeeds only when all four jobs succeed. Only the database job has Postgres and test database URLs.
+`npm run check:ci` builds prerequisites once and runs the prepared static, database and browser
+smoke groups sequentially. `ci:database:prepared` composes native integration, workspace and MCP
+groups for local use. Standalone commands retain their normal build prerequisites.
+
+Hosted CI keeps four required job groups, with database acceptance expanded to four isolated
+matrix runners:
+
+- **Static and unit** runs static checks and isolated unit coverage without a database.
+- **Native integration** runs bot integration, web integration and RLS.
+- **Workspace** runs production build/packaging/graph checks, all workspace browsers and RLS.
+  Two Playwright shards each get their own runner, database and one worker.
+  A shared worker-scoped provider fixture lets Playwright balance individual tests across shards;
+  database reset still runs before every test. Workspace runners build the application and web,
+  while native/MCP runners retain the bot build required by compiled worker acceptance.
+  Standalone/local workspace acceptance remains unsharded.
+- **MCP** runs all MCP browser acceptance and RLS.
+- **Browser smoke** runs persisted web coverage against its own disposable database, then the nine
+  functional fixture journeys on every PR. Database URLs are scoped to the coverage step.
+- **Production package smoke** checks the pruned bot image and its offline runtime imports.
+
+The required `build-test` aggregate succeeds only when every required runner succeeds. Visual checks
+are a separate, informational job outside its dependencies. Add `ci:visuals` before a normal PR
+run to request all page visual and Storybook checks, including Storybook interaction/accessibility
+tests. Label edits alone do not rerun or cancel application CI. Opening, synchronizing, reopening
+or marking a PR ready runs CI with that event's labels. The selected suite tests that run's head;
+preview publication also checks the current head and label. Removing the label only updates an
+existing preview comment, preserving historical check results. Creating the label is an operator
+step, not part of this workflow. To run full visuals locally after building prerequisites, use
+`npm --ignore-scripts run ci:visuals:prepared`.
+
+Each database acceptance runner deploys migrations and checks RLS independently. Its disposable Postgres
+data directory uses a 1 GiB memory-backed filesystem to avoid disk-bound fixture resets; normal
+transaction and durability settings remain enabled. This does not test storage survival across
+container loss. No database or artifacts are shared between runners. Tests sharing one database
+remain serial. Browser jobs retain OS libraries/fonts and install only the headless Chromium
+shell. Full Storybook checks use two workers in CI; database browser checks stay serial. Jest
+caches transformed code, not results, under job/dependency/tool configuration keys.
+
+Superseded PR CI and IaC runs are canceled. Main runs and production deployments retain their
+existing non-canceling behavior. IaC uses native workflow path filters and is not a required merge
+check. Optional visual failures are visible in their own check and do not change `build-test`.
+
+The bot image installs only the root, application and contracts workspaces. Its build inputs exclude
+web source and documentation, preserving cached layers for unrelated changes. Main CI exports
+Docker build layers when available, with a two-minute export limit; PRs only read them. Docker
+smoke loads application and bot bootstrap dependencies without starting services, with networking
+disabled in the final image check.
+Production retains its original uncached build path, including fresh OS-package installation.
+Its smaller image comes from the same bot-only Dockerfile. Image-tag reuse, migrations, the
+single-bot rollout policy and ECS stability checks are unchanged.
 
 Before pushing (when feasible):
 
@@ -70,8 +122,8 @@ npm run test:integration
 
 The test guard accepts only this local target or CI's loopback `5432/drasil_test`,
 with an absent or `public` schema parameter. Run database consumers serially,
-including across worktrees. `npm run check:ci` prepares the database before web
-coverage, then runs the native, web issuer/DB and MCP browser suites in order.
+including across worktrees. `npm run check:ci` runs native integration, workspace, MCP,
+persisted web coverage and fixture browser smoke serially.
 `npm run db:reset:local` retains its separate development-database behavior.
 
 ## Repo settings (one-time)

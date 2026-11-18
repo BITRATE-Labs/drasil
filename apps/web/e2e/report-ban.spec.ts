@@ -1,9 +1,5 @@
-import { expect, test } from '@playwright/test';
-import { workspaceIds as id, workspaceFixtures } from './workspaceFixtures';
-const fixtures = workspaceFixtures();
-test.beforeAll(() => fixtures.start());
-test.afterAll(() => fixtures.stop());
-test.beforeEach(async ({ context, baseURL }) => fixtures.reset(context, baseURL!));
+import { expect, test, fixtures } from './workspaceTest';
+import { workspaceIds as id } from './workspaceFixtures';
 
 test('direct report ban confirms the server-side target and persists a receipt without opening a case', async ({
   page,

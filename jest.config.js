@@ -2,6 +2,7 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
+  cacheDirectory: '<rootDir>/.cache/jest',
   testMatch: ['**/__tests__/**/*.test.ts'],
   verbose: false,
   forceExit: false,

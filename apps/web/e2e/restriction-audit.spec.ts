@@ -1,10 +1,6 @@
-import { expect, test } from '@playwright/test';
-import { workspaceIds as id, workspaceFixtures } from './workspaceFixtures';
-const fixtures = workspaceFixtures();
+import { expect, test, fixtures } from './workspaceTest';
+import { workspaceIds as id } from './workspaceFixtures';
 const path = `/admin/guild/${id.guild}/operations/restrictions`;
-test.beforeAll(() => fixtures.start());
-test.afterAll(() => fixtures.stop());
-test.beforeEach(async ({ context, baseURL }) => fixtures.reset(context, baseURL!));
 
 test('signed-out deep link keeps the audit return path and insufficient authority hides findings', async ({
   context,

@@ -14,25 +14,25 @@ RUN apt-get update \
 
 FROM base AS deps
 
-# Copy only what we need for a deterministic install. We include `scripts/` because
-# `npm ci` runs our `postinstall` hook (Prisma generate) which lives there.
+# Install the bot workspaces without the web app dependencies.
 COPY package.json package-lock.json .npmrc ./
-COPY apps/web/package.json ./apps/web/package.json
-COPY apps/web/lib/mcp/runtime ./apps/web/lib/mcp/runtime
 COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY packages/application/package.json ./packages/application/package.json
-COPY prisma ./prisma
-COPY scripts ./scripts
+COPY scripts/prisma-generate-if-needed.js ./scripts/prisma-generate-if-needed.js
 
 RUN --mount=type=secret,id=proxy_ca \
     [ ! -f /run/secrets/proxy_ca ] || export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; \
-    PRISMA_SKIP_POSTINSTALL_GENERATE=1 npm ci
+    PRISMA_SKIP_POSTINSTALL_GENERATE=1 npm ci --workspace packages/application --workspace packages/contracts --include-workspace-root
 
 
-FROM base AS build
+FROM deps AS build
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+# Web source, documentation and CI edits must not invalidate the bot build.
+COPY package.json package-lock.json .npmrc tsconfig.json prisma.config.js ./
+COPY src ./src
+COPY prisma ./prisma
+COPY packages ./packages
+COPY scripts ./scripts
 
 # Keep generation, compilation, production pruning and import verification in one
 # snapshot so vfs builders do not retain a full dependency tree for every step.
@@ -40,7 +40,7 @@ RUN --mount=type=secret,id=proxy_ca \
     [ ! -f /run/secrets/proxy_ca ] || export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; \
     npm run prisma:generate \
     && npm run build \
-    && npm prune --omit=dev \
+    && npm prune --omit=dev --workspace packages/application --workspace packages/contracts --include-workspace-root \
     && node scripts/check-application-imports.mjs
 
 

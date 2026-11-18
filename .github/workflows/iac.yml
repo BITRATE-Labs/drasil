@@ -2,9 +2,23 @@ name: IaC Checks
 
 on:
   pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/**'
+      - '.github/actionlint*'
+      - '.checkov*'
   push:
     branches:
       - main
+    paths:
+      - 'infra/**'
+      - '.github/workflows/**'
+      - '.github/actionlint*'
+      - '.checkov*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

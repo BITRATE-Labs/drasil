@@ -33,3 +33,12 @@ assert.deepEqual(
 console.log(
   'CommonJS and ES imports passed: isolated core, postgres, canonical setup-settings and approval-presentation.'
 );
+
+// Load bootstrap dependencies without configuring services or starting the bot.
+assert.equal(typeof require('../dist/src/di/container.js').configureContainer, 'function');
+assert.equal(
+  typeof require('../dist/src/observability/langfuse.js').initLangfuseTracing,
+  'function'
+);
+require.resolve('prisma/build/index.js');
+console.log('Bot runtime imports and migration CLI resolution passed without starting services.');

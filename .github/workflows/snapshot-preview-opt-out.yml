@@ -1,0 +1,37 @@
+name: Snapshot preview opt-out
+
+on:
+  pull_request:
+    types: [unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drasil-snapshot-comment-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  snapshot-preview-disabled:
+    if: github.event.label.name == 'ci:visuals' && !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const marker = '<!-- drasil-snapshot-preview-comment -->';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+            if (current.labels.some(label => label.name === 'ci:visuals')) return;
+            const body = `[AGENT]\n${marker}\nVisual snapshot CI is not selected for commit \`${current.head.sha}\`. Add \`ci:visuals\` before the next normal PR run to request current snapshot evidence.`;
+            for (const comment of comments) {
+              if (comment.user?.type === 'Bot' && comment.body?.includes(marker)) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: comment.id, body });
+              }
+            }
