@@ -530,6 +530,7 @@ export class InMemoryDetectionEventsRepository implements IDetectionEventsReposi
     delete metadata.observed_action;
     delete metadata.observed_action_by;
     delete metadata.observed_action_at;
+    delete metadata.observed_ban_reconciliation_pending;
     delete metadata.report_ban_operation_id;
     if (actionType === 'false_positive') {
       delete metadata[DETECTION_ACCOUNTING_EXCLUDED_METADATA_KEY];

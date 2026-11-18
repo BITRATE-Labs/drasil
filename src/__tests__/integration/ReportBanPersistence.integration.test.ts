@@ -243,6 +243,7 @@ integration('report ban claims and reconciliation (Postgres)', () => {
     await f.detections.claimObservedAction(f.detection.id, {
       observed_action: 'ban',
       observed_action_by: 'moderator',
+      observed_ban_reconciliation_pending: true,
       report_ban_operation_id: f.request.id,
       report_ban_attempt_token: f.claim.attemptToken,
     });
@@ -256,6 +257,9 @@ integration('report ban claims and reconciliation (Postgres)', () => {
     expect(
       await f.detections.releaseObservedAction(f.detection.id, 'ban', 'moderator', f.request.id)
     ).not.toBeNull();
+    expect((await f.detections.findById(f.detection.id))?.metadata).not.toHaveProperty(
+      'observed_ban_reconciliation_pending'
+    );
     expect((await f.detections.findById(f.detection.id))?.metadata).not.toHaveProperty(
       'observed_action'
     );
