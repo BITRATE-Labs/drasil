@@ -405,6 +405,7 @@ async function assertSubmission(
     confirmation_required: 'Confirm the moderation action before queueing it.',
     policy_disabled: 'Moderator ban actions are disabled for this server.',
     actor_unavailable: 'You need Administrator permission to manage case message cleanup.',
+    plan_required: 'Run a fresh restriction audit and review selected repairs.',
     permission_denied: 'You need Administrator permission to manage case message cleanup.',
   };
   throw new Error(messages[code]);

@@ -1,4 +1,5 @@
 export type ActionDenialCode =
+  | 'plan_required'
   | 'permission_denied'
   | 'policy_disabled'
   | 'reason_required'

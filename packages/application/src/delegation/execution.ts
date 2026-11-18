@@ -1,3 +1,8 @@
+import {
+  restrictionAuditSchema,
+  restrictionApplyResultSchema,
+} from '../operations/restrictionTypes';
+import { projectRestrictionAudit } from '../operations/restrictionPresentation';
 import type { McpOperationalPort } from './operations';
 import { ActionDeniedError } from '../results';
 import {
@@ -42,6 +47,23 @@ function scalar(value: unknown): value is PublicScalar {
 export function projectHumanOutcome(command: HumanCommand, value: unknown): ActionCompletion {
   const raw = record(value);
   const nested = record(raw.result);
+  if (command.kind === 'audit_case_role_lockdown') {
+    const parsed = restrictionAuditSchema.safeParse(raw.restriction_audit);
+    if (parsed.success && typeof raw.audit_request_id === 'string')
+      return {
+        state: 'completed',
+        outcome: { restrictionAudit: projectRestrictionAudit(raw.audit_request_id, parsed.data) },
+      };
+  }
+  if (command.kind === 'apply_case_role_lockdown') {
+    const parsed = restrictionApplyResultSchema.safeParse(raw.restriction_apply);
+    if (parsed.success)
+      return {
+        state: parsed.data.stopReason === 'completed' ? 'completed' : 'partial',
+        outcome: { restrictionApply: parsed.data },
+      };
+  }
+
   if (
     raw.action_type === 'delegated_admission' &&
     (raw.state === 'denied' ||
@@ -329,10 +351,15 @@ export interface DelegatedActionService {
     confirmationId: string,
     method: Exclude<ConfirmationMethod, 'not_required'>
   ): Promise<PublicActionResult>;
-  status(principal: DelegatedPrincipal, executionId: string): Promise<PublicActionResult>;
+  status(
+    principal: DelegatedPrincipal,
+    executionId: string,
+    diagnosticOffset?: number
+  ): Promise<PublicActionResult>;
   cancel(principal: DelegatedPrincipal, confirmationId: string): Promise<PublicActionResult>;
 }
 interface DelegatedActionServiceDependencies {
+  readonly restrictionAudits?: import('../operations/restrictionPersistence').RestrictionAuditStore;
   readonly store: DelegationStore;
   readonly access: DelegatedAccess;
   readonly resolver: IntentResolver;
@@ -458,7 +485,7 @@ function createCoreActionService(deps: DelegatedActionServiceDependencies): Dele
       }),
     confirm: (principal, id, method) =>
       safe(async () => run(principal, await acceptSaved(principal, id, method))),
-    status: (principal, id) =>
+    status: (principal, id, diagnosticOffset = 0) =>
       safe(async () => {
         const execution = await deps.store.loadExecution(principal, id);
         if (!execution) return { state: 'denied', code: 'not_found' };
@@ -469,9 +496,34 @@ function createCoreActionService(deps: DelegatedActionServiceDependencies): Dele
           connectionId: execution.connectionId,
           workflowId: execution.workflowId,
         });
-        return decision.kind === 'allowed'
-          ? projectExecution(execution)
-          : { state: 'denied', code: decision.reason };
+        if (decision.kind !== 'allowed') return { state: 'denied', code: decision.reason };
+        if (!Number.isSafeInteger(diagnosticOffset) || diagnosticOffset < 0)
+          return { state: 'denied', code: 'invalid_diagnostic_offset' };
+        const result = projectExecution(execution);
+        if (
+          execution.command.kind === 'audit_case_role_lockdown' &&
+          execution.queueRequestId &&
+          deps.restrictionAudits
+        ) {
+          const audit = await deps.restrictionAudits.load(
+            execution.queueRequestId,
+            execution.guildId
+          );
+          if (audit)
+            return {
+              ...result,
+              outcome: {
+                ...result.outcome,
+                restrictionAudit: projectRestrictionAudit(
+                  execution.queueRequestId,
+                  audit,
+                  diagnosticOffset
+                ),
+              },
+            };
+        }
+        if (diagnosticOffset > 0) return { state: 'denied', code: 'diagnostics_unavailable' };
+        return result;
       }),
     cancel: (principal, id) =>
       safe(async () => {
@@ -621,13 +673,13 @@ export function createDelegatedActionService(
         intent ?? {}
       );
     },
-    async status(principal, id): Promise<PublicActionResult> {
+    async status(principal, id, diagnosticOffset): Promise<PublicActionResult> {
       const execution = await deps.store.loadExecution(principal, id);
       return invoke(
         principal,
         'read',
         execution?.guildId,
-        (service) => service.status(principal, id),
+        (service) => service.status(principal, id, diagnosticOffset),
         execution ?? {}
       );
     },

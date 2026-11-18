@@ -1,3 +1,4 @@
+import { createWebRestrictionPlanDependencies } from './restriction';
 import { fetchDiscordGuildRoles, fetchDiscordGuildChannels } from '../../discordApi';
 import {
   ActionDeniedError,
@@ -71,6 +72,7 @@ export function createApprovedSetupExecutor(
 /** Read-only preparation uses a strict stored record, never a default-creating config service. */
 export function createWebSetupIntentResolver() {
   return createSetupIntentResolver({
+    restriction: createWebRestrictionPlanDependencies(),
     authority: createWebAuthority(),
     provider: {
       isConfigured: (method) =>

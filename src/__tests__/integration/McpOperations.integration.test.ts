@@ -1,3 +1,4 @@
+import { fixture as restrictionFixture } from '../../../packages/application/src/operations/restrictionExecutionTestData';
 import { Pool } from 'pg';
 import {
   createDelegatedActionService,
@@ -907,4 +908,69 @@ integration.each(['pg', 'prisma'] as const)('MCP operational queue lifecycle via
       status: 'processing',
     });
   }, 30_000);
+
+  it('pages restriction diagnostics through the same authorized, rate-limited status read', async () => {
+    const f = restrictionFixture();
+    f.audit.setup.findings = Array.from({ length: 75 }, (_, i) => ({
+      code: 'unexpected_channel_access' as const,
+      kind: 'access_failure' as const,
+      channelId: `channel-${i}`,
+      userId: null,
+      roleIds: [],
+    }));
+    f.audit.fixes = Array.from({ length: 70 }, (_, i) => ({ ...f.audit.fixes[0], id: `fix-${i}` }));
+    const load = jest.fn(async () => f.audit);
+    const limit = jest.fn(async () => ({ kind: 'allowed' as const }));
+    const action = createDelegatedActionService({
+      store,
+      access,
+      restrictionAudits: { load },
+      direct: { execute: jest.fn() },
+      operations: {
+        enabled: () => true,
+        checkMcpLimit: limit,
+        recordMcpAudit: async () => undefined,
+      },
+      resolver: {
+        resolve: async () => ({
+          delivery: { kind: 'queued', command: { kind: 'audit_case_role_lockdown' } },
+          preconditions: { kind: 'none' },
+          relevantState: {},
+          summary: 'Read restriction metadata',
+          previewExpiresAt: null,
+        }),
+      },
+    });
+    const receipt = await action.submit(principal, {
+      workflowId: 'audit_case_role_lockdown',
+      guildId: 'guild',
+      idempotencyKey: 'paged',
+      input: {},
+    });
+    await pool.query(
+      "update moderation_action_requests set status='completed',completed_at=clock_timestamp(),result=$2::jsonb where id=$1::uuid",
+      [
+        receipt.requestId,
+        JSON.stringify({ audit_request_id: receipt.requestId, restriction_audit: f.audit }),
+      ]
+    );
+    const first = await action.status(principal, receipt.executionId!);
+    const later = await action.status(principal, receipt.executionId!, 50);
+    expect(first.outcome?.restrictionAudit?.diagnostics).toHaveLength(50);
+    expect(later.outcome?.restrictionAudit?.diagnostics).toHaveLength(25);
+    expect(later.outcome?.restrictionAudit?.diagnostics[0].channelId).toBe('channel-50');
+    expect(later.outcome?.restrictionAudit?.fixes).toHaveLength(70);
+    expect(later.outcome?.restrictionAudit).not.toHaveProperty('facts');
+    expect(load).toHaveBeenLastCalledWith(receipt.requestId, 'guild');
+    const reads = load.mock.calls.length;
+    limit.mockImplementationOnce(async () => ({ kind: 'limited', retryAfterSeconds: 9 }) as never);
+    expect(await action.status(principal, receipt.executionId!, 50)).toMatchObject({
+      state: 'denied',
+      code: 'rate_limited',
+    });
+    expect(load).toHaveBeenCalledTimes(reads);
+    await store.revokeConnection(principal, principal.grantVersion);
+    expect((await action.status(principal, receipt.executionId!, 50)).state).toBe('denied');
+    expect(load).toHaveBeenCalledTimes(reads);
+  });
 });

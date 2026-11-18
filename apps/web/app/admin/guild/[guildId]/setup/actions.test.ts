@@ -241,3 +241,24 @@ it('loads the known bot list through the authenticated empty-search request', as
   expect(mocks.welcomeRoles).toHaveBeenCalledWith('234567890123456789');
   expect(mocks.welcomeBots).toHaveBeenCalledWith('234567890123456789', []);
 });
+
+it('preserves stored category exceptions and ignores new category form values', async () => {
+  vi.stubEnv('NODE_ENV', 'test');
+  vi.stubEnv('DRASIL_WEB_E2E_FIXTURE_MODE', 'true');
+  mocks.session.mockResolvedValue({ userId: 'fixture-admin' });
+  mocks.token.mockResolvedValue({ accessToken: 'fixture-token' });
+  mocks.assertCanManageGuild.mockResolvedValue({ owner: true, permissions: '8' });
+  const adapter = new FixtureSetupDataAdapter();
+  await adapter.updateGuildSetup({
+    guildId: 'guild-1',
+    updatedBy: 'fixture-admin',
+    caseRoleLockdownAllowedCategoryIds: ['existing-category'],
+  });
+  const form = new FormData();
+  form.append('caseRoleLockdownAllowedCategoryIds', 'new-category');
+  form.append('caseRoleLockdownAllowedChannelIds', 'channel-1');
+  await saveGuildSetup('guild-1', form);
+  const server = await adapter.getServer('guild-1');
+  expect(server?.settings.case_role_lockdown_allowed_category_ids).toEqual(['existing-category']);
+  expect(server?.settings.case_role_lockdown_allowed_channel_ids).toEqual(['channel-1']);
+});

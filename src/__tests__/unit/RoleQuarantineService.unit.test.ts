@@ -40,6 +40,7 @@ const createRole = (options: FakeRoleOptions): Role => {
     position: options.position ?? 1,
     tags: options.botId ? { botId: options.botId } : {},
     permissions: {
+      bitfield: [...permissionSet].reduce((bits, permission) => bits | permission, 0n),
       has: jest.fn((permission: bigint) => permissionSet.has(permission)),
     },
   } as unknown as Role;
@@ -85,6 +86,7 @@ const createMember = (
   const botMember = {
     roles: {
       highest: {
+        position: 100,
         comparePositionTo: jest.fn(
           (role: Role) => 100 - (role as Role & { position: number }).position
         ),
@@ -940,6 +942,7 @@ describe('RoleQuarantineService (unit)', () => {
     const newMember = createMember([], [caseRole]);
     (newMember.roles.add as jest.Mock).mockRejectedValue(new Error('Missing permissions'));
     const verificationEventRepository = {
+      update: jest.fn().mockResolvedValue(createVerificationEvent()),
       markParkedContainmentIncomplete: jest.fn().mockResolvedValue(null),
     };
     const service = new RoleQuarantineService(
@@ -1022,6 +1025,7 @@ describe('RoleQuarantineService (unit)', () => {
     const newMember = createMember([caseRole, managedRole], [caseRole, managedRole]);
     const snapshots = new InMemoryRoleQuarantineSnapshotRepository();
     const verificationEventRepository = {
+      update: jest.fn().mockResolvedValue(createVerificationEvent()),
       markParkedContainmentIncomplete: jest.fn().mockResolvedValue({
         ...createVerificationEvent(),
         attention_state: CaseAttentionState.REVIEW_REQUIRED,
@@ -1073,6 +1077,7 @@ describe('RoleQuarantineService (unit)', () => {
     const newMember = createMember([caseRole, managedRole], [caseRole, managedRole]);
     const snapshots = new InMemoryRoleQuarantineSnapshotRepository();
     const verificationEventRepository = {
+      update: jest.fn().mockResolvedValue(createVerificationEvent()),
       markParkedContainmentIncomplete: jest.fn().mockImplementation(async (_id, metadata) => ({
         ...createVerificationEvent(),
         attention_state: CaseAttentionState.REVIEW_REQUIRED,

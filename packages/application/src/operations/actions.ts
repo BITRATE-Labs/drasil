@@ -1,10 +1,10 @@
+import { restrictionSelectionSchema } from './restrictionTypes';
 import { hasAuthority, MANAGE_GUILD } from '../authorization';
 import type { ActionContext } from '../context';
 import type { ActionResult, ActionDenialCode } from '../results';
 import type { OperationCommand } from './commands';
 import type { OperationsDependencies } from './ports';
 import type {
-  CaseRoleLockdownReport,
   CaseThreadClosureSweepReport,
   IntegrityAuditReport,
   RoleIntakeResult,
@@ -14,8 +14,13 @@ export type OperationsOutcome =
   | { readonly kind: 'clear_moderation_queue'; readonly removedCount: number }
   | { readonly kind: 'close_resolved_case_threads'; readonly report: CaseThreadClosureSweepReport }
   | {
-      readonly kind: 'audit_case_role_lockdown' | 'apply_case_role_lockdown';
-      readonly report: CaseRoleLockdownReport;
+      readonly kind: 'audit_case_role_lockdown';
+      readonly auditRequestId: string;
+      readonly audit: import('./restrictionTypes').RestrictionAudit;
+    }
+  | {
+      readonly kind: 'apply_case_role_lockdown';
+      readonly result: import('./restrictionTypes').RestrictionApplyResult;
     }
   | { readonly kind: 'audit_integrity'; readonly report: IntegrityAuditReport }
   | { readonly kind: 'intake_role_members'; readonly result: RoleIntakeResult };
@@ -79,6 +84,15 @@ export function operationRequiredPermissions(
 export function createOperationsActions(deps: OperationsDependencies): OperationsActions {
   return {
     async execute(context, command): Promise<ActionResult<OperationsOutcome>> {
+      if (
+        command.kind === 'apply_case_role_lockdown' &&
+        !restrictionSelectionSchema.safeParse({
+          auditRequestId: 'auditRequestId' in command ? command.auditRequestId : undefined,
+          auditRevision: 'auditRevision' in command ? command.auditRevision : undefined,
+          selectedFixIds: 'selectedFixIds' in command ? command.selectedFixIds : undefined,
+        }).success
+      )
+        return { kind: 'denied', code: 'plan_required' };
       const denial = await authorize(context, command, deps);
       if (denial) return { kind: 'denied', code: denial };
       if (context.actor.kind !== 'user') return { kind: 'denied', code: 'permission_denied' };
@@ -94,17 +108,18 @@ export function createOperationsActions(deps: OperationsDependencies): Operation
         return { kind: 'denied', code: 'confirmation_required' };
       return {
         kind: 'outcome',
-        outcome: await run(deps, context.guildId, context.actor.userId, command),
+        outcome: await run(deps, context, command),
       };
     },
   };
 }
 async function run(
   deps: OperationsDependencies,
-  guildId: string,
-  actorId: string,
+  context: ActionContext,
   command: OperationCommand
 ): Promise<OperationsOutcome> {
+  const guildId = context.guildId;
+  const actorId = context.actor.kind === 'user' ? context.actor.userId : '';
   switch (command.kind) {
     case 'sync_moderation_queue':
       await deps.queue.sync(guildId);
@@ -114,16 +129,19 @@ async function run(
     case 'close_resolved_case_threads':
       return { kind: command.kind, report: await deps.closure.sweep({ ...command, guildId }) };
     case 'audit_case_role_lockdown':
-      return { kind: command.kind, report: await deps.lockdown.audit(guildId) };
-    case 'apply_case_role_lockdown':
       return {
         kind: command.kind,
-        report: await deps.lockdown.apply({
-          guildId,
-          actorId,
-          unsyncAllowedChannels: command.unsyncAllowedChannels,
-        }),
+        auditRequestId: context.requestId,
+        audit: await deps.lockdown.audit(context),
       };
+    case 'apply_case_role_lockdown': {
+      const selection = restrictionSelectionSchema.parse({
+        auditRequestId: command.auditRequestId,
+        auditRevision: command.auditRevision,
+        selectedFixIds: command.selectedFixIds,
+      });
+      return { kind: command.kind, result: await deps.lockdown.apply(context, selection) };
+    }
     case 'audit_integrity':
       return { kind: command.kind, report: await deps.integrity.audit({ ...command, guildId }) };
     case 'intake_role_members':

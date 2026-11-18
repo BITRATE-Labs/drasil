@@ -336,6 +336,7 @@ export function createBotMessageCleanupRuntime(
 export function requireMessageCleanupOutcome<T>(result: ActionResult<T>): T {
   if (result.kind === 'outcome') return result.outcome;
   const messages = {
+    plan_required: 'Run a fresh audit and review selected repairs.',
     permission_denied: 'Message cleanup requires current Administrator permission.',
     actor_unavailable: 'Message cleanup requires current Administrator permission.',
     policy_disabled: 'Moderator ban action is disabled for this server.',

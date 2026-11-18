@@ -41,6 +41,10 @@ export interface ConnectionGrant {
 export type ConfirmationMethod =
   'elicitation' | 'client_confirmation' | 'website' | 'discord' | 'not_required';
 export type IntentPreconditions =
+  | {
+      readonly kind: 'restriction_plan';
+      readonly plan: import('../operations/restrictionTypes').ApprovedRestrictionPlan;
+    }
   | import('../reports/resolution').ReportMessagePrecondition
   | import('../reports/review').ReportCasePrecondition
   | import('../reports/delegation').IntakePromptPrecondition
@@ -247,6 +251,8 @@ export interface PublicItemOutcome {
   readonly status?: string;
 }
 export interface PublicFamilyOutcome {
+  readonly restrictionAudit?: import('../operations/restrictionPresentation').PublicRestrictionAudit;
+  readonly restrictionApply?: import('../operations/restrictionTypes').RestrictionApplyResult;
   readonly status?: string;
   readonly queueCleanupStatus?: string;
   readonly succeeded?: boolean;
@@ -278,7 +284,11 @@ export interface PublicActionResult {
 export type WorkerAdmission =
   | { readonly kind: 'ordinary' }
   | {
-      readonly kind: 'new_execution' | 'committed_reconciliation' | 'committed_containment';
+      readonly kind:
+        | 'new_execution'
+        | 'committed_reconciliation'
+        | 'committed_containment'
+        | 'restriction_reconciliation';
       readonly execution: ExecutionRecord;
     }
   | { readonly kind: 'already_bound'; readonly execution: ExecutionRecord }

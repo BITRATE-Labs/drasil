@@ -1,3 +1,5 @@
+import { restrictionSelectionSchema } from '../operations/restrictionTypes';
+import { prepareRestrictionPlan } from '../operations/restrictionActions';
 import { setupResourceReferences, validateSetupResourceReferences } from './resources';
 import { operationCommandSchema } from '../operations/commands';
 import {
@@ -29,6 +31,7 @@ import { shippedHeuristicDefaults } from './defaults';
 import type { QueuedCommand } from '../requests/commands';
 
 export interface SetupResolutionResources {
+  readonly restriction?: import('../operations/restrictionActions').RestrictionPlanDependencies;
   loadServer(guildId: string): Promise<SetupServerRecord | null>;
   loadGuildResources(guildId: string): Promise<SetupSelectionResources>;
   readonly authority: AuthorityPort;
@@ -175,6 +178,37 @@ export function createSetupIntentResolver(resources: SetupResolutionResources): 
         },
       };
       const command = definition.parseCommand(invocation.input, bindings);
+      if (command.kind === 'apply_case_role_lockdown') {
+        if (!resources.restriction) throw new ActionDeniedError('unavailable');
+        const selection = restrictionSelectionSchema.parse({
+          auditRequestId: command.auditRequestId,
+          auditRevision: command.auditRevision,
+          selectedFixIds: command.selectedFixIds,
+        });
+        let plan: import('../operations/restrictionTypes').ApprovedRestrictionPlan;
+        try {
+          plan = await prepareRestrictionPlan(
+            {
+              guildId: invocation.guildId,
+              requestId: invocation.idempotencyKey,
+              source: 'mcp',
+              actor: { kind: 'user', userId: principal.userId },
+            },
+            selection,
+            resources.restriction
+          );
+        } catch (error) {
+          throw new ActionDeniedError(error instanceof Error ? error.message : 'stale_state');
+        }
+        return {
+          bindings,
+          delivery: { kind: 'queued', command },
+          preconditions: { kind: 'restriction_plan', plan },
+          relevantState: plan,
+          summary: `Selected restriction repairs\n${JSON.stringify(plan.effects)}`,
+          previewExpiresAt: new Date(plan.expiresAt),
+        };
+      }
       const references = setupResourceReferences(
         definition.family === 'setup'
           ? setupCommandSchema.parse(command)
@@ -257,10 +291,6 @@ export function createSetupIntentResolver(resources: SetupResolutionResources): 
         // These fields are the canonical public operation options, never runtime provenance.
         const { kind, ...options } = command;
         summary = `${kind}\n${JSON.stringify(options)}`;
-        if (command.kind === 'apply_case_role_lockdown')
-          summary += `\nIntended settings change:\n${setupChangeSummary(state, {
-            settings: { case_role_lockdown_enabled: true },
-          })}\nAfter validation succeeds, lockdown is enabled when no overwrite changes are needed or at least one planned overwrite succeeds. External changes may be partial. If application is blocked or every planned overwrite fails, the enabled setting remains unchanged.`;
         if (
           command.kind === 'intake_role_members' &&
           command.execute &&

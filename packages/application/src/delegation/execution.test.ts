@@ -1,3 +1,4 @@
+import { fixture } from '../operations/restrictionExecutionTestData';
 import { createDelegatedActionService, projectExecution, projectHumanOutcome } from './execution';
 import { ActionDeniedError } from '../results';
 import type { DelegatedAccess } from './access';
@@ -234,3 +235,15 @@ it.each(['before_write', 'after_write', 'denied_effect'] as const)(
     expect(store.completeExecution).toHaveBeenCalledTimes(1);
   }
 );
+
+test('audit public projection keeps every selectable fix while paging diagnostics and excludes the fact snapshot', () => {
+  const f = fixture();
+  f.audit.fixes = Array.from({ length: 80 }, (_, i) => ({ ...f.audit.fixes[0], id: `fix-${i}` }));
+  const result = projectHumanOutcome(
+    { kind: 'audit_case_role_lockdown' },
+    { audit_request_id: 'durable-audit', restriction_audit: f.audit }
+  );
+  expect(result.outcome?.restrictionAudit?.fixes).toHaveLength(80);
+  expect(result.outcome?.restrictionAudit?.auditRequestId).toBe('durable-audit');
+  expect(result.outcome?.restrictionAudit).not.toHaveProperty('facts');
+});

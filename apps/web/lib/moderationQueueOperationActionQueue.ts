@@ -1,5 +1,11 @@
+import { createWebRestrictionPlanDependencies } from './mcp/adapters/restriction';
+import { insertModerationActionRequestWithReceipt } from './moderationActionRequestQueue';
+import { getPostgresPool } from './setupDataAdapter';
 import {
   queuedOperationCommandSchema,
+  prepareRestrictionPlan,
+  restrictionSelectionSchema,
+  encodeQueuedAction,
   type ActionContext,
   type QueuedOperationCommand,
 } from '@drasil/application';
@@ -17,5 +23,22 @@ export async function queueModerationQueueOperation(
 ): Promise<ModerationActionRequestReceipt> {
   const command = queuedOperationCommandSchema.parse(input.command);
 
+  if (command.kind === 'apply_case_role_lockdown') {
+    const selection = restrictionSelectionSchema.parse({
+      auditRequestId: command.auditRequestId,
+      auditRevision: command.auditRevision,
+      selectedFixIds: command.selectedFixIds,
+    });
+    const plan = await prepareRestrictionPlan(
+      input.context,
+      selection,
+      createWebRestrictionPlanDependencies()
+    );
+    const encoded = encodeQueuedAction(input.context, command);
+    return insertModerationActionRequestWithReceipt(getPostgresPool(), {
+      ...encoded,
+      metadata: { ...encoded.metadata, restriction_schema_version: 1, restriction_plan: plan },
+    });
+  }
   return submitQueuedAction({ context: input.context, command });
 }

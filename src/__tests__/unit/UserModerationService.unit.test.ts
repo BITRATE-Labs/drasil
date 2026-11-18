@@ -161,6 +161,7 @@ describe('UserModerationService (unit)', () => {
       previewCompromisedAccount: jest.fn(),
       quarantineCompromisedAccount: jest.fn(),
       quarantineMember: jest.fn(),
+      repairCaseRoles: jest.fn(),
       enforceActiveCaseRoleUpdate: jest.fn(),
       ...overrides,
     };

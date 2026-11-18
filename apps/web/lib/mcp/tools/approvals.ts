@@ -57,9 +57,16 @@ export function createApprovalTools(
         idempotentHint: true,
         openWorldHint: false,
       },
-      handler: async (principal, input) =>
-        getMcpActionStatus(service, principal, executionInputSchema.parse(input).executionId),
+      handler: async (principal, input) => {
+        const parsed = executionInputSchema.parse(input);
+        return getMcpActionStatus(service, principal, parsed.executionId, parsed.diagnosticOffset);
+      },
     },
   ];
 }
-const executionInputSchema = z.object({ executionId: z.string().uuid() }).strict();
+const executionInputSchema = z
+  .object({
+    executionId: z.string().uuid(),
+    diagnosticOffset: z.number().int().nonnegative().optional(),
+  })
+  .strict();

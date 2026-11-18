@@ -96,6 +96,7 @@ set (status, updated_at, requested_at, started_at, completed_at, attempts,
     moderation_action_requests.action_type = 'ban_observed_detection' AND moderation_action_requests.status = 'failed'
   )) AS new_attempt) AS attempt
   CROSS JOIN LATERAL (SELECT same_binding AND NOT protected
+    AND coalesce(moderation_action_requests.metadata->>'restriction_schema_version','') <> '1'
     AND NOT (coalesce(moderation_action_requests.metadata, '{}'::jsonb) ? 'delegation')
     AND NOT (coalesce(excluded.metadata, '{}'::jsonb) ? 'delegation') AND (
     new_attempt OR (

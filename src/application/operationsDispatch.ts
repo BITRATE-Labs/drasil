@@ -28,16 +28,14 @@ export type QueuedOperationsOutcome = { readonly server_id: string } & (
       readonly would_close_threads: number;
     }
   | {
-      readonly action_type: 'audit_case_role_lockdown' | 'apply_case_role_lockdown';
-      readonly applied_writes: number;
-      readonly enabled: boolean;
-      readonly error_count: number;
-      readonly failed_writes: number;
-      readonly issues: { code: string; message: string; severity: 'error' | 'warning' }[];
-      readonly planned_writes: number;
-      readonly synced_allowed_channel_blockers: number;
-      readonly unsynced_allowed_channels: number;
-      readonly warning_count: number;
+      readonly action_type: 'audit_case_role_lockdown';
+      readonly audit_request_id: string;
+      readonly restriction_audit: import('@drasil/application').RestrictionAudit;
+    }
+  | {
+      readonly action_type: 'apply_case_role_lockdown';
+      readonly restriction_progress: import('@drasil/application').RestrictionProgress;
+      readonly restriction_apply: import('@drasil/application').RestrictionApplyResult;
     }
   | {
       readonly action_type: 'intake_role_members';
@@ -94,24 +92,19 @@ function projectOperationsOutcome(
       };
     }
     case 'audit_case_role_lockdown':
-    case 'apply_case_role_lockdown': {
-      const report = outcome.report;
       return {
         ...base,
         action_type: outcome.kind,
-        applied_writes: report.appliedActions.length,
-        enabled: report.enabled,
-        error_count: report.errorCount,
-        failed_writes: report.failedActions.length,
-        issues: report.issues
-          .slice(0, 8)
-          .map((issue) => ({ code: issue.code, message: issue.message, severity: issue.severity })),
-        planned_writes: report.plannedActions.length,
-        synced_allowed_channel_blockers: report.syncedAllowedChannels.length,
-        unsynced_allowed_channels: report.unsyncedAllowedChannels.length,
-        warning_count: report.warningCount,
+        audit_request_id: outcome.auditRequestId,
+        restriction_audit: outcome.audit,
       };
-    }
+    case 'apply_case_role_lockdown':
+      return {
+        ...base,
+        action_type: outcome.kind,
+        restriction_progress: outcome.result.progress,
+        restriction_apply: outcome.result,
+      };
     case 'intake_role_members': {
       const result = outcome.result;
       return {

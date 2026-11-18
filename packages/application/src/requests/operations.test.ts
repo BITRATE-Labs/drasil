@@ -19,7 +19,12 @@ const commands: QueuedOperationCommand[] = [
     userId: null,
   },
   { kind: 'audit_case_role_lockdown' },
-  { kind: 'apply_case_role_lockdown', unsyncAllowedChannels: false },
+  {
+    kind: 'apply_case_role_lockdown',
+    auditRequestId: 'audit',
+    auditRevision: 'revision',
+    selectedFixIds: ['repair'],
+  },
   { kind: 'intake_role_members', roleId: 'role', limit: 250, reason: 'reason', execute: true },
 ];
 test.each(commands)(
@@ -42,8 +47,12 @@ test.each(commands)(
     expect(decoded.context).toEqual({ ...context, requestId: 'request' });
   }
 );
-test('decodes shipped operation defaults without inventing proof fields', () => {
-  expect(
+test.each([
+  {},
+  { unsync_allowed_channels: true },
+  { operation_command: { kind: 'apply_case_role_lockdown', unsyncAllowedChannels: true } },
+])('legacy coarse apply requires a new audit and selected plan', (metadata) => {
+  expect(() =>
     decodeQueuedAction({
       id: 'request',
       server_id: 'guild',
@@ -51,9 +60,9 @@ test('decodes shipped operation defaults without inventing proof fields', () => 
       actor_surface: 'web',
       action_type: 'apply_case_role_lockdown',
       target_user_id: null,
-      metadata: {},
-    }).command
-  ).toEqual({ kind: 'apply_case_role_lockdown', unsyncAllowedChannels: false });
+      metadata,
+    })
+  ).toThrow('Run a fresh audit and review selected repairs.');
 });
 test('legacy sweep rows keep administrator provenance; explicit guild audits retain their intent', () => {
   const row = {

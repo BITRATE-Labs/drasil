@@ -33,7 +33,6 @@ import {
   AUTO_KICK_MAX_CONFIDENCE_THRESHOLD,
   AUTO_KICK_MIN_CONFIDENCE_THRESHOLD,
   AUTOMATIC_DETECTION_DEFAULT_EXEMPT_MODERATORS,
-  CASE_ROLE_LOCKDOWN_DEFAULT_ENABLED,
   JOIN_DETECTION_AUTO_KICK_DEFAULT_ENABLED,
   MANUAL_INTAKE_DEFAULT_ENABLED,
   MANUAL_INTAKE_DEFAULT_GRACE_PERIOD_SECONDS,
@@ -312,8 +311,6 @@ export default async function GuildSetupPage({ params }: PageProps) {
   const manualIntakeGracePeriodSeconds =
     server?.settings.manual_intake_grace_period_seconds ??
     MANUAL_INTAKE_DEFAULT_GRACE_PERIOD_SECONDS;
-  const caseRoleLockdownEnabled =
-    server?.settings.case_role_lockdown_enabled ?? CASE_ROLE_LOCKDOWN_DEFAULT_ENABLED;
   const caseRoleLockdownAllowedChannelIds =
     server?.settings.case_role_lockdown_allowed_channel_ids ?? [];
   const caseRoleLockdownAllowedCategoryIds =
@@ -927,37 +924,35 @@ export default async function GuildSetupPage({ params }: PageProps) {
         </div>
 
         <div>
-          <h2>Case Role Lockdown</h2>
+          <h2>Restriction settings</h2>
           <p className="muted">
-            Lockdown is {caseRoleLockdownEnabled ? 'marked applied' : 'not marked applied'}. Allowed
-            channels and categories are saved here; audit and apply remain operational actions.
+            Restricted members can access their own case thread and these read-only exception
+            channels.
           </p>
+          <a href={`/admin/guild/${guildId}/operations/restrictions`}>Review restriction setup</a>
         </div>
         <div className="form-grid">
           <div className="field">
-            <label htmlFor="caseRoleLockdownAllowedChannelIds">Allowed lockdown channels</label>
+            <label htmlFor="caseRoleLockdownAllowedChannelIds">Read-only exception channels</label>
             <select
               defaultValue={caseRoleLockdownAllowedChannelIds}
               id="caseRoleLockdownAllowedChannelIds"
               multiple
               name="caseRoleLockdownAllowedChannelIds"
-              size={Math.min(Math.max(channels.length - 1, 3), 6)}
+              size={6}
             >
               {channelMultiOptions(channels, caseRoleLockdownAllowedChannelIds, 'channel')}
             </select>
           </div>
-          <div className="field">
-            <label htmlFor="caseRoleLockdownAllowedCategoryIds">Allowed lockdown categories</label>
-            <select
-              defaultValue={caseRoleLockdownAllowedCategoryIds}
-              id="caseRoleLockdownAllowedCategoryIds"
-              multiple
-              name="caseRoleLockdownAllowedCategoryIds"
-              size={Math.min(Math.max(channels.length - 1, 3), 6)}
-            >
-              {channelMultiOptions(channels, caseRoleLockdownAllowedCategoryIds, 'category')}
-            </select>
-          </div>
+          {caseRoleLockdownAllowedCategoryIds.length > 0 && (
+            <p className="muted">
+              Existing category-derived exceptions are preserved:{' '}
+              {caseRoleLockdownAllowedCategoryIds
+                .map((id) => channels.find((c) => c.id === id)?.name ?? id)
+                .join(', ')}
+              . New exceptions must select individual channels.
+            </p>
+          )}
         </div>
 
         <div>

@@ -391,43 +391,11 @@ export function OperationsView({
       </section>
 
       <section className="panel stack">
-        <div className="section-heading compact-heading">
-          <h2>Case-Role Lockdown</h2>
-          <p className="muted">
-            Preview or apply missing case-role channel denies through the logged-in bot, using the
-            allow-list saved in Setup.
-          </p>
-        </div>
-        <div className="report-action-forms" aria-label="Case-role lockdown operations">
-          <form
-            action={queueModerationQueueOperation.bind(null, guildId, 'audit_case_role_lockdown')}
-          >
-            <button className="button secondary compact-button" type="submit">
-              Audit Lockdown
-            </button>
-          </form>
-          <details className="destructive-action">
-            <summary className="button secondary compact-button destructive-summary">
-              Apply Lockdown
-            </summary>
-            <form
-              action={queueModerationQueueOperation.bind(null, guildId, 'apply_case_role_lockdown')}
-              className="destructive-action-panel"
-            >
-              <label className="checkbox-field">
-                <input name="unsyncAllowedChannels" type="checkbox" />
-                <span>Unsync Allowed Channels</span>
-              </label>
-              <label className="checkbox-field destructive-confirm">
-                <input name="confirmApplyLockdown" type="checkbox" />
-                <span>Confirm Apply Lockdown</span>
-              </label>
-              <button className="button compact-button danger-button" type="submit">
-                Queue Apply Lockdown
-              </button>
-            </form>
-          </details>
-        </div>
+        <h2>Restriction audit</h2>
+        <p>Check restriction permissions and current cases, then review selected repairs.</p>
+        <a className="button secondary" href={`/admin/guild/${guildId}/operations/restrictions`}>
+          Review restriction setup
+        </a>
       </section>
 
       <section className="panel stack">

@@ -1,3 +1,4 @@
+import { fixture } from '../../../packages/application/src/operations/restrictionExecutionTestData';
 import {
   decodeQueuedAction,
   encodeQueuedAction,
@@ -33,6 +34,7 @@ interface Fixture {
   source?: string;
   target?: null;
 }
+const restriction = fixture();
 const succeeded = { succeeded: true };
 const count = { count: 2 };
 const cleanupJob = {
@@ -64,6 +66,13 @@ const cleanupMetadata = {
   cleanup_preview_generation: '2026-10-20T00:00:00.000Z',
 };
 const lockdown = {
+  assessment: {
+    status: 'verified',
+    scope: 'permissions_and_membership',
+    findingCodes: [],
+    findings: [],
+    coverage: [],
+  },
   appliedActions: [],
   enabled: true,
   errorCount: 0,
@@ -302,12 +311,25 @@ const fixtures = {
       },
     },
   },
-  audit_case_role_lockdown: { family: 'operations', target: null, outcome: { report: lockdown } },
+  audit_case_role_lockdown: {
+    family: 'operations',
+    target: null,
+    outcome: {
+      auditRequestId: 'request',
+      audit: { setup: restriction.audit.setup, fixes: restriction.audit.fixes },
+    },
+  },
   apply_case_role_lockdown: {
     family: 'operations',
     target: null,
-    metadata: { unsync_allowed_channels: true },
-    outcome: { report: lockdown },
+    metadata: { operation_command: { kind: 'apply_case_role_lockdown', ...restriction.selection } },
+    outcome: {
+      result: {
+        progress: { schemaVersion: 1, revision: 0, currentEffectIndex: 0, receipts: [] },
+        stopReason: 'completed',
+        verification: { setup: restriction.audit.setup, cases: [] },
+      },
+    },
   },
   intake_role_members: {
     family: 'operations',
@@ -459,7 +481,10 @@ it.each(kinds)('decodes and dispatches the shipped %s row with its receipt', asy
       captcha: 'captchaRuntime',
       messageCleanup: 'messageCleanupRuntime',
       cases: null,
-      operations: null,
+      operations:
+        kind === 'audit_case_role_lockdown' || kind === 'apply_case_role_lockdown'
+          ? 'operationsRuntime'
+          : null,
       reports: null,
       setupRuntime: null,
     }[fixture.family];
@@ -471,7 +496,20 @@ it.each(kinds)('decodes and dispatches the shipped %s row with its receipt', asy
     if (factory) expect(forRequest).toHaveBeenCalledWith(request);
     const receipt = await prepared();
     expect(forRequest).toHaveBeenCalledTimes(factory ? 1 : 0);
-    expect(receipt).toMatchSnapshot('receipt');
+    if (kind === 'audit_case_role_lockdown') {
+      expect(receipt).toMatchObject({
+        action_type: kind,
+        audit_request_id: 'request',
+        restriction_audit: { fixes: restriction.audit.fixes },
+      });
+      expect(receipt).not.toHaveProperty('restriction_audit.facts');
+    } else if (kind === 'apply_case_role_lockdown') {
+      expect(receipt).toMatchObject({
+        action_type: kind,
+        restriction_apply: { stopReason: 'completed' },
+        restriction_progress: { receipts: [] },
+      });
+    } else expect(receipt).toMatchSnapshot('receipt');
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute.mock.calls[0][0]).toEqual(action.context);
     expect(execute.mock.calls[0][1]).toEqual(action.command);

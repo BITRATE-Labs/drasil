@@ -1,10 +1,14 @@
-import type {
-  CaseRoleLockdownActionScope,
-  CaseRoleLockdownIssue,
-  CaseRoleLockdownPlannedAction,
-  CaseRoleLockdownApplyFailure,
-  CaseRoleLockdownReport,
+import {
+  assessRestrictionFacts,
+  proposeRestrictionFixes,
+  COMPROMISED_RESTRICTION_PRIVILEGED_PERMISSIONS,
+  type RestrictionAudit,
+  type RestrictionFacts,
+  type CaseRoleLockdownIssue,
+  type CaseRoleLockdownPlannedAction,
+  type CaseRoleLockdownReport,
 } from '@drasil/application';
+import { IRestrictionAuditService } from './RestrictionAuditService';
 export type {
   CaseRoleLockdownSeverity,
   CaseRoleLockdownActionScope,
@@ -13,35 +17,9 @@ export type {
   CaseRoleLockdownApplyFailure,
   CaseRoleLockdownReport,
 } from '@drasil/application';
-import {
-  ChannelType,
-  Guild,
-  GuildMember,
-  NonThreadGuildBasedChannel,
-  OverwriteResolvable,
-  PermissionFlagsBits,
-  PermissionOverwriteManager,
-  PermissionOverwriteOptions,
-  PermissionsBitField,
-  OverwriteType,
-  Role,
-  TextChannel,
-  ThreadChannel,
-} from 'discord.js';
+import { Guild, GuildMember, PermissionFlagsBits, ThreadChannel } from 'discord.js';
 import { inject, injectable } from 'inversify';
-import { IConfigService } from '../config/ConfigService';
 import { TYPES } from '../di/symbols';
-import { ServerSettings } from '../repositories/types';
-import {
-  getCaseRoleLockdownSettings,
-  CASE_ROLE_LOCKDOWN_ENABLED_SETTING_KEY,
-} from '../utils/caseRoleLockdownSettings';
-import { COMPROMISED_ACCOUNT_PRIVILEGED_ROLE_PERMISSIONS } from '../utils/privilegedRolePermissions';
-
-export interface CaseRoleLockdownApplyOptions {
-  readonly unsyncAllowedChannels?: boolean;
-}
-
 export interface CaseRoleLockdownAuditContext {
   readonly siblingThreadsByParentId: Map<string, Promise<readonly ThreadChannel[]>>;
 }
@@ -55,6 +33,7 @@ export interface CaseRoleLockdownMemberBypass {
 }
 
 export interface CaseRoleLockdownMemberAudit {
+  readonly assessment?: import('@drasil/application').RestrictionCaseAssessment;
   readonly memberId: string;
   readonly bypasses: readonly CaseRoleLockdownMemberBypass[];
   readonly retainedPrivilegedRoleIds: readonly string[];
@@ -75,145 +54,17 @@ export interface ICaseRoleLockdownService {
     caseRoleId?: string | null,
     context?: CaseRoleLockdownAuditContext
   ): Promise<CaseRoleLockdownMemberAudit>;
-  applyGuild(
-    guild: Guild,
-    actorId: string,
-    options?: CaseRoleLockdownApplyOptions
-  ): Promise<CaseRoleLockdownReport>;
 }
-
-interface LockdownPermission {
-  readonly flag: bigint;
-  readonly option: keyof PermissionOverwriteOptions;
-  readonly label: string;
-}
-
-interface PermissionLabel {
-  readonly flag: bigint;
-  readonly label: string;
-}
-
-type LockdownChannel = NonThreadGuildBasedChannel & {
-  readonly parentId?: string | null;
-  readonly permissionsLocked?: boolean | null;
-  readonly permissionOverwrites: PermissionOverwriteManager;
-  permissionsFor(memberOrRole: GuildMember | Role | string): PermissionsBitField | null;
-};
-
-const LOCKDOWN_PERMISSIONS: readonly LockdownPermission[] = [
-  { flag: PermissionFlagsBits.ViewChannel, option: 'ViewChannel', label: 'View Channel' },
-  { flag: PermissionFlagsBits.SendMessages, option: 'SendMessages', label: 'Send Messages' },
-  {
-    flag: PermissionFlagsBits.SendMessagesInThreads,
-    option: 'SendMessagesInThreads',
-    label: 'Send Messages in Threads',
-  },
-  {
-    flag: PermissionFlagsBits.CreatePublicThreads,
-    option: 'CreatePublicThreads',
-    label: 'Create Public Threads',
-  },
-  {
-    flag: PermissionFlagsBits.CreatePrivateThreads,
-    option: 'CreatePrivateThreads',
-    label: 'Create Private Threads',
-  },
-  { flag: PermissionFlagsBits.Connect, option: 'Connect', label: 'Connect' },
-  { flag: PermissionFlagsBits.Speak, option: 'Speak', label: 'Speak' },
-];
-
-const LOCKDOWN_PERMISSION_OPTIONS = LOCKDOWN_PERMISSIONS.reduce<PermissionOverwriteOptions>(
-  (options, permission) => ({ ...options, [permission.option]: false }),
-  {}
-);
-
-const RECOVERY_PARENT_BLOCKED_PERMISSIONS: readonly LockdownPermission[] = [
-  {
-    flag: PermissionFlagsBits.CreateInstantInvite,
-    option: 'CreateInstantInvite',
-    label: 'Create Instant Invite',
-  },
-  {
-    flag: PermissionFlagsBits.MentionEveryone,
-    option: 'MentionEveryone',
-    label: 'Mention Everyone',
-  },
-  { flag: PermissionFlagsBits.SendMessages, option: 'SendMessages', label: 'Send Messages' },
-  {
-    flag: PermissionFlagsBits.CreatePublicThreads,
-    option: 'CreatePublicThreads',
-    label: 'Create Public Threads',
-  },
-  {
-    flag: PermissionFlagsBits.CreatePrivateThreads,
-    option: 'CreatePrivateThreads',
-    label: 'Create Private Threads',
-  },
-];
-
-const RECOVERY_PARENT_REQUIRED_PERMISSIONS: readonly LockdownPermission[] = [
-  { flag: PermissionFlagsBits.ViewChannel, option: 'ViewChannel', label: 'View Channel' },
-  {
-    flag: PermissionFlagsBits.ReadMessageHistory,
-    option: 'ReadMessageHistory',
-    label: 'Read Message History',
-  },
-  {
-    flag: PermissionFlagsBits.SendMessagesInThreads,
-    option: 'SendMessagesInThreads',
-    label: 'Send Messages in Threads',
-  },
-];
-
-const RECOVERY_PARENT_PERMISSION_OPTIONS: PermissionOverwriteOptions = {
-  ViewChannel: true,
-  ReadMessageHistory: true,
-  CreateInstantInvite: false,
-  MentionEveryone: false,
-  SendMessages: false,
-  SendMessagesInThreads: true,
-  CreatePublicThreads: false,
-  CreatePrivateThreads: false,
-};
-
-const COMPROMISED_ACCOUNT_PERMISSION_LABELS: readonly PermissionLabel[] = [
-  { flag: PermissionFlagsBits.Administrator, label: 'Administrator' },
-  { flag: PermissionFlagsBits.ManageRoles, label: 'Manage Roles' },
-  { flag: PermissionFlagsBits.ManageGuild, label: 'Manage Server' },
-  { flag: PermissionFlagsBits.ModerateMembers, label: 'Moderate Members' },
-  { flag: PermissionFlagsBits.ManageChannels, label: 'Manage Channels' },
-  { flag: PermissionFlagsBits.KickMembers, label: 'Kick Members' },
-  { flag: PermissionFlagsBits.BanMembers, label: 'Ban Members' },
-  { flag: PermissionFlagsBits.ManageMessages, label: 'Manage Messages' },
-  { flag: PermissionFlagsBits.ManageThreads, label: 'Manage Threads' },
-  { flag: PermissionFlagsBits.ManageWebhooks, label: 'Manage Webhooks' },
-  { flag: PermissionFlagsBits.CreateInstantInvite, label: 'Create Invite' },
-  { flag: PermissionFlagsBits.MuteMembers, label: 'Mute Members' },
-  { flag: PermissionFlagsBits.DeafenMembers, label: 'Deafen Members' },
-  { flag: PermissionFlagsBits.MoveMembers, label: 'Move Members' },
-  { flag: PermissionFlagsBits.ManageNicknames, label: 'Manage Nicknames' },
-  { flag: PermissionFlagsBits.ManageGuildExpressions, label: 'Manage Expressions' },
-  { flag: PermissionFlagsBits.CreateGuildExpressions, label: 'Create Expressions' },
-  { flag: PermissionFlagsBits.ManageEvents, label: 'Manage Events' },
-  { flag: PermissionFlagsBits.CreateEvents, label: 'Create Events' },
-  { flag: PermissionFlagsBits.MentionEveryone, label: 'Mention Everyone' },
-];
-
-const HIGH_RISK_RESTRICTED_ROLE_PERMISSIONS: readonly PermissionLabel[] = [
-  ...COMPROMISED_ACCOUNT_PERMISSION_LABELS,
-  ...LOCKDOWN_PERMISSIONS,
-];
-
-const LOCKDOWN_POSTING_PERMISSIONS: readonly PermissionLabel[] = [
-  { flag: PermissionFlagsBits.SendMessages, label: 'Send Messages' },
-  { flag: PermissionFlagsBits.SendMessagesInThreads, label: 'Send Messages in Threads' },
-];
 
 @injectable()
 export class CaseRoleLockdownService implements ICaseRoleLockdownService {
+  private readonly restrictionAuditContexts = new WeakMap<
+    CaseRoleLockdownAuditContext,
+    Map<string, Promise<RestrictionAudit>>
+  >();
   constructor(
-    @inject(TYPES.ConfigService)
-    private readonly configService: Pick<IConfigService, 'getServerConfig' | 'updateServerSettings'>
+    @inject(TYPES.RestrictionAuditService)
+    private readonly restrictionAuditService: IRestrictionAuditService
   ) {}
 
   public async auditGuild(
@@ -221,10 +72,9 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
     recoveryThreadId?: string | null,
     caseRoleId?: string | null
   ): Promise<CaseRoleLockdownReport> {
-    const recoveryParent = await this.resolveRecoveryParent(guild, recoveryThreadId);
-    return this.buildReport(guild, false, new Set(), recoveryParent?.id, caseRoleId);
+    const audit = await this.restrictionAuditService.auditGuild(guild.id);
+    return this.projectRestrictionAudit(audit, recoveryThreadId, caseRoleId);
   }
-
   public async auditMemberBypasses(
     member: GuildMember,
     ignoredRoleIds: ReadonlySet<string> = new Set(),
@@ -232,988 +82,155 @@ export class CaseRoleLockdownService implements ICaseRoleLockdownService {
     caseRoleId?: string | null,
     context?: CaseRoleLockdownAuditContext
   ): Promise<CaseRoleLockdownMemberAudit> {
-    const serverConfig = await this.configService.getServerConfig(member.guild.id);
-    const effectiveCaseRoleId = caseRoleId === undefined ? serverConfig.case_role_id : caseRoleId;
-    const settings = getCaseRoleLockdownSettings(serverConfig.settings);
-    let recoveryParent = await this.resolveRecoveryParent(member.guild, allowedThreadId);
-    const recoveryParentId = recoveryParent?.id ?? serverConfig.verification_channel_id;
-    const allowedChannelIds = new Set(settings.allowedChannelIds);
-    if (serverConfig.verification_channel_id) {
-      allowedChannelIds.add(serverConfig.verification_channel_id);
+    let audits = context ? this.restrictionAuditContexts.get(context) : undefined;
+    if (context && !audits) {
+      audits = new Map();
+      this.restrictionAuditContexts.set(context, audits);
     }
-    if (recoveryParentId) {
-      allowedChannelIds.add(recoveryParentId);
+    let pending = audits?.get(member.guild.id);
+    if (!pending) {
+      pending = this.restrictionAuditService.auditGuild(member.guild.id);
+      audits?.set(member.guild.id, pending);
     }
-    const allowedCategoryIds = new Set(settings.allowedCategoryIds);
-    const reportInstructionsChannelId = serverConfig.settings.report_instructions_channel_id;
-    const retainedRoleIds = new Set(
-      [...member.roles.cache.keys()].filter(
-        (roleId) =>
-          roleId !== member.guild.id &&
-          roleId !== effectiveCaseRoleId &&
-          !ignoredRoleIds.has(roleId)
-      )
+    const audit = await pending;
+    return this.projectRestrictionMember(
+      audit,
+      member,
+      ignoredRoleIds,
+      allowedThreadId,
+      caseRoleId
     );
-    const retainedAdministratorRoleIds = [...retainedRoleIds].filter((roleId) =>
-      member.guild.roles.cache.get(roleId)?.permissions.has(PermissionFlagsBits.Administrator)
-    );
-    const retainedPrivilegedRoleIds = [...retainedRoleIds].filter((roleId) => {
-      const role = member.guild.roles.cache.get(roleId);
-      return (
-        role !== undefined &&
-        COMPROMISED_ACCOUNT_PRIVILEGED_ROLE_PERMISSIONS.some((permission) =>
-          role.permissions.has(permission)
-        )
-      );
-    });
-    const unremovablePrivilegeReasons: string[] = [];
-    if (member.id === member.guild.ownerId) {
-      unremovablePrivilegeReasons.push('guild_owner');
-    }
-    const everyoneRole = member.guild.roles.cache.get(member.guild.id);
-    const everyonePrivileges = COMPROMISED_ACCOUNT_PERMISSION_LABELS.filter((permission) =>
-      everyoneRole?.permissions.has(permission.flag)
-    ).map((permission) => permission.label);
-    if (everyonePrivileges.length > 0) {
-      unremovablePrivilegeReasons.push(
-        `everyone_privileged_permissions:${everyonePrivileges.join(', ')}`
-      );
-    }
-    const bypasses: CaseRoleLockdownMemberBypass[] = [];
-    let configuredRecoveryParent: TextChannel | null = null;
+  }
 
-    for (const channel of await this.fetchLockdownChannels(member.guild)) {
-      if (
-        channel.id === reportInstructionsChannelId &&
-        !settings.allowedChannelIds.includes(channel.id) &&
-        !(channel.parentId && allowedCategoryIds.has(channel.parentId))
-      ) {
-        this.recordPostingSurfaceMemberBypass(channel, member, bypasses);
-      }
-      if (allowedChannelIds.has(channel.id) || allowedCategoryIds.has(channel.id)) {
-        if (
-          channel.id === serverConfig.verification_channel_id &&
-          channel.type === ChannelType.GuildText
-        ) {
-          configuredRecoveryParent = channel;
-        }
-        if (channel.id === recoveryParentId) {
-          this.recordRecoveryParentMemberBypass(channel, member, bypasses);
-          if (channel.type === ChannelType.GuildText) {
-            recoveryParent = channel;
-          }
-        }
-        continue;
-      }
-      if (channel.parentId && allowedCategoryIds.has(channel.parentId)) {
-        continue;
-      }
-
-      for (const overwrite of channel.permissionOverwrites.cache.values()) {
-        const subjectType = overwrite.type === OverwriteType.Member ? 'member' : 'role';
-        const targetsMember = subjectType === 'member' && overwrite.id === member.id;
-        const targetsRetainedRole = subjectType === 'role' && retainedRoleIds.has(overwrite.id);
-        if (!targetsMember && !targetsRetainedRole) {
-          continue;
-        }
-
-        const permissions = LOCKDOWN_PERMISSIONS.filter((permission) =>
-          overwrite.allow.has(permission.flag)
-        ).map((permission) => permission.label);
-        if (permissions.length > 0) {
-          bypasses.push({
-            channelId: channel.id,
-            channelName: channel.name,
-            subjectType,
-            subjectId: overwrite.id,
-            permissions,
-          });
-        }
-      }
-    }
-
-    if (recoveryParentId) {
-      await this.recordRecoverySiblingThreadBypasses(
-        member,
-        recoveryParentId,
-        recoveryParent,
-        allowedThreadId,
-        bypasses,
-        context
-      );
-    }
-    if (
-      serverConfig.verification_channel_id &&
-      serverConfig.verification_channel_id !== recoveryParentId
-    ) {
-      await this.recordRecoverySiblingThreadBypasses(
-        member,
-        serverConfig.verification_channel_id,
-        configuredRecoveryParent,
-        allowedThreadId,
-        bypasses,
-        context
-      );
-    }
-    if (allowedThreadId) {
-      await this.recordRecoveryThreadAccessBypasses(member, allowedThreadId, bypasses);
-    }
-
+  private restrictionFacts(
+    audit: RestrictionAudit,
+    recoveryThreadId?: string | null,
+    caseRoleId?: string | null
+  ): RestrictionFacts {
+    const parentId = recoveryThreadId
+      ? audit.facts.threads.find((t) => t.id === recoveryThreadId)?.parentId
+      : undefined;
     return {
-      memberId: member.id,
-      bypasses,
-      retainedPrivilegedRoleIds,
-      retainedAdministratorRoleIds,
-      unremovablePrivilegeReasons,
+      ...audit.facts,
+      caseRoleId: caseRoleId === undefined ? audit.facts.caseRoleId : caseRoleId,
+      recoveryParentId: parentId ?? audit.facts.recoveryParentId,
     };
   }
 
-  public async applyGuild(
-    guild: Guild,
-    actorId: string,
-    options: CaseRoleLockdownApplyOptions = {}
-  ): Promise<CaseRoleLockdownReport> {
-    let report = await this.buildReport(guild, false);
-    let unsyncedAllowedChannels: CaseRoleLockdownPlannedAction[] = [];
-
-    if (report.errorCount > 0) {
-      const onlySyncedAllowedChannelErrors =
-        report.syncedAllowedChannels.length > 0 &&
-        report.errorCount === report.syncedAllowedChannels.length;
-      if (!options.unsyncAllowedChannels || !onlySyncedAllowedChannelErrors) {
-        return report;
-      }
-
-      const unsyncResult = await this.unsyncAllowedChannelsUnderDeniedCategories(
-        guild,
-        report.syncedAllowedChannels,
-        actorId
-      );
-      unsyncedAllowedChannels = unsyncResult.unsyncedActions;
-      const recentlyUnsyncedAllowedChannelIds = new Set(
-        unsyncedAllowedChannels.map((action) => action.channelId)
-      );
-
-      if (unsyncResult.failedActions.length > 0) {
-        const refreshed = await this.buildReport(guild, false, recentlyUnsyncedAllowedChannelIds);
-        return this.toReport({
-          guildId: refreshed.guildId,
-          checkedAt: refreshed.checkedAt,
-          enabled: refreshed.enabled,
-          allowedChannelIds: refreshed.allowedChannelIds,
-          allowedCategoryIds: refreshed.allowedCategoryIds,
-          autoAllowedChannelIds: refreshed.autoAllowedChannelIds,
-          issues: [...refreshed.issues, ...this.applyFailuresToIssues(unsyncResult.failedActions)],
-          plannedActions: refreshed.plannedActions,
-          appliedActions: [],
-          failedActions: unsyncResult.failedActions,
-          syncedAllowedChannels: refreshed.syncedAllowedChannels,
-          unsyncedAllowedChannels,
-        });
-      }
-
-      report = await this.buildReport(guild, false, recentlyUnsyncedAllowedChannelIds);
-      if (report.errorCount > 0) {
-        return { ...report, unsyncedAllowedChannels };
-      }
-    }
-
-    if (report.plannedActions.length === 0) {
-      if (!report.enabled) {
-        await this.configService.updateServerSettings(guild.id, {
-          [CASE_ROLE_LOCKDOWN_ENABLED_SETTING_KEY]: true,
-        });
-      }
-      return { ...report, enabled: true, unsyncedAllowedChannels };
-    }
-
-    const serverConfig = await this.configService.getServerConfig(guild.id);
-    if (!serverConfig.case_role_id) {
-      const failedActions = report.plannedActions.map((action) => ({
-        ...action,
-        message: 'Case role is no longer configured.',
-      }));
-      return this.toReport({
-        guildId: report.guildId,
-        checkedAt: new Date(),
-        enabled: report.enabled,
-        allowedChannelIds: report.allowedChannelIds,
-        allowedCategoryIds: report.allowedCategoryIds,
-        autoAllowedChannelIds: report.autoAllowedChannelIds,
-        issues: [...report.issues, ...this.applyFailuresToIssues(failedActions)],
-        plannedActions: report.plannedActions,
-        appliedActions: [],
-        failedActions,
-        syncedAllowedChannels: report.syncedAllowedChannels,
-        unsyncedAllowedChannels,
-      });
-    }
-
-    const channels = await this.fetchLockdownChannels(guild);
-    const channelById = new Map(channels.map((channel) => [channel.id, channel]));
-    const appliedActions: CaseRoleLockdownPlannedAction[] = [];
-    const failedActions: CaseRoleLockdownApplyFailure[] = [];
-
-    for (const action of report.plannedActions) {
-      const channel = channelById.get(action.channelId);
-      if (!channel) {
-        failedActions.push({ ...action, message: 'Channel was not found during apply.' });
-        continue;
-      }
-
-      try {
-        await channel.permissionOverwrites.edit(
-          serverConfig.case_role_id,
-          action.channelId === serverConfig.verification_channel_id
-            ? RECOVERY_PARENT_PERMISSION_OPTIONS
-            : LOCKDOWN_PERMISSION_OPTIONS,
-          {
-            reason: `Drasil case-role lockdown applied by ${actorId}`,
-          }
-        );
-        appliedActions.push(action);
-      } catch (error) {
-        failedActions.push({
-          ...action,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    if (appliedActions.length > 0) {
-      await this.configService.updateServerSettings(guild.id, {
-        [CASE_ROLE_LOCKDOWN_ENABLED_SETTING_KEY]: true,
-      });
-    }
-
-    const refreshed = await this.buildReport(
-      guild,
-      true,
-      new Set(unsyncedAllowedChannels.map((action) => action.channelId))
-    );
-    return this.toReport({
-      guildId: guild.id,
-      checkedAt: refreshed.checkedAt,
-      enabled: appliedActions.length > 0 || refreshed.enabled,
-      allowedChannelIds: refreshed.allowedChannelIds,
-      allowedCategoryIds: refreshed.allowedCategoryIds,
-      autoAllowedChannelIds: refreshed.autoAllowedChannelIds,
-      issues: [...refreshed.issues, ...this.applyFailuresToIssues(failedActions)],
-      plannedActions: refreshed.plannedActions,
-      appliedActions,
-      failedActions,
-      syncedAllowedChannels: refreshed.syncedAllowedChannels,
-      unsyncedAllowedChannels,
-    });
-  }
-
-  private async buildReport(
-    guild: Guild,
-    skipSetupChecks: boolean,
-    recentlyUnsyncedAllowedChannelIds: ReadonlySet<string> = new Set(),
-    recoveryParentId?: string | null,
+  private projectRestrictionAudit(
+    audit: RestrictionAudit,
+    recoveryThreadId?: string | null,
     caseRoleId?: string | null
-  ): Promise<CaseRoleLockdownReport> {
-    const serverConfig = await this.configService.getServerConfig(guild.id);
-    const settings = getCaseRoleLockdownSettings(serverConfig.settings);
-    const autoAllowedChannelIds = this.getAutoAllowedChannelIds(serverConfig.settings, [
-      serverConfig.verification_channel_id,
-      recoveryParentId,
-    ]);
-    const issues: CaseRoleLockdownIssue[] = [];
-    const plannedActions: CaseRoleLockdownPlannedAction[] = [];
-    const syncedAllowedChannels: CaseRoleLockdownPlannedAction[] = [];
-    const botMember = await this.getBotMember(guild);
-    const effectiveCaseRoleId = caseRoleId === undefined ? serverConfig.case_role_id : caseRoleId;
-    const caseRole = await this.getCaseRole(guild, effectiveCaseRoleId);
-
-    if (!skipSetupChecks) {
-      this.checkBotPermissions(botMember, issues);
-      this.checkCaseRole(caseRole, botMember, issues);
-    }
-
-    if (!caseRole) {
-      return this.toReport({
-        guildId: guild.id,
-        checkedAt: new Date(),
-        enabled: settings.enabled,
-        allowedChannelIds: settings.allowedChannelIds,
-        allowedCategoryIds: settings.allowedCategoryIds,
-        autoAllowedChannelIds,
-        issues,
-        plannedActions,
-        appliedActions: [],
-        failedActions: [],
-        syncedAllowedChannels,
-        unsyncedAllowedChannels: [],
+  ): CaseRoleLockdownReport {
+    const facts = this.restrictionFacts(audit, recoveryThreadId, caseRoleId);
+    const assessment = assessRestrictionFacts(facts);
+    const setup = assessment.setup;
+    const issues: CaseRoleLockdownIssue[] = setup.findings.map((finding) => ({
+      severity: finding.kind === 'limitation' ? 'warning' : 'error',
+      code: finding.code,
+      message: `Restriction audit: ${finding.code.replace(/_/g, ' ')}${finding.channelId ? ` (${finding.channelId})` : ''}.`,
+    }));
+    if (
+      audit.coverage.some((c) => c.area !== 'parent_content' && c.state !== 'complete') &&
+      !issues.some((i) => i.code === 'metadata_unavailable')
+    )
+      issues.push({
+        severity: 'error',
+        code: 'metadata_unavailable',
+        message: 'Required restriction metadata is unavailable.',
       });
-    }
-
-    const channels = await this.fetchLockdownChannels(guild);
-    const categories = channels.filter((channel) => channel.type === ChannelType.GuildCategory);
-    const deniedCategoryIds = new Set<string>();
-    const allowedChannelIds = new Set([...settings.allowedChannelIds, ...autoAllowedChannelIds]);
-    const allowedCategoryIds = new Set(settings.allowedCategoryIds);
-
-    this.checkConfiguredAllowList(channels, allowedChannelIds, allowedCategoryIds, issues);
-    this.checkCaseRoleGlobalPermissions(caseRole, issues);
-
-    for (const category of categories) {
-      if (allowedCategoryIds.has(category.id)) {
-        continue;
-      }
-
-      deniedCategoryIds.add(category.id);
-      this.checkConflictingRoleAllows(guild, botMember, category, caseRole.id, issues);
-      if (!this.hasCaseRoleLockdownDeny(category, caseRole.id)) {
-        issues.push({
-          severity: 'warning',
-          code: 'lockdown-category-missing-deny',
-          message: `Category ${this.formatChannel(category)} is missing case-role lockdown denies.`,
-        });
-        plannedActions.push(this.toPlannedAction(category, 'category'));
-      }
-    }
-
-    for (const channel of channels) {
-      if (channel.type === ChannelType.GuildCategory) {
-        continue;
-      }
-
-      const parentId = channel.parentId ?? null;
-      if (allowedChannelIds.has(channel.id)) {
-        if (
-          parentId &&
-          deniedCategoryIds.has(parentId) &&
-          channel.permissionsLocked === true &&
-          !recentlyUnsyncedAllowedChannelIds.has(channel.id)
-        ) {
-          syncedAllowedChannels.push(this.toPlannedAction(channel, 'channel'));
-          issues.push({
-            severity: 'error',
-            code: 'lockdown-allowed-channel-synced-under-denied-category',
-            message: `Allowed channel ${this.formatChannel(channel)} is synced under a denied category. Move it, allow the category, or rerun apply with \`unsync-allowed:true\` to copy current parent permissions before applying lockdown.`,
-          });
-        }
-        if (
-          channel.id === serverConfig.verification_channel_id ||
-          channel.id === recoveryParentId
-        ) {
-          this.checkRecoveryParentLockdown(channel, caseRole.id, issues, plannedActions);
-        }
-        continue;
-      }
-
-      if (parentId && allowedCategoryIds.has(parentId)) {
-        continue;
-      }
-
-      if (this.isSyncedToParent(channel)) {
-        continue;
-      }
-
-      this.checkConflictingRoleAllows(guild, botMember, channel, caseRole.id, issues);
-      if (!this.hasCaseRoleLockdownDeny(channel, caseRole.id)) {
-        issues.push({
-          severity: 'warning',
-          code: 'lockdown-channel-missing-deny',
-          message: `Unsynced channel ${this.formatChannel(channel)} is missing case-role lockdown denies.`,
-        });
-        plannedActions.push(this.toPlannedAction(channel, 'channel'));
-      }
-    }
-
-    return this.toReport({
-      guildId: guild.id,
-      checkedAt: new Date(),
-      enabled: settings.enabled,
-      allowedChannelIds: settings.allowedChannelIds,
-      allowedCategoryIds: settings.allowedCategoryIds,
-      autoAllowedChannelIds,
+    const plannedActions: CaseRoleLockdownPlannedAction[] = proposeRestrictionFixes(
+      facts,
+      assessment
+    ).flatMap((fix) =>
+      fix.effects
+        .filter((effect) => effect.kind === 'edit_overwrite')
+        .map((effect) => ({
+          scope:
+            facts.channels.find((c) => c.id === effect.channelId)?.type === 'category'
+              ? ('category' as const)
+              : ('channel' as const),
+          channelId: effect.channelId,
+          channelName:
+            facts.channels.find((c) => c.id === effect.channelId)?.name ?? effect.channelId,
+        }))
+    );
+    return {
+      assessment: setup,
+      guildId: audit.guildId,
+      checkedAt: new Date(audit.completedAt),
+      enabled: setup.status === 'verified',
+      allowedChannelIds: facts.exceptionChannelIds,
+      allowedCategoryIds: [],
+      autoAllowedChannelIds: facts.recoveryParentId ? [facts.recoveryParentId] : [],
       issues,
       plannedActions,
       appliedActions: [],
       failedActions: [],
-      syncedAllowedChannels,
+      syncedAllowedChannels: [],
       unsyncedAllowedChannels: [],
-    });
-  }
-
-  private async getBotMember(guild: Guild): Promise<GuildMember | null> {
-    return guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
-  }
-
-  private async getCaseRole(guild: Guild, roleId: string | null): Promise<Role | null> {
-    if (!roleId) {
-      return null;
-    }
-
-    return guild.roles.fetch(roleId).catch(() => null);
-  }
-
-  private checkBotPermissions(
-    botMember: GuildMember | null,
-    issues: CaseRoleLockdownIssue[]
-  ): void {
-    if (!botMember) {
-      issues.push({
-        severity: 'error',
-        code: 'lockdown-bot-member-missing',
-        message: 'Could not load Drasil as a server member, so lockdown cannot be audited.',
-      });
-      return;
-    }
-
-    if (!botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
-      issues.push({
-        severity: 'error',
-        code: 'lockdown-bot-manage-channels',
-        message: 'Drasil is missing Manage Channels, so it cannot apply lockdown overwrites.',
-      });
-    }
-
-    if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
-      issues.push({
-        severity: 'error',
-        code: 'lockdown-bot-manage-roles',
-        message: 'Drasil is missing Manage Roles, so it cannot safely manage the case role.',
-      });
-    }
-  }
-
-  private checkCaseRole(
-    caseRole: Role | null,
-    botMember: GuildMember | null,
-    issues: CaseRoleLockdownIssue[]
-  ): void {
-    if (!caseRole) {
-      issues.push({
-        severity: 'error',
-        code: 'lockdown-case-role-missing',
-        message: 'Case role is not configured or no longer exists.',
-      });
-      return;
-    }
-
-    if (caseRole.managed) {
-      issues.push({
-        severity: 'error',
-        code: 'lockdown-case-role-managed',
-        message: `Case role <@&${caseRole.id}> is managed by an integration and cannot be assigned by Drasil.`,
-      });
-    }
-
-    if (botMember && botMember.roles.highest.comparePositionTo(caseRole) <= 0) {
-      issues.push({
-        severity: 'error',
-        code: 'lockdown-case-role-hierarchy',
-        message: `Move the Drasil role above case role <@&${caseRole.id}> so Drasil can assign and remove it.`,
-      });
-    }
-  }
-
-  private checkCaseRoleGlobalPermissions(caseRole: Role, issues: CaseRoleLockdownIssue[]): void {
-    const riskyPermissions = HIGH_RISK_RESTRICTED_ROLE_PERMISSIONS.filter((permission) =>
-      caseRole.permissions.has(permission.flag)
-    );
-    if (riskyPermissions.length === 0) {
-      return;
-    }
-
-    issues.push({
-      severity: 'warning',
-      code: 'lockdown-case-role-global-permissions',
-      message: `Case role <@&${caseRole.id}> has global permissions that can weaken quarantine: ${riskyPermissions.map((permission) => permission.label).join(', ')}. Prefer an empty role and channel overwrites.`,
-    });
-  }
-
-  private checkConfiguredAllowList(
-    channels: readonly LockdownChannel[],
-    allowedChannelIds: ReadonlySet<string>,
-    allowedCategoryIds: ReadonlySet<string>,
-    issues: CaseRoleLockdownIssue[]
-  ): void {
-    const channelIds = new Set(channels.map((channel) => channel.id));
-    for (const channelId of allowedChannelIds) {
-      if (!channelIds.has(channelId)) {
-        issues.push({
-          severity: 'warning',
-          code: 'lockdown-allowed-channel-not-found',
-          message: `Allowed lockdown channel ${channelId} no longer exists.`,
-        });
-      }
-    }
-
-    for (const categoryId of allowedCategoryIds) {
-      const category = channels.find((channel) => channel.id === categoryId);
-      if (!category) {
-        issues.push({
-          severity: 'warning',
-          code: 'lockdown-allowed-category-not-found',
-          message: `Allowed lockdown category ${categoryId} no longer exists.`,
-        });
-        continue;
-      }
-
-      if (category.type !== ChannelType.GuildCategory) {
-        issues.push({
-          severity: 'warning',
-          code: 'lockdown-allowed-category-not-category',
-          message: `Allowed lockdown category ${categoryId} is not a category. Remove it and add the channel instead.`,
-        });
-      }
-    }
-  }
-
-  private checkConflictingRoleAllows(
-    guild: Guild,
-    botMember: GuildMember | null,
-    channel: LockdownChannel,
-    caseRoleId: string,
-    issues: CaseRoleLockdownIssue[]
-  ): void {
-    for (const overwrite of channel.permissionOverwrites.cache.values()) {
-      if (overwrite.id === caseRoleId) {
-        continue;
-      }
-
-      const isMemberOverwrite = overwrite.type === OverwriteType.Member;
-      if (!isMemberOverwrite && this.shouldSkipRoleAllowWarning(guild, botMember, overwrite.id)) {
-        continue;
-      }
-
-      const mentionPrefix = isMemberOverwrite ? '@' : '@&';
-      const affectedSubject = isMemberOverwrite ? 'That user' : 'Users with that role';
-      const postingAllow = LOCKDOWN_POSTING_PERMISSIONS.find((permission) =>
-        overwrite.allow.has(permission.flag)
-      );
-
-      if (postingAllow) {
-        issues.push({
-          severity: 'warning',
-          code: 'lockdown-conflicting-send-allow',
-          message: `${this.formatChannel(channel)} has an explicit ${postingAllow.label} allow for <${mentionPrefix}${overwrite.id}>. ${affectedSubject} may still post there despite the case-role deny; remove the channel/category allow or quarantine conflicting roles for active cases.`,
-        });
-        continue;
-      }
-
-      if (overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
-        issues.push({
-          severity: 'warning',
-          code: 'lockdown-conflicting-view-allow',
-          message: `${this.formatChannel(channel)} has an explicit View Channel allow for <${mentionPrefix}${overwrite.id}>. ${affectedSubject} may still see it despite the case-role deny, but no explicit posting allow was detected.`,
-        });
-      }
-    }
-  }
-
-  private shouldSkipRoleAllowWarning(
-    guild: Guild,
-    botMember: GuildMember | null,
-    roleId: string
-  ): boolean {
-    if (roleId === guild.roles.everyone.id) {
-      return true;
-    }
-
-    const botRoleCache = botMember
-      ? (botMember.roles as { cache?: { has(roleId: string): boolean } }).cache
-      : undefined;
-    if (botRoleCache?.has(roleId)) {
-      return true;
-    }
-
-    const role = (guild.roles as { cache?: { get(roleId: string): Role | undefined } }).cache?.get(
-      roleId
-    );
-    const botRoleId = (role as { tags?: { botId?: string | null } } | undefined)?.tags?.botId;
-    return role?.managed === true || typeof botRoleId === 'string';
-  }
-
-  private hasCaseRoleLockdownDeny(channel: LockdownChannel, caseRoleId: string): boolean {
-    const overwrite = channel.permissionOverwrites.cache.get(caseRoleId);
-    return LOCKDOWN_PERMISSIONS.every((permission) => overwrite?.deny.has(permission.flag));
-  }
-
-  private async fetchLockdownChannels(guild: Guild): Promise<LockdownChannel[]> {
-    const fetchedChannels = await guild.channels.fetch();
-    return [...fetchedChannels.values()].filter((channel): channel is LockdownChannel =>
-      this.isLockdownChannel(channel)
-    );
-  }
-
-  private async unsyncAllowedChannelsUnderDeniedCategories(
-    guild: Guild,
-    syncedAllowedChannels: readonly CaseRoleLockdownPlannedAction[],
-    actorId: string
-  ): Promise<{
-    unsyncedActions: CaseRoleLockdownPlannedAction[];
-    failedActions: CaseRoleLockdownApplyFailure[];
-  }> {
-    const serverConfig = await this.configService.getServerConfig(guild.id);
-    const caseRole = await this.getCaseRole(guild, serverConfig.case_role_id);
-    if (!caseRole) {
-      return {
-        unsyncedActions: [],
-        failedActions: syncedAllowedChannels.map((action) => ({
-          ...action,
-          message: 'Case role is no longer configured.',
-        })),
-      };
-    }
-
-    const channels = await this.fetchLockdownChannels(guild);
-    const channelById = new Map(channels.map((channel) => [channel.id, channel]));
-    const unsyncedActions: CaseRoleLockdownPlannedAction[] = [];
-    const failedActions: CaseRoleLockdownApplyFailure[] = [];
-
-    for (const action of syncedAllowedChannels) {
-      const channel = channelById.get(action.channelId);
-      const parent = channel?.parentId ? channelById.get(channel.parentId) : undefined;
-      if (!channel || !parent || parent.type !== ChannelType.GuildCategory) {
-        failedActions.push({
-          ...action,
-          message: 'Allowed channel or parent category was not found.',
-        });
-        continue;
-      }
-
-      try {
-        await channel.permissionOverwrites.set(
-          this.buildUnsyncedAllowedChannelOverwrites(
-            parent,
-            caseRole.id,
-            action.channelId === serverConfig.verification_channel_id
-          ),
-          `Drasil case-role lockdown unsynced allowed channel by ${actorId}`
-        );
-        unsyncedActions.push(action);
-      } catch (error) {
-        failedActions.push({
-          ...action,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    return { unsyncedActions, failedActions };
-  }
-
-  private buildUnsyncedAllowedChannelOverwrites(
-    parent: LockdownChannel,
-    caseRoleId: string,
-    isRecoveryParent: boolean
-  ): OverwriteResolvable[] {
-    const copiedParentOverwrites: OverwriteResolvable[] = [
-      ...parent.permissionOverwrites.cache.values(),
-    ]
-      .filter((overwrite) => overwrite.id !== caseRoleId)
-      .map((overwrite) => ({
-        id: overwrite.id,
-        type: overwrite.type,
-        allow: overwrite.allow.bitfield,
-        deny: overwrite.deny.bitfield,
-      }));
-
-    const caseRoleOptions = isRecoveryParent
-      ? RECOVERY_PARENT_PERMISSION_OPTIONS
-      : LOCKDOWN_PERMISSIONS.reduce<PermissionOverwriteOptions>((options, permission) => {
-          options[permission.option] = true;
-          return options;
-        }, {});
-
-    return [
-      ...copiedParentOverwrites,
-      {
-        id: caseRoleId,
-        type: OverwriteType.Role,
-        ...caseRoleOptions,
-      },
-    ];
-  }
-
-  private checkRecoveryParentLockdown(
-    channel: LockdownChannel,
-    caseRoleId: string,
-    issues: CaseRoleLockdownIssue[],
-    plannedActions: CaseRoleLockdownPlannedAction[]
-  ): void {
-    const overwrite = channel.permissionOverwrites.cache.get(caseRoleId);
-    const missingDenies = RECOVERY_PARENT_BLOCKED_PERMISSIONS.filter(
-      (permission) => !overwrite?.deny.has(permission.flag)
-    );
-    const missingAllows = RECOVERY_PARENT_REQUIRED_PERMISSIONS.filter(
-      (permission) => !overwrite?.allow.has(permission.flag)
-    );
-    if (missingDenies.length === 0 && missingAllows.length === 0) {
-      return;
-    }
-    const requirements = [
-      missingDenies.length > 0
-        ? `deny ${missingDenies.map((permission) => permission.label).join(', ')}`
-        : null,
-      missingAllows.length > 0
-        ? `allow ${missingAllows.map((permission) => permission.label).join(', ')}`
-        : null,
-    ].filter((requirement): requirement is string => requirement !== null);
-    issues.push({
-      severity: 'warning',
-      code: 'lockdown-recovery-parent-permissions-invalid',
-      message: `Recovery parent ${this.formatChannel(channel)} must ${requirements.join(' and ')} for the case role so the user can read and reply only in the private recovery thread.`,
-    });
-    plannedActions.push(this.toPlannedAction(channel, 'channel'));
-  }
-
-  private recordRecoveryParentMemberBypass(
-    channel: LockdownChannel,
-    member: GuildMember,
-    bypasses: CaseRoleLockdownMemberBypass[]
-  ): void {
-    const effectivePermissions = channel.permissionsFor(member);
-    const blockedPermissions = RECOVERY_PARENT_BLOCKED_PERMISSIONS.filter((permission) =>
-      effectivePermissions.has(permission.flag)
-    ).map((permission) => permission.label);
-    const missingPermissions = RECOVERY_PARENT_REQUIRED_PERMISSIONS.filter(
-      (permission) => !effectivePermissions.has(permission.flag)
-    ).map((permission) => `Missing ${permission.label}`);
-    const permissions = [...blockedPermissions, ...missingPermissions];
-    if (permissions.length === 0) {
-      return;
-    }
-    bypasses.push({
-      channelId: channel.id,
-      channelName: channel.name,
-      subjectType: 'member',
-      subjectId: member.id,
-      permissions,
-    });
-  }
-
-  private recordPostingSurfaceMemberBypass(
-    channel: LockdownChannel,
-    member: GuildMember,
-    bypasses: CaseRoleLockdownMemberBypass[]
-  ): void {
-    const effectivePermissions = channel.permissionsFor(member);
-    const permissions = LOCKDOWN_POSTING_PERMISSIONS.filter((permission) =>
-      effectivePermissions.has(permission.flag)
-    ).map((permission) => permission.label);
-    if (permissions.length === 0) {
-      return;
-    }
-    bypasses.push({
-      channelId: channel.id,
-      channelName: channel.name,
-      subjectType: 'member',
-      subjectId: member.id,
-      permissions,
-    });
-  }
-
-  private async recordRecoverySiblingThreadBypasses(
-    member: GuildMember,
-    recoveryParentId: string,
-    recoveryParent: TextChannel | null,
-    allowedThreadId: string | null | undefined,
-    bypasses: CaseRoleLockdownMemberBypass[],
-    context?: CaseRoleLockdownAuditContext
-  ): Promise<void> {
-    const cacheKey = `${member.guild.id}:${recoveryParentId}`;
-    let siblingThreadsPromise = context?.siblingThreadsByParentId.get(cacheKey);
-    if (!siblingThreadsPromise) {
-      siblingThreadsPromise = this.fetchRecoverySiblingThreads(member, recoveryParent);
-      context?.siblingThreadsByParentId.set(cacheKey, siblingThreadsPromise);
-    }
-    const siblingThreads = await siblingThreadsPromise;
-
-    for (const thread of siblingThreads) {
-      if (thread.parentId !== recoveryParentId || thread.id === allowedThreadId) {
-        continue;
-      }
-      if (thread.archived === true && thread.locked === true) {
-        continue;
-      }
-
-      if (thread.type === ChannelType.PrivateThread) {
-        const threadMembers = thread.members.cache.has(member.id)
-          ? thread.members.cache
-          : await thread.members.fetch();
-        if (!threadMembers.has(member.id)) {
-          continue;
-        }
-      }
-
-      bypasses.push({
-        channelId: thread.id,
-        channelName: thread.name,
-        subjectType: 'member',
-        subjectId: member.id,
-        permissions: ['Send Messages in Threads'],
-      });
-    }
-  }
-
-  private async fetchRecoverySiblingThreads(
-    member: GuildMember,
-    recoveryParent: TextChannel | null
-  ): Promise<readonly ThreadChannel[]> {
-    const activeThreads = await member.guild.channels.fetchActiveThreads();
-    const siblingThreads = new Map(activeThreads.threads);
-    if (recoveryParent) {
-      const [archivedPublicThreads, archivedPrivateThreads] = await Promise.all([
-        recoveryParent.threads.fetchArchived({ type: 'public', fetchAll: true }),
-        recoveryParent.threads.fetchArchived({ type: 'private', fetchAll: true }),
-      ]);
-      for (const thread of [
-        ...archivedPublicThreads.threads.values(),
-        ...archivedPrivateThreads.threads.values(),
-      ]) {
-        siblingThreads.set(thread.id, thread);
-      }
-    }
-    return [...siblingThreads.values()];
-  }
-
-  private async recordRecoveryThreadAccessBypasses(
-    member: GuildMember,
-    recoveryThreadId: string,
-    bypasses: CaseRoleLockdownMemberBypass[]
-  ): Promise<void> {
-    const thread = await member.guild.channels.fetch(recoveryThreadId);
-    if (!thread?.isThread()) {
-      throw new Error(`Recovery thread ${recoveryThreadId} could not be audited.`);
-    }
-
-    const accessFailures: string[] = [];
-    if (thread.archived) {
-      accessFailures.push('Recovery thread archived');
-    }
-    if (thread.locked) {
-      accessFailures.push('Recovery thread locked');
-    }
-    const permissions = thread.permissionsFor(member);
-    if (!permissions.has(PermissionFlagsBits.ViewChannel)) {
-      accessFailures.push('Missing View Channel');
-    }
-    if (!permissions.has(PermissionFlagsBits.SendMessagesInThreads)) {
-      accessFailures.push('Missing Send Messages in Threads');
-    }
-    if (permissions.has(PermissionFlagsBits.MentionEveryone)) {
-      accessFailures.push('Mention Everyone');
-    }
-    if (thread.type === ChannelType.PrivateThread) {
-      const threadMembers = await thread.members.fetch();
-      if (!threadMembers.has(member.id)) {
-        accessFailures.push('Missing private thread membership');
-      }
-    }
-    if (accessFailures.length === 0) {
-      return;
-    }
-    bypasses.push({
-      channelId: thread.id,
-      channelName: thread.name,
-      subjectType: 'member',
-      subjectId: member.id,
-      permissions: accessFailures,
-    });
-  }
-
-  private async resolveRecoveryParent(
-    guild: Guild,
-    recoveryThreadId: string | null | undefined
-  ): Promise<TextChannel | null> {
-    if (!recoveryThreadId) {
-      return null;
-    }
-    const thread = await guild.channels.fetch(recoveryThreadId);
-    if (!thread?.isThread() || !thread.parentId) {
-      throw new Error(`Recovery thread ${recoveryThreadId} could not be resolved.`);
-    }
-    const parent = await guild.channels.fetch(thread.parentId);
-    if (!parent || parent.type !== ChannelType.GuildText || !this.isLockdownChannel(parent)) {
-      throw new Error(`Recovery thread parent ${thread.parentId} could not be audited.`);
-    }
-    return parent as TextChannel;
-  }
-
-  private isLockdownChannel(
-    channel: NonThreadGuildBasedChannel | null
-  ): channel is LockdownChannel {
-    if (!channel) {
-      return false;
-    }
-
-    const maybeChannel = channel as Partial<LockdownChannel>;
-    return Boolean(maybeChannel.permissionOverwrites && maybeChannel.permissionsFor);
-  }
-
-  private isSyncedToParent(channel: LockdownChannel): boolean {
-    return Boolean(channel.parentId && channel.permissionsLocked === true);
-  }
-
-  private toPlannedAction(
-    channel: LockdownChannel,
-    scope: CaseRoleLockdownActionScope
-  ): CaseRoleLockdownPlannedAction {
-    return {
-      scope,
-      channelId: channel.id,
-      channelName: channel.name,
+      errorCount: issues.filter((issue) => issue.severity === 'error').length,
+      warningCount: issues.filter((issue) => issue.severity === 'warning').length,
     };
   }
 
-  private getAutoAllowedChannelIds(
-    settings: ServerSettings | undefined,
-    channelIds: readonly (string | null | undefined)[]
-  ): string[] {
-    const ids = new Set<string>();
-    for (const channelId of channelIds) {
-      if (channelId) {
-        ids.add(channelId);
-      }
-    }
-
-    const reportInstructionsChannelId = settings?.report_instructions_channel_id;
-    if (typeof reportInstructionsChannelId === 'string' && reportInstructionsChannelId) {
-      ids.add(reportInstructionsChannelId);
-    }
-
-    return [...ids];
-  }
-
-  private applyFailuresToIssues(
-    failures: readonly CaseRoleLockdownApplyFailure[]
-  ): CaseRoleLockdownIssue[] {
-    return failures.map((failure) => ({
-      severity: 'error',
-      code: 'lockdown-apply-failed',
-      message: `Failed to apply lockdown to ${failure.scope} #${failure.channelName} (${failure.channelId}): ${failure.message}`,
-    }));
-  }
-
-  private formatChannel(channel: Pick<LockdownChannel, 'id' | 'name'>): string {
-    return `#${channel.name} (${channel.id})`;
-  }
-
-  private toReport(input: {
-    readonly guildId: string;
-    readonly checkedAt: Date;
-    readonly enabled: boolean;
-    readonly allowedChannelIds: readonly string[];
-    readonly allowedCategoryIds: readonly string[];
-    readonly autoAllowedChannelIds: readonly string[];
-    readonly issues: readonly CaseRoleLockdownIssue[];
-    readonly plannedActions: readonly CaseRoleLockdownPlannedAction[];
-    readonly appliedActions: readonly CaseRoleLockdownPlannedAction[];
-    readonly failedActions: readonly CaseRoleLockdownApplyFailure[];
-    readonly syncedAllowedChannels: readonly CaseRoleLockdownPlannedAction[];
-    readonly unsyncedAllowedChannels: readonly CaseRoleLockdownPlannedAction[];
-  }): CaseRoleLockdownReport {
+  private projectRestrictionMember(
+    audit: RestrictionAudit,
+    member: GuildMember,
+    ignoredRoleIds: ReadonlySet<string>,
+    allowedThreadId?: string | null,
+    caseRoleId?: string | null
+  ): CaseRoleLockdownMemberAudit {
+    const base = this.restrictionFacts(audit, allowedThreadId, caseRoleId);
+    const collected = base.cases.find((c) => c.userId === member.id);
+    const roles = (collected?.roleIds ?? [...member.roles.cache.keys()]).filter(
+      (id) => !ignoredRoleIds.has(id)
+    );
+    const facts = {
+      ...base,
+      cases: [
+        {
+          caseId: collected?.caseId ?? `member:${member.id}`,
+          caseRoleId: caseRoleId === undefined ? (collected?.caseRoleId ?? null) : caseRoleId,
+          caseRevision: collected?.caseRevision ?? 'prospective',
+          joinedAt: collected?.joinedAt ?? member.joinedAt?.toISOString() ?? null,
+          userId: member.id,
+          purpose: collected?.purpose ?? ('standard_case' as const),
+          roleIds: roles,
+          owner: member.id === member.guild.ownerId,
+          metadataAvailable: collected?.metadataAvailable ?? true,
+          threadId: allowedThreadId === undefined ? (collected?.threadId ?? null) : allowedThreadId,
+        },
+      ],
+    };
+    const assessment = assessRestrictionFacts(facts).cases[0];
+    const privileged = base.roles.filter(
+      (role) =>
+        (role.id === base.guildId || roles.includes(role.id)) &&
+        (BigInt(role.permissions) & COMPROMISED_RESTRICTION_PRIVILEGED_PERMISSIONS) !== 0n
+    );
     return {
-      ...input,
-      errorCount: input.issues.filter((issue) => issue.severity === 'error').length,
-      warningCount: input.issues.filter((issue) => issue.severity === 'warning').length,
+      assessment,
+      memberId: member.id,
+      bypasses: assessment.findings
+        .filter((f) => f.kind === 'access_failure' || f.kind === 'coverage')
+        .map((f) => ({
+          channelId: f.channelId ?? 'guild',
+          channelName:
+            base.channels.find((c) => c.id === f.channelId)?.name ??
+            f.channelId ??
+            'Required metadata',
+          subjectType: 'member' as const,
+          subjectId: member.id,
+          permissions: [f.code],
+        })),
+      retainedPrivilegedRoleIds: privileged.map((r) => r.id),
+      retainedAdministratorRoleIds: privileged
+        .filter((r) => (BigInt(r.permissions) & PermissionFlagsBits.Administrator) !== 0n)
+        .map((r) => r.id),
+      unremovablePrivilegeReasons: assessment.findingCodes.filter(
+        (code) => code === 'owner_bypass' || code === 'administrator_bypass'
+      ),
     };
   }
 }

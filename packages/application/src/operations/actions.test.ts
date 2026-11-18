@@ -1,4 +1,5 @@
-import type { CaseRoleLockdownReport } from './reports';
+import { fixture } from './restrictionExecutionTestData';
+import type { OperationCommand } from './commands';
 import { createOperationsActions, type OperationsActions } from './actions';
 import type { OperationsDependencies } from './ports';
 import type { ActionContext } from '../context';
@@ -17,13 +18,11 @@ function arrange(): {
   setConfirmed(value: boolean): void;
   setReasonRequired(value: boolean): void;
   readonly repairCallsDuringPreview: number;
-  readonly lockdownUnsyncIntent: boolean;
 } {
   let permissions = String(1n << 3n);
   let confirmed = true;
   let reasonRequired = true;
   let repairCallsDuringPreview = 0;
-  let lockdownUnsyncIntent = true;
   const queue = ['guild', 'other'];
   const calls: unknown[] = [];
   const deps: OperationsDependencies = {
@@ -73,12 +72,16 @@ function arrange(): {
     },
     lockdown: {
       async audit() {
-        return lockdownReport();
+        return fixture().audit;
       },
-      async apply(input) {
+      async apply() {
         repairCallsDuringPreview++;
-        lockdownUnsyncIntent = input.unsyncAllowedChannels;
-        return lockdownReport();
+        const audit = fixture().audit;
+        return {
+          progress: { schemaVersion: 1, revision: 0, currentEffectIndex: 0, receipts: [] },
+          stopReason: 'completed',
+          verification: { setup: audit.setup, cases: audit.cases },
+        };
       },
     },
     integrity: {
@@ -139,30 +142,8 @@ function arrange(): {
     get repairCallsDuringPreview(): number {
       return repairCallsDuringPreview;
     },
-    get lockdownUnsyncIntent(): boolean {
-      return lockdownUnsyncIntent;
-    },
   };
 }
-function lockdownReport(): CaseRoleLockdownReport {
-  return {
-    guildId: 'guild',
-    checkedAt: new Date(),
-    enabled: false,
-    allowedChannelIds: [],
-    allowedCategoryIds: [],
-    autoAllowedChannelIds: [],
-    issues: [],
-    plannedActions: [],
-    appliedActions: [],
-    failedActions: [],
-    syncedAllowedChannels: [],
-    unsyncedAllowedChannels: [],
-    errorCount: 0,
-    warningCount: 0,
-  };
-}
-
 test('bulk_intake_requires_admin_and_existing_reason_policy', async () => {
   const h = arrange();
   const command = {
@@ -204,9 +185,11 @@ test('audit_preview_has_no_repair_effects', async () => {
   expect(h.repairCallsDuringPreview).toBe(0);
   await h.actions.execute(context, {
     kind: 'apply_case_role_lockdown',
-    unsyncAllowedChannels: false,
+    auditRequestId: 'audit',
+    auditRevision: 'revision',
+    selectedFixIds: ['repair'],
   });
-  expect(h.lockdownUnsyncIntent).toBe(false);
+  expect(h.repairCallsDuringPreview).toBe(1);
 });
 test('execution intent alone never proves confirmation and fresh authority stays operation specific', async () => {
   const h = arrange();
@@ -214,7 +197,9 @@ test('execution intent alone never proves confirmation and fresh authority stays
   expect(
     await h.actions.execute(context, {
       kind: 'apply_case_role_lockdown',
-      unsyncAllowedChannels: false,
+      auditRequestId: 'audit',
+      auditRevision: 'revision',
+      selectedFixIds: ['repair'],
     })
   ).toEqual({ kind: 'denied', code: 'confirmation_required' });
   expect(
@@ -299,4 +284,14 @@ test('thread sweep authority follows admitted intent and never source provenance
       { ...sweep, intent: 'guild_audit' }
     )
   ).toEqual({ kind: 'denied', code: 'permission_denied' });
+});
+
+test('legacy coarse apply cannot authorize any writes even with old confirmation', async () => {
+  const h = arrange();
+  const legacy = { kind: 'apply_case_role_lockdown', unsyncAllowedChannels: true } as const;
+  expect(await h.actions.execute(context, legacy as unknown as OperationCommand)).toEqual({
+    kind: 'denied',
+    code: 'plan_required',
+  });
+  expect(h.repairCallsDuringPreview).toBe(0);
 });

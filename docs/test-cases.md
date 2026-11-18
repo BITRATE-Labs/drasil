@@ -164,3 +164,16 @@ Live preview testing stops before submission or moderation unless separately aut
 - A reviewable case absorbs failure attention without a duplicate observed row. Terminal and parked case failures retain historical linkage and one detection-owned attention row. Do not reopen or unpark the case.
 - Acknowledge validated response attention through the existing control. Confirm that staff acknowledgement preserves the kicked/failed/unknown outcome and unresolved failure details, including after reconciliation. Ordinary or malformed observed rows must not offer this control.
 - Coalesced alert updates show changed failure details. Successful enforcement and notification continue through the existing successful path.
+
+## Restriction wizard controlled acceptance
+
+Status: pending separate authorization and execution. Automated tests establish implementation behavior only. Deployment establishes rollout only. A signed-in restricted-member session is required for live access proof. Keep server/account identities and screenshots with private operator evidence, never public issues or docs.
+
+1. Read-only first: record the deployed revision, authenticated administrator, bot hierarchy, configured exceptions and audit coverage. Confirm the audit writes no roles/overwrites and requests no automatic permission elevation.
+2. After explicit authorization for a synthetic case in a controlled server, sign in as the restricted member. Confirm own private case-thread read/reply access and denied excluded text, voice, forum/media and other case-thread access. Record Discord platform limits and unavailable checks separately.
+3. Check every explicit read-only exception for reading and denied posting, replies, reactions and thread interactions as applicable. Inspect recovery-parent content manually under separate authorization. Metadata alone cannot certify its confidentiality.
+4. Confirm protected staff roles remain intact. Record any resulting incomplete isolation. Test current-case role repair only after reviewing its exact role removals and restoration effects.
+5. Resolve the synthetic case through the normal approved resolution flow and confirm eligible original roles restore, while newly acquired or protected/unsafe roles follow existing restoration rules.
+6. In a controlled failure exercise, confirm a failed or uncertain effect stops later writes, receipts distinguish applied/failed/unknown, and setup/current-case outcomes remain separate. Remaining work requires a fresh audit and approval. No replay, automatic rollback, kick or ban is part of this checklist.
+
+Automated coverage includes protected roles and effective permissions, incomplete coverage, stale selection and identity, worker/snapshot races, web/Discord/MCP admission, automatic result polling, idle expiry, keyboard controls and narrow light/dark layouts. See the approved [design acceptance criteria](superpowers/specs/2026-11-17-restriction-audit-wizard-design.md#acceptance-evidence).

@@ -60,13 +60,7 @@ function previewReceipt(
     containment_fingerprint: containmentFingerprint,
     case_role: preview.caseRoleId ? roleSummary(preview.caseRoleId) : null,
     case_role_ready:
-      preview.caseRoleId !== null &&
-      preview.lockdown.enabled &&
-      preview.lockdown.errorCount === 0 &&
-      preview.lockdown.plannedActions.length === 0 &&
-      !preview.lockdown.issues.some(
-        (issue) => issue.code === 'lockdown-case-role-global-permissions'
-      ),
+      preview.caseRoleId !== null && preview.lockdown.assessment?.status === 'verified',
     enabled: preview.enabled,
     lockdown_error_count: preview.lockdown.errorCount,
     lockdown_issues: preview.lockdown.issues.map((issue) => ({

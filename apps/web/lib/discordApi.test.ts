@@ -8,6 +8,7 @@ import {
   searchGuildBots,
   fetchBotChannelMessages,
   fetchDiscordGuilds,
+  fetchDiscordThreadMembers,
   type DiscordGuildSummary,
   type DiscordMessage,
 } from './discordApi';
@@ -318,5 +319,24 @@ describe('bounded source-centered pages', () => {
       })
     ).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('restriction thread membership evidence', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+  it('fails closed when a later membership page fails', async () => {
+    vi.stubEnv('DISCORD_API_BASE_URL', 'https://discord.test/api/v10');
+    vi.stubEnv('DRASIL_WEB_BOT_TOKEN', 'controlled-token');
+    const firstPage = Array.from({ length: 100 }, (_, i) => ({ user_id: String(i + 1) }));
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(firstPage))
+      .mockResolvedValueOnce(new Response('unavailable', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchDiscordThreadMembers('910000000000000123')).rejects.toThrow();
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('after=100');
   });
 });

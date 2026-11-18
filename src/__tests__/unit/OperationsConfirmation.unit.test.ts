@@ -29,27 +29,35 @@ test('confirmed intake binds the same selected options independently of property
     await store.confirmations.verify(context, operationConfirmationCommand(context, execution))
   ).toBe(false);
 });
-test.each<OperationCommand>([
+test.each([
   { kind: 'intake_role_members', roleId: 'other', execute: true, limit: 12, reason: 'reason' },
   { kind: 'intake_role_members', roleId: 'role', execute: true, limit: 13, reason: 'reason' },
   { kind: 'intake_role_members', roleId: 'role', execute: true, limit: 12, reason: 'changed' },
-  { kind: 'apply_case_role_lockdown', unsyncAllowedChannels: true },
-])('operation evidence cannot authorize changed options $kind', async (command) => {
-  const store = createCaseConfirmationStore();
-  store.recordVerified(
-    context,
-    operationConfirmationCommand(context, {
-      kind: 'intake_role_members',
-      roleId: 'role',
-      execute: true,
-      limit: 12,
-      reason: 'reason',
-    })
-  );
-  expect(
-    await store.confirmations.verify(context, operationConfirmationCommand(context, command))
-  ).toBe(false);
-});
+  {
+    kind: 'apply_case_role_lockdown',
+    auditRequestId: 'audit',
+    auditRevision: 'revision',
+    selectedFixIds: ['fix'],
+  },
+] satisfies readonly OperationCommand[])(
+  'operation evidence cannot authorize changed options $kind',
+  async (command) => {
+    const store = createCaseConfirmationStore();
+    store.recordVerified(
+      context,
+      operationConfirmationCommand(context, {
+        kind: 'intake_role_members',
+        roleId: 'role',
+        execute: true,
+        limit: 12,
+        reason: 'reason',
+      })
+    );
+    expect(
+      await store.confirmations.verify(context, operationConfirmationCommand(context, command))
+    ).toBe(false);
+  }
+);
 
 test('uses case identity by default and retains explicitly supplied evidence', async () => {
   const store = createCaseConfirmationStore();

@@ -9,7 +9,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['**/*.test.ts'],
+    include: ['**/*.test.ts', '**/*.test.tsx'],
     exclude: ['**/node_modules/**', '**/*.integration.test.ts'],
     // The prescribed limits.test.ts suite uses persisted buckets when an owned test DB is supplied.
     fileParallelism: !process.env.TEST_DATABASE_URL,

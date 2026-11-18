@@ -1,3 +1,4 @@
+import { fixture } from '../operations/restrictionExecutionTestData';
 import {
   setupResourceFields,
   setupResourceReferences,
@@ -146,30 +147,16 @@ test('only update_setup is delivered directly', () => {
   ).toEqual(['update_setup']);
 });
 
-test.each([false, undefined, true])(
-  'includes the intended lockdown setting diff from %s with conditional outcome language',
-  async (enabled) => {
-    const current = {
-      ...state,
-      settings: enabled === undefined ? {} : { case_role_lockdown_enabled: enabled },
-    };
-    const result = await resolver(true, true, current).resolve(principal, {
+test('old boolean apply is rejected rather than converted into selected repairs', async () => {
+  await expect(
+    resolver().resolve(principal, {
       workflowId: 'apply_case_role_lockdown',
       guildId: 'guild',
-      idempotencyKey: 'apply',
+      idempotencyKey: 'old',
       input: { unsyncAllowedChannels: true },
-    });
-    expect(result.summary).toContain(
-      setupChangeSummary(current, { settings: { case_role_lockdown_enabled: true } })
-    );
-    expect(result.summary).toContain('Intended settings change');
-    expect(result.summary).toContain('no overwrite changes are needed');
-    expect(result.summary).toContain('at least one planned overwrite succeeds');
-    expect(result.summary).toContain('partial');
-    expect(result.summary).toContain('"unsyncAllowedChannels":true');
-    expect(result.preconditions).toEqual({ kind: 'setup', approvedState: current });
-  }
-);
+    })
+  ).rejects.toThrow();
+});
 
 test.each([
   {
@@ -415,11 +402,6 @@ test.each([
   { workflowId: 'clear_moderation_queue' as const, input: {}, confirmation: 'confirm' },
   { workflowId: 'audit_case_role_lockdown' as const, input: {}, confirmation: 'none' },
   {
-    workflowId: 'apply_case_role_lockdown' as const,
-    input: { unsyncAllowedChannels: false },
-    confirmation: 'confirm',
-  },
-  {
     workflowId: 'audit_integrity' as const,
     input: { scope: 'all', days: 7, limit: 10, userId: null },
     confirmation: 'none',
@@ -568,4 +550,36 @@ test('private method revision participates in approved-state fingerprints and is
     setupCommandSchema.safeParse({ kind: 'update_setup', changes: { captchaMethod: 'invalid' } })
       .success
   ).toBe(false);
+});
+
+test('selected repairs freeze the trusted plan and exact effects, without enabling coarse lockdown', async () => {
+  const f = fixture();
+  f.deps.authority.loadFresh.mockResolvedValue({
+    guildId: 'guild',
+    userId: 'actor',
+    present: true,
+    owner: true,
+    permissions: '0',
+    roleIds: [],
+  });
+  const selected = createSetupIntentResolver({
+    loadServer: async () => state,
+    loadGuildResources: async () => ({ roles: [], channels: [] }),
+    authority: f.deps.authority,
+    provider: { isConfigured: () => false },
+    loadHeuristicDefaults: async (scope) => shippedResetChanges(scope),
+    restriction: f.deps,
+  });
+  const result = await selected.resolve(principal, {
+    workflowId: 'apply_case_role_lockdown',
+    guildId: 'guild',
+    idempotencyKey: 'selected',
+    input: f.selection,
+  });
+  expect(result.preconditions).toMatchObject({
+    kind: 'restriction_plan',
+    plan: { ...f.selection, actorId: 'actor', guildId: 'guild', effects: f.audit.fixes[0].effects },
+  });
+  expect(result.summary).toContain(JSON.stringify(f.audit.fixes[0].effects));
+  expect(result.previewExpiresAt).toEqual(new Date(f.audit.expiresAt));
 });

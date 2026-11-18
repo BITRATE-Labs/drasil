@@ -1,9 +1,14 @@
+import { restrictionRoleFact } from '../utils/restrictionRoleFact';
+import { classifyRestrictionRoles, restrictionMemberHasProtectedRole } from '@drasil/application';
 import { GuildMember, PartialGuildMember, Role, User } from 'discord.js';
 import { inject, injectable, optional } from 'inversify';
 import { IConfigService } from '../config/ConfigService';
 import { Prisma } from '../db/prisma';
 import { TYPES } from '../di/symbols';
-import { IRoleQuarantineSnapshotRepository } from '../repositories/RoleQuarantineSnapshotRepository';
+import {
+  IRoleQuarantineSnapshotRepository,
+  unsettledRestrictionRoleIds,
+} from '../repositories/RoleQuarantineSnapshotRepository';
 import { IVerificationEventRepository } from '../repositories/VerificationEventRepository';
 import {
   CaseKind,
@@ -14,6 +19,7 @@ import {
   RoleQuarantineSnapshotStatus,
   RoleQuarantineSnapshotUpdate,
   VerificationEvent,
+  VerificationStatus,
 } from '../repositories/types';
 import { getManualIntakeSettings } from '../utils/manualIntakeSettings';
 import { getRoleGateSettings } from '../utils/roleGateSettings';
@@ -56,6 +62,14 @@ export interface RoleQuarantineApplyResult {
 
 export interface QuarantineAttemptFence {
   readonly attemptId: string;
+  assertOwner(): Promise<void>;
+}
+
+export interface RestrictionRepairFence {
+  readonly requestId: string;
+  readonly attemptToken: string;
+  readonly caseRevision: number;
+  readonly joinedAt: string;
   assertOwner(): Promise<void>;
 }
 
@@ -135,6 +149,13 @@ export interface IRoleQuarantineService {
     verificationEvent: VerificationEvent,
     moderator?: User
   ): Promise<RoleQuarantineApplyResult>;
+  repairCaseRoles(
+    member: GuildMember,
+    caseRecord: VerificationEvent,
+    roleIds: readonly string[],
+    actor: User,
+    fence: RestrictionRepairFence
+  ): Promise<RoleQuarantineApplyResult>;
   enforceActiveCaseRoleUpdate(
     oldMember: GuildMember | PartialGuildMember,
     newMember: GuildMember,
@@ -163,7 +184,6 @@ interface QuarantinePolicy {
   readonly purpose: RoleQuarantineSnapshotPurpose;
   readonly exemptRoleIds: ReadonlySet<string>;
   readonly privilegedPermissions: readonly bigint[];
-  readonly skipPrivilegedRoles: boolean;
 }
 
 @injectable()
@@ -191,6 +211,147 @@ export class RoleQuarantineService implements IRoleQuarantineService {
       moderator,
       RoleQuarantineSnapshotPurpose.STANDARD_CASE
     );
+  }
+
+  public async repairCaseRoles(
+    member: GuildMember,
+    caseRecord: VerificationEvent,
+    roleIds: readonly string[],
+    actor: User,
+    fence: RestrictionRepairFence
+  ): Promise<RoleQuarantineApplyResult> {
+    if (
+      !this.verificationEventRepository ||
+      !roleIds.length ||
+      new Set(roleIds).size !== roleIds.length
+    )
+      throw new Error('Invalid restriction repair');
+    const cases = this.verificationEventRepository;
+    const removed: string[] = [];
+    let snapshot: RoleQuarantineSnapshot | null = null;
+    const result = (): RoleQuarantineApplyResult => ({
+      status: 'quarantined',
+      mode: 'on',
+      purpose: snapshot?.purpose ?? RoleQuarantineSnapshotPurpose.STANDARD_CASE,
+      snapshotId: snapshot?.id ?? null,
+      originalRoleIds: snapshot?.original_role_ids ?? [],
+      plannedRoleIds: [...roleIds],
+      removedRoleIds: [...removed],
+      skippedRoles: [],
+      failedRemovals: [],
+      ...(snapshot ? { appliedEffects: { snapshot, removedRoleIds: [...removed] } } : {}),
+    });
+    const joinedAt = Date.parse(fence.joinedAt);
+    if (!Number.isFinite(joinedAt) || member.joinedAt?.getTime() !== joinedAt)
+      throw new Error('Restriction membership changed');
+    try {
+      for (const roleId of roleIds) {
+        await fence.assertOwner();
+        const current = await cases.findById(caseRecord.id);
+        member = await member.guild.members.fetch({ user: member.id, force: true });
+        await member.guild.roles.fetch();
+        const config = await this.configService.getServerConfig(member.guild.id, {
+          forceRefresh: true,
+          failOnReadError: true,
+        });
+        const caseRoleId = current?.quarantine_case_role_id ?? config.case_role_id;
+        const role = member.guild.roles.cache.get(roleId);
+        const bot = await member.guild.members.fetchMe({ force: true });
+        const policy = getRoleQuarantineSettings(config.settings);
+        const intake = getManualIntakeSettings(config.settings);
+        const gate = getRoleGateSettings(config.settings);
+        const disposition =
+          role &&
+          classifyRestrictionRoles({
+            guildId: member.guild.id,
+            caseRoleId,
+            purpose: 'standard_case',
+            quarantineMode: policy.mode,
+            exemptRoleIds: [...policy.exemptRoleIds],
+            manualIntakeRoleId: intake.enabled ? intake.roleId : null,
+            botHighestPosition: bot.roles.highest.position,
+            roles: [restrictionRoleFact(role, bot)],
+          })[0];
+        if (
+          !current ||
+          current.server_id !== member.guild.id ||
+          current.user_id !== member.id ||
+          current.status !== VerificationStatus.PENDING ||
+          current.case_revision !== fence.caseRevision ||
+          current.quarantine_attempt_id ||
+          member.joinedAt?.getTime() !== joinedAt ||
+          member.guild.ownerId === member.id ||
+          !role ||
+          !member.roles.cache.has(roleId) ||
+          roleId === config.case_role_id ||
+          !disposition?.removable ||
+          restrictionMemberHasProtectedRole(
+            [...member.roles.cache.values()].map((r) => ({
+              id: r.id,
+              permissions: r.permissions.bitfield.toString(),
+            })),
+            caseRoleId
+          ) ||
+          (gate.enabled && roleId === gate.honeypotRoleId)
+        )
+          throw new Error('Restriction repair precondition changed');
+        await fence.assertOwner();
+        snapshot = await this.snapshotRepository.appendRestrictionRepairRoles({
+          caseId: current.id,
+          caseRevision: fence.caseRevision,
+          requestId: fence.requestId,
+          attemptToken: fence.attemptToken,
+          userId: member.id,
+          roleIds: [roleId],
+        });
+        if (!snapshot) throw new Error('Restriction repair ownership lost');
+        let writeError: unknown;
+        try {
+          await member.roles.remove(role, `Drasil selected restriction repair by ${actor.id}`);
+        } catch (error) {
+          writeError = error;
+        }
+        let absent = false;
+        try {
+          const observed = await member.guild.members.fetch({ user: member.id, force: true });
+          absent = observed.joinedAt?.getTime() === joinedAt && !observed.roles.cache.has(roleId);
+          member = observed;
+        } catch {
+          /* An unavailable read cannot prove removal. */
+        }
+        if (absent) removed.push(roleId);
+        let recorded: RoleQuarantineSnapshot | null = null;
+        try {
+          recorded = await this.snapshotRepository.recordRestrictionRepairOutcome({
+            snapshotId: snapshot.id,
+            requestId: fence.requestId,
+            attemptToken: fence.attemptToken,
+            roleId,
+            state: absent ? 'applied' : 'unknown',
+          });
+        } catch {
+          /* Preserve exact local effects for closure reconciliation after a lost outcome write. */
+        }
+        if (recorded) snapshot = recorded;
+        const after = await cases.findById(caseRecord.id);
+        if (removed.length && after?.status !== VerificationStatus.PENDING) {
+          await this.restoreMemberRoles(
+            member,
+            actor,
+            {
+              canRestoreRole: async () =>
+                !(await cases.findActiveByUserAndServer(member.id, member.guild.id)),
+            },
+            result().appliedEffects
+          );
+        }
+        if (!recorded || writeError || !absent)
+          throw new Error('Restriction repair outcome requires reconciliation');
+      }
+      return result();
+    } catch (error) {
+      throw new RoleQuarantineApplyError('Restriction repair stopped', result(), error);
+    }
   }
 
   public async previewCompromisedAccount(
@@ -259,8 +420,10 @@ export class RoleQuarantineService implements IRoleQuarantineService {
     }
 
     // Exact late effects can outlive a restored snapshot. Never reopen or overwrite it.
-    const updateSnapshot = async (data: RoleQuarantineSnapshotUpdate): Promise<void> => {
-      if (!appliedEffects) await this.snapshotRepository.update(snapshot.id, data);
+    const updateSnapshot = async (
+      data: RoleQuarantineSnapshotUpdate
+    ): Promise<RoleQuarantineSnapshot | null> => {
+      return appliedEffects ? null : this.snapshotRepository.update(snapshot.id, data);
     };
     const joinedAt = member.joinedAt;
 
@@ -309,9 +472,27 @@ export class RoleQuarantineService implements IRoleQuarantineService {
         ? COMPROMISED_ACCOUNT_PRIVILEGED_ROLE_PERMISSIONS
         : STANDARD_QUARANTINE_PRIVILEGED_ROLE_PERMISSIONS;
     const originalRoleIds = new Set(snapshot.original_role_ids);
-    const attemptedRoleIds = snapshot.removed_role_ids.filter((roleId) =>
-      originalRoleIds.has(roleId)
+    const unsettledRoles = unsettledRestrictionRoleIds(snapshot);
+    const attemptedRoleIds = [...new Set([...snapshot.removed_role_ids, ...unsettledRoles])].filter(
+      (roleId) => originalRoleIds.has(roleId)
     );
+    if (
+      unsettledRoles.length &&
+      (!this.verificationEventRepository ||
+        (await this.verificationEventRepository.findActiveByUserAndServer(
+          member.id,
+          member.guild.id
+        )))
+    ) {
+      return {
+        status: 'held_pending_case',
+        snapshotId: snapshot.id,
+        attemptedRoleIds,
+        restoredRoleIds: [],
+        skippedRoles: [],
+        failedRestores: [],
+      };
+    }
     const restoredRoleIds: string[] = [];
     const skippedRoles: RoleQuarantineRoleDetail[] = [];
     const failedRestores: RoleQuarantineRoleDetail[] = [];
@@ -427,12 +608,13 @@ export class RoleQuarantineService implements IRoleQuarantineService {
       this.isRetryableRestoreSkipReason(role.reason)
     );
     const restoreStatus: RoleQuarantineRestoreStatus =
-      failedRestores.length > 0 || retryableSkippedRoles.length > 0
+      failedRestores.length > 0 || retryableSkippedRoles.length > 0 || unsettledRoles.length > 0
         ? 'partially_restored'
         : 'restored';
     const restoreCompleted = restoreStatus === 'restored';
 
-    await updateSnapshot({
+    const updated = await updateSnapshot({
+      expectedRestorationRoleIds: attemptedRoleIds,
       status: restoreCompleted
         ? RoleQuarantineSnapshotStatus.RESTORED
         : RoleQuarantineSnapshotStatus.ACTIVE,
@@ -448,7 +630,10 @@ export class RoleQuarantineService implements IRoleQuarantineService {
     });
 
     return {
-      status: restoreStatus,
+      status:
+        updated?.status === RoleQuarantineSnapshotStatus.ACTIVE
+          ? 'partially_restored'
+          : restoreStatus,
       snapshotId: snapshot.id,
       attemptedRoleIds,
       restoredRoleIds,
@@ -896,7 +1081,6 @@ export class RoleQuarantineService implements IRoleQuarantineService {
         purpose,
         exemptRoleIds: new Set(),
         privilegedPermissions: COMPROMISED_ACCOUNT_PRIVILEGED_ROLE_PERMISSIONS,
-        skipPrivilegedRoles: false,
       };
     }
 
@@ -910,7 +1094,6 @@ export class RoleQuarantineService implements IRoleQuarantineService {
       purpose,
       exemptRoleIds,
       privilegedPermissions: STANDARD_QUARANTINE_PRIVILEGED_ROLE_PERMISSIONS,
-      skipPrivilegedRoles: true,
     };
   }
 
@@ -928,9 +1111,19 @@ export class RoleQuarantineService implements IRoleQuarantineService {
     policy: QuarantinePolicy
   ): Promise<ClassifiedRole[]> {
     const botMember = await this.getBotMember(member);
-    return roles.map((role) => ({
+    const dispositions = classifyRestrictionRoles({
+      guildId: member.guild.id,
+      caseRoleId: null,
+      purpose: policy.purpose,
+      quarantineMode: 'on',
+      exemptRoleIds: [...policy.exemptRoleIds],
+      manualIntakeRoleId: null,
+      botHighestPosition: botMember?.roles.highest.position ?? null,
+      roles: roles.map((role) => restrictionRoleFact(role, botMember)),
+    });
+    return roles.map((role, index) => ({
       role,
-      skipReason: this.getQuarantineSkipReason(member, role, botMember, policy),
+      skipReason: dispositions[index].skipReason ?? undefined,
     }));
   }
 
@@ -955,37 +1148,6 @@ export class RoleQuarantineService implements IRoleQuarantineService {
         role.id !== caseRoleId &&
         !oldMember.roles.cache.has(role.id)
     );
-  }
-
-  private getQuarantineSkipReason(
-    member: GuildMember,
-    role: Role,
-    botMember: GuildMember | null,
-    policy: QuarantinePolicy
-  ): string | undefined {
-    if (policy.exemptRoleIds.has(role.id)) {
-      return 'configured exempt role';
-    }
-    if (this.isBotRole(role)) {
-      return 'bot-managed role';
-    }
-    if (role.managed) {
-      return 'managed role';
-    }
-    if (
-      policy.skipPrivilegedRoles &&
-      this.hasPrivilegedPermissions(role, policy.privilegedPermissions)
-    ) {
-      return 'privileged role';
-    }
-    if (!botMember) {
-      return 'Drasil member could not be loaded';
-    }
-    if (botMember.roles.highest.comparePositionTo(role) <= 0) {
-      return 'role is at or above Drasil role';
-    }
-
-    return undefined;
   }
 
   private getRestoreSkipReason(

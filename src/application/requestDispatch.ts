@@ -325,12 +325,12 @@ export const queuedActionHandlers = {
   ),
   audit_case_role_lockdown: handler(
     'audit_case_role_lockdown',
-    (runtime) => runtime.operations,
+    (runtime, request) => runtime.operationsRuntime.forRequest(request),
     dispatchOperationsAction
   ),
   apply_case_role_lockdown: handler(
     'apply_case_role_lockdown',
-    (runtime) => runtime.operations,
+    (runtime, request) => runtime.operationsRuntime.forRequest(request),
     dispatchOperationsAction
   ),
   intake_role_members: handler(
