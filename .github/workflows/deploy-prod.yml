@@ -102,19 +102,19 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up Docker Buildx
-        if: steps.image_exists.outputs.exists != 'true'
-        uses: docker/setup-buildx-action@v4
       - name: Build and push image
         if: steps.image_exists.outputs.exists != 'true'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          provenance: false
-          tags: ${{ steps.resolve_image.outputs.image }}
-          # CI exports these layers; deployments only read them to avoid upload delays.
-          cache-from: type=gha,scope=package-smoke
+        shell: bash
+        env:
+          IMAGE: ${{ steps.resolve_image.outputs.image }}
+        run: |
+          set -euo pipefail
+
+          docker build \
+            -t "$IMAGE" \
+            .
+
+          docker push "$IMAGE"
 
       - name: Reuse existing image tag
         if: steps.image_exists.outputs.exists == 'true'

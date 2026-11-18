@@ -58,9 +58,9 @@ web source and documentation, preserving cached layers for unrelated changes. Ma
 Docker build layers when available, with a two-minute export limit; PRs only read them. Docker
 smoke loads application and bot bootstrap dependencies without starting services, with networking
 disabled in the final image check.
-Production builds read those CI layers without exporting a cache during deployment. Cache misses
-use a normal build. Image-tag reuse, migrations, the single-bot rollout policy and ECS stability
-checks are unchanged.
+Production retains its original uncached build path, including fresh OS-package installation.
+Its smaller image comes from the same bot-only Dockerfile. Image-tag reuse, migrations, the
+single-bot rollout policy and ECS stability checks are unchanged.
 
 Before pushing (when feasible):
 
