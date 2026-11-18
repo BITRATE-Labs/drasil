@@ -257,3 +257,22 @@ test('deployment decisions retain changes since the last actual successful rollo
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test('deployment lookups exclude PR noise but retain manual recovery on other branches', async () => {
+  const seen = [];
+  const api = async (path) => {
+    seen.push(path);
+    if (path.includes('branch=main')) return { workflow_runs: [] };
+    if (path.includes('event=workflow_dispatch'))
+      return { workflow_runs: [{ id: 7, event: 'workflow_dispatch', head_sha: 'a'.repeat(40) }] };
+    return {
+      total_count: 1,
+      jobs: [
+        { name: 'deploy-web-prod', conclusion: 'success', completed_at: '2026-11-18T00:00:00Z' },
+      ],
+    };
+  };
+  assert.equal(await deploymentRequired({ after: 'b'.repeat(40) }, 'web', api), true);
+  assert.ok(seen.includes('/actions/workflows/ci.yml/runs?branch=main&per_page=10'));
+  assert.ok(seen.includes('/actions/workflows/ci.yml/runs?event=workflow_dispatch&per_page=10'));
+});

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { assertCiResults } from './check-ci-results.mjs';
 
@@ -109,6 +110,31 @@ test('workflow job conditions agree with the aggregate skip contract for every p
       const attempt = { ...results, [job]: { result: 'skipped' } };
       if (runs) assert.throws(() => assertCiResults(attempt), job);
       else assert.doesNotThrow(() => assertCiResults(attempt), job);
+    }
+  }
+});
+
+test('IaC runs on failed classification or missing outputs, and respects workflow cancellation', () => {
+  const workflow = readFileSync('.github/workflows/iac.yml', 'utf8').replaceAll('\r', '');
+  for (const job of ['terraform', 'checkov', 'actionlint']) {
+    const block = workflow
+      .split(/(?=^ {2}[a-z][\w-]*:)/m)
+      .find((entry) => entry.startsWith(`  ${job}:\n`));
+    const expression = block.match(/^ {4}if: \$\{\{ (.+) \}\}$/m)[1];
+    for (const result of ['success', 'failure', 'skipped', 'cancelled']) {
+      for (const output of ['true', 'false', undefined]) {
+        for (const canceled of [false, true]) {
+          const actual = runInNewContext(expression, {
+            cancelled: () => canceled,
+            needs: { impact: { result, outputs: { iac: output, actionlint: output } } },
+          });
+          assert.equal(
+            actual,
+            !canceled && (result !== 'success' || output !== 'false'),
+            `${job}/${result}/${output}`
+          );
+        }
+      }
     }
   }
 });

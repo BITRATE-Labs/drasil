@@ -25,7 +25,7 @@ jobs:
 
   terraform:
     needs: [impact]
-    if: needs.impact.outputs.iac == 'true'
+    if: ${{ !cancelled() && (needs.impact.result != 'success' || needs.impact.outputs.iac != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -57,7 +57,7 @@ jobs:
 
   checkov:
     needs: [impact]
-    if: needs.impact.outputs.iac == 'true'
+    if: ${{ !cancelled() && (needs.impact.result != 'success' || needs.impact.outputs.iac != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -71,7 +71,7 @@ jobs:
 
   actionlint:
     needs: [impact]
-    if: needs.impact.outputs.actionlint == 'true'
+    if: ${{ !cancelled() && (needs.impact.result != 'success' || needs.impact.outputs.actionlint != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

@@ -70,9 +70,15 @@ export async function deploymentRequired(event, target, api, cwd = process.cwd()
     target === 'bot' ? ['deploy-prod.yml', 'deploy'] : ['ci.yml', 'deploy-web-prod'];
   try {
     // shortcut: inspect ten recent runs; an older or uncertain receipt requires deployment.
-    const { workflow_runs: runs } = await api(`/actions/workflows/${workflow}/runs?per_page=10`);
+    const main = await api(`/actions/workflows/${workflow}/runs?branch=main&per_page=10`);
+    const manual = await api(
+      `/actions/workflows/${workflow}/runs?event=workflow_dispatch&per_page=10`
+    );
+    const runs = new Map(
+      [...main.workflow_runs, ...manual.workflow_runs].map((run) => [run.id, run])
+    );
     let receipt;
-    for (const run of runs) {
+    for (const run of runs.values()) {
       if (String(run.id) === process.env.GITHUB_RUN_ID) continue;
       if (!['push', 'workflow_dispatch'].includes(run.event)) continue;
       const { jobs, total_count: total } = await api(`/actions/runs/${run.id}/jobs?per_page=100`);
