@@ -47,7 +47,7 @@ The required `build-test` aggregate always reports. Production, mixed and unknow
 
 The shared change-impact workflow reads the complete PR merge-base diff or push before/after diff, treating renames as deletions/additions so both paths are checked. Root manifests, lockfiles, Prisma, shared packages, build configuration and all unclassified paths keep full checks and bot/web deployment handling.
 
-PR classification uses the base version of the allowlist, so changing the classifier cannot narrow its own checks.
+PR classification executes the base version of the classifier script and its allowlist. Changing that script cannot narrow its own checks. Workflow definitions and the aggregate gate still come from the PR head, so edits to those controls require review.
 
 Proven local-only changes skip both production deployments only when the diff from the last successful deployment job also contains no production changes. Failed or skipped deployments are not release receipts. Missing, old, manual-ref or unreadable receipts require deployment. The workflow checks ten recent runs; it does not query live cloud state, and out-of-band operator changes still need explicit recovery. This preserves recovery when a production push failed before the local push; manual recovery dispatch retains full deployment handling and the web approval gate is unchanged. Superseded PR CI/IaC runs are canceled; main and production deployment runs are not canceled by this policy.
 
@@ -136,3 +136,9 @@ Before merging, ensure:
 
 - Prefer squash merges.
 - After merge: delete the branch and remove the local worktree.
+
+An intentionally skipped local commit has no production image tag. The running release SHA
+continues to identify the image actually deployed, rather than the latest main commit. Local
+files may still be copied into that image; local classification describes runtime behavior,
+not identical image bytes. Docker smoke remains required, and manual recovery builds the
+requested ref when its image does not already exist.

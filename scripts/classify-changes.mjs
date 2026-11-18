@@ -85,8 +85,9 @@ export async function deploymentRequired(event, target, api, cwd = process.cwd()
     }
     // Manual recovery can deploy a ref different from the workflow's head SHA.
     if (receipt?.run.event === 'push') {
-      return classifyChanges(readChanges({ before: receipt.run.head_sha, after: event.after }, cwd))
-        .bot;
+      return classifyChanges(
+        readChanges({ before: receipt.run.head_sha, after: event.after }, cwd)
+      )[target];
     }
   } catch (error) {
     console.warn(`Deployment receipt unavailable: ${error.message}`);

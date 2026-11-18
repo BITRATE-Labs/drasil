@@ -95,12 +95,12 @@ test('workflow job conditions agree with the aggregate skip contract for every p
     results.impact.outputs.profile = profile;
     for (const job of jobs) {
       const block = workflow
-        .split(/(?=^  [a-z][\w-]*:)/m)
+        .split(/(?=^ {2}[a-z][\w-]*:)/m)
         .find((entry) => entry.startsWith(`  ${job}:\n`));
       assert.ok(block, `${job} must exist in the workflow`);
-      const condition = block.match(/^    if: needs\.impact\.outputs\.profile (==|!=) '([^']+)'$/m);
+      const condition = block.match(/^ {4}if: needs\.impact\.outputs\.profile (==|!=) '([^']+)'$/m);
       assert.equal(
-        block.includes('    if:'),
+        /^ {4}if:/m.test(block),
         Boolean(condition),
         `${job} needs an understood condition`
       );
