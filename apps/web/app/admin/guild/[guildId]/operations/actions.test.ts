@@ -43,8 +43,11 @@ test.each(confirmed)(
     const form = new FormData();
     form.set('execute', 'true');
     form.set('roleId', 'role');
+    form.set('auditRequestId', 'audit');
+    form.set('auditRevision', 'revision');
+    form.set('selectedFixIds', 'fix');
     await expect(queueModerationQueueOperationAction('guild', kind, form)).rejects.toThrow(
-      'Confirm'
+      /confirm/i
     );
     expect(m.queue).not.toHaveBeenCalled();
     form.set(flag, 'on');
@@ -61,10 +64,14 @@ test.each(confirmed)(
     );
   }
 );
-test('locks apply unsync to the submitted checkbox and uses the authenticated actor', async () => {
+test('binds selected references and uses the authenticated actor', async () => {
   const form = new FormData();
   form.set('confirmApplyLockdown', 'on');
   form.set('actorId', 'forged');
+  form.set('auditRequestId', 'audit');
+  form.set('auditRevision', 'revision');
+  form.set('selectedFixIds', 'fix');
+  form.set('effects', 'forged');
   await queueModerationQueueOperationAction('guild', 'apply_case_role_lockdown', form);
   expect(m.queue).toHaveBeenCalledWith({
     context: expect.objectContaining({
@@ -72,7 +79,12 @@ test('locks apply unsync to the submitted checkbox and uses the authenticated ac
       source: 'web',
       actor: { kind: 'user', userId: 'admin' },
     }),
-    command: { kind: 'apply_case_role_lockdown', unsyncAllowedChannels: false },
+    command: {
+      kind: 'apply_case_role_lockdown',
+      auditRequestId: 'audit',
+      auditRevision: 'revision',
+      selectedFixIds: ['fix'],
+    },
   });
 });
 test('role preview needs no execution confirmation and keeps reason and bounded selection', async () => {
@@ -108,5 +120,15 @@ test('missing authenticated session cannot admit operations', async () => {
   await expect(
     queueModerationQueueOperationAction('guild', 'sync_moderation_queue')
   ).rejects.toThrow('redirect:');
+  expect(m.queue).not.toHaveBeenCalled();
+});
+
+test('old coarse confirmation cannot queue a permission write', async () => {
+  const form = new FormData();
+  form.set('confirmApplyLockdown', 'on');
+  form.set('unsyncAllowedChannels', 'on');
+  await expect(
+    queueModerationQueueOperationAction('guild', 'apply_case_role_lockdown', form)
+  ).rejects.toThrow('plan_required');
   expect(m.queue).not.toHaveBeenCalled();
 });

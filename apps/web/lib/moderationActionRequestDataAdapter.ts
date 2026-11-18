@@ -1,4 +1,11 @@
 import {
+  restrictionAuditSchema,
+  restrictionApplyResultSchema,
+  projectRestrictionAudit,
+  type PublicRestrictionAudit,
+  type RestrictionApplyResult,
+} from '@drasil/application';
+import {
   captchaIssuanceConfigurationSchema,
   type CaptchaIssuanceConfiguration,
 } from '@drasil/application';
@@ -30,6 +37,8 @@ export function parseObservedBanResult(value: unknown): ObservedBanResult | null
   return null;
 }
 export interface ModerationActionRequestSummary {
+  readonly restrictionAudit?: PublicRestrictionAudit;
+  readonly restrictionApply?: RestrictionApplyResult;
   readonly guildId?: string;
   readonly observedBanResult?: ObservedBanResult | null;
   readonly accountQuarantinePreview?: AccountQuarantinePreviewSummary | null;
@@ -299,6 +308,9 @@ function formatCloseResolvedThreadsResult(result: OperationResultRecord) {
 }
 
 function formatCaseRoleLockdownAuditResult(result: OperationResultRecord) {
+  const audit = restrictionAuditSchema.safeParse(result.restriction_audit);
+  if (audit.success)
+    return `Restriction audit ${audit.data.setup.status}; ${audit.data.fixes.filter((f) => f.selectable).length} selectable repairs. Review coverage before applying.`;
   const errors = readNumber(result.error_count) ?? 0;
   const warnings = readNumber(result.warning_count) ?? 0;
   const plannedWrites = readNumber(result.planned_writes) ?? 0;
@@ -306,6 +318,9 @@ function formatCaseRoleLockdownAuditResult(result: OperationResultRecord) {
 }
 
 function formatCaseRoleLockdownApplyResult(result: OperationResultRecord) {
+  const applied = restrictionApplyResultSchema.safeParse(result.restriction_apply);
+  if (applied.success)
+    return `Restriction repairs ${applied.data.stopReason}; permission assessment ${applied.data.verification.setup.status}.`;
   const appliedWrites = readNumber(result.applied_writes) ?? 0;
   const plannedWrites = readNumber(result.planned_writes) ?? 0;
   const errors = readNumber(result.error_count) ?? 0;
@@ -487,6 +502,25 @@ export function parseModerationActionRequestRow(
         }
       : null);
   return {
+    ...(restrictionAuditSchema.safeParse(
+      (row.result as OperationResultRecord | null)?.restriction_audit
+    ).success
+      ? {
+          restrictionAudit: projectRestrictionAudit(
+            row.id,
+            restrictionAuditSchema.parse((row.result as OperationResultRecord).restriction_audit)
+          ),
+        }
+      : {}),
+    ...(restrictionApplyResultSchema.safeParse(
+      (row.result as OperationResultRecord | null)?.restriction_apply
+    ).success
+      ? {
+          restrictionApply: restrictionApplyResultSchema.parse(
+            (row.result as OperationResultRecord).restriction_apply
+          ),
+        }
+      : {}),
     ...(configuration.success ? { captchaConfiguration: configuration.data } : {}),
     ...(accountQuarantinePreview ? { accountQuarantinePreview } : {}),
     ...(setupInput ? { setupInput } : {}),

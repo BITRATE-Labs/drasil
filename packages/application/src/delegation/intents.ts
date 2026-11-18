@@ -97,7 +97,7 @@ export function encodeIntentDelivery(intent: IntentRecord): IntentDelivery {
     return { kind: 'report_case_terminal' };
   }
   if (intent.authorizedDelivery.kind === 'direct') return { kind: 'direct' };
-  return encodeQueuedAction(
+  const delivery = encodeQueuedAction(
     {
       guildId: intent.guildId,
       requestId: intent.confirmationId,
@@ -106,6 +106,23 @@ export function encodeIntentDelivery(intent: IntentRecord): IntentDelivery {
     },
     intent.authorizedDelivery.command
   );
+  if (intent.preconditions.kind === 'restriction_plan') {
+    if (
+      intent.command.kind !== 'apply_case_role_lockdown' ||
+      intent.preconditions.plan.actorId !== intent.userId ||
+      intent.preconditions.plan.guildId !== intent.guildId
+    )
+      throw new IntentError('binding_mismatch');
+    return {
+      ...delivery,
+      metadata: {
+        ...delivery.metadata,
+        restriction_schema_version: 1,
+        restriction_plan: intent.preconditions.plan,
+      },
+    };
+  }
+  return delivery;
 }
 
 function boundPreviewExpiry(command: HumanCommand, precondition: IntentPreconditions): Date | null {
@@ -170,7 +187,13 @@ export function createIntentService(deps: {
       invocation.idempotencyKey.length > 128
     )
       throw new IntentError('invalid_invocation');
-    return { ...invocation, input: workflow.inputSchema.parse(invocation.input) };
+    const parsed = workflow.inputSchema.safeParse(invocation.input);
+    if (!parsed.success && invocation.workflowId === 'apply_case_role_lockdown')
+      throw new IntentError('plan_required');
+    return {
+      ...invocation,
+      input: parsed.success ? parsed.data : workflow.inputSchema.parse(invocation.input),
+    };
   }
   async function resolve(
     principal: DelegatedPrincipal,
@@ -222,7 +245,11 @@ export function createIntentService(deps: {
     }
     if (
       workflow.confirmationRule === 'exact_settings_diff' &&
-      resolution.preconditions.kind !== 'setup'
+      resolution.preconditions.kind !== 'setup' &&
+      !(
+        command.kind === 'apply_case_role_lockdown' &&
+        resolution.preconditions.kind === 'restriction_plan'
+      )
     )
       throw new IntentError('setup_state_required');
     if (

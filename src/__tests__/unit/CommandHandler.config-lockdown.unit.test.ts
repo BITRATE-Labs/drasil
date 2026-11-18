@@ -136,7 +136,7 @@ describe('CommandHandler lockdown config commands (unit)', () => {
     });
   });
 
-  it('passes confirmed unsync option and lists lockdown errors before warnings', async () => {
+  it('old slash apply requires a reviewed plan and cannot write', async () => {
     const lockdownService = {
       auditGuild: jest.fn(),
       applyGuild: jest.fn().mockResolvedValue({
@@ -198,15 +198,9 @@ describe('CommandHandler lockdown config commands (unit)', () => {
 
     await handler.handleSlashCommand(interaction);
 
-    expect(lockdownService.applyGuild).toHaveBeenCalledWith(
-      expect.objectContaining({ id: guild.id }),
-      'admin-1',
-      {
-        unsyncAllowedChannels: true,
-      }
-    );
+    expect(lockdownService.applyGuild).not.toHaveBeenCalled();
     const content = interaction.editReply.mock.calls[0][0].content as string;
-    expect(content).toContain('Unsynced allowed channels: `1`');
-    expect(content.indexOf('[ERROR]')).toBeLessThan(content.indexOf('[WARNING]'));
+    expect(content).toContain('plan_required');
+    expect(content).toContain('/operations/restrictions');
   });
 });

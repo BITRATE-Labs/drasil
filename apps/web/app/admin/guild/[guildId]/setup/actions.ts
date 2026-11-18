@@ -404,10 +404,6 @@ export async function saveGuildSetup(guildId: string, formData: FormData): Promi
       formData,
       'caseRoleLockdownAllowedChannelIds'
     ),
-    caseRoleLockdownAllowedCategoryIds: readFormStringArray(
-      formData,
-      'caseRoleLockdownAllowedCategoryIds'
-    ),
     verificationAnalysisEnabled: formData.get('verificationAnalysisEnabled') === 'on',
     verificationAnalysisMessageLimit: readOptionalIntegerFormValue(
       formData,

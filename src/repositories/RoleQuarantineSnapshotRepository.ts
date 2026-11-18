@@ -1,3 +1,7 @@
+import { restrictionSnapshotRoleBlock } from '@drasil/application';
+import { restrictionActiveFenceSql } from '@drasil/application/postgres';
+import { getManualIntakeSettings } from '../utils/manualIntakeSettings';
+import { getRoleGateSettings } from '../utils/roleGateSettings';
 import { inject, injectable } from 'inversify';
 import {
   case_containment_status,
@@ -10,6 +14,7 @@ import {
 import { TYPES } from '../di/symbols';
 import { RepositoryError } from './BaseRepository';
 import {
+  ServerSettings,
   RoleQuarantineSnapshot,
   RoleQuarantineSnapshotCreate,
   RoleQuarantineSnapshotStatus,
@@ -18,7 +23,42 @@ import {
   VerificationStatus,
 } from './types';
 
+/** Unsettled ownership can still finish removing a role after case resolution. */
+export function unsettledRestrictionRoleIds(snapshot: RoleQuarantineSnapshot): string[] {
+  const metadata = snapshot.metadata as Prisma.JsonObject | null;
+  const owners = metadata?.restriction_role_owners as Prisma.JsonObject | undefined;
+  return snapshot.planned_role_ids.filter((id) => {
+    const owner = owners?.[id] as Prisma.JsonObject | undefined;
+    return (
+      snapshot.original_role_ids.includes(id) &&
+      !!owner &&
+      (owner.state === 'started' || owner.state === 'unknown')
+    );
+  });
+}
+
+export interface RestrictionRepairAppend {
+  caseId: string;
+  caseRevision: number;
+  requestId: string;
+  attemptToken: string;
+  userId: string;
+  roleIds: readonly string[];
+}
+export interface RestrictionRepairOutcome {
+  snapshotId: string;
+  requestId: string;
+  attemptToken: string;
+  roleId: string;
+  state: 'applied' | 'failed' | 'unknown';
+}
 export interface IRoleQuarantineSnapshotRepository {
+  appendRestrictionRepairRoles(
+    input: RestrictionRepairAppend
+  ): Promise<RoleQuarantineSnapshot | null>;
+  recordRestrictionRepairOutcome(
+    input: RestrictionRepairOutcome
+  ): Promise<RoleQuarantineSnapshot | null>;
   create(data: RoleQuarantineSnapshotCreate): Promise<RoleQuarantineSnapshot>;
   createForQuarantineAttempt(
     data: RoleQuarantineSnapshotCreate,
@@ -42,6 +82,131 @@ export interface IRoleQuarantineSnapshotRepository {
 @injectable()
 export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshotRepository {
   public constructor(@inject(TYPES.PrismaClient) private readonly prisma: PrismaClient) {}
+
+  public async appendRestrictionRepairRoles(
+    input: RestrictionRepairAppend
+  ): Promise<RoleQuarantineSnapshot | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const requests = await tx.$queryRawUnsafe<Array<{ server_id: string }>>(
+        `select q.server_id from moderation_action_requests q where q.id=$1::uuid and q.action_type='apply_case_role_lockdown' and ${restrictionActiveFenceSql} for update of q`,
+        input.requestId,
+        input.attemptToken
+      );
+      const request = requests.at(0);
+      if (!request) return null;
+      const cases = await tx.$queryRaw<
+        Array<{ id: string }>
+      >`select id from verification_events where id=${input.caseId}::uuid and server_id=${request.server_id} and user_id=${input.userId} and status='pending' and case_revision=${input.caseRevision} and quarantine_attempt_id is null for update`;
+      if (!cases.length) return null;
+      const departed = await tx.moderation_outcomes.findFirst({
+        where: { verification_event_id: input.caseId, outcome_type: 'member_left' },
+      });
+      if (departed) return null;
+      const competing = await tx.role_quarantine_snapshots.findFirst({
+        where: {
+          server_id: request.server_id,
+          user_id: input.userId,
+          status: 'active',
+          OR: [{ verification_event_id: { not: input.caseId } }, { verification_event_id: null }],
+        },
+        select: { id: true },
+      });
+      if (competing) return null;
+      const snapshots = await tx.$queryRaw<
+        RoleQuarantineSnapshot[]
+      >`select * from role_quarantine_snapshots where verification_event_id=${input.caseId}::uuid order by created_at desc for update`;
+      let snapshot = snapshots.at(0);
+      if (snapshot && snapshot.status !== 'active') return null;
+      const server = await tx.servers.findUnique({ where: { guild_id: request.server_id } });
+      const settings = (server?.settings ?? {}) as ServerSettings;
+      const intake = getManualIntakeSettings(settings),
+        gate = getRoleGateSettings(settings);
+      if (
+        input.roleIds.some(
+          (id) =>
+            (intake.enabled && id === intake.roleId) || (gate.enabled && id === gate.honeypotRoleId)
+        )
+      )
+        return null;
+      const metadata = (snapshot?.metadata ?? {}) as Prisma.JsonObject;
+      const owners = (metadata.restriction_role_owners ?? {}) as Prisma.JsonObject;
+      if (input.roleIds.some((id) => restrictionSnapshotRoleBlock(snapshot ?? null, id, input)))
+        return null;
+      const nextOwners = { ...owners };
+      for (const id of input.roleIds)
+        nextOwners[id] = owners[id] ?? {
+          requestId: input.requestId,
+          attemptToken: input.attemptToken,
+          state: 'started',
+        };
+      const union = (prior: string[] = []): string[] => [...new Set([...prior, ...input.roleIds])];
+      const data = {
+        original_role_ids: union(snapshot?.original_role_ids),
+        planned_role_ids: union(snapshot?.planned_role_ids),
+        metadata: { ...metadata, restriction_role_owners: nextOwners },
+        updated_at: new Date(),
+      };
+      if (snapshot)
+        return (await tx.role_quarantine_snapshots.update({
+          where: { id: snapshot.id },
+          data,
+        })) as RoleQuarantineSnapshot;
+      snapshot = (await tx.role_quarantine_snapshots.create({
+        data: {
+          ...data,
+          server_id: request.server_id,
+          user_id: input.userId,
+          verification_event_id: input.caseId,
+        },
+      })) as RoleQuarantineSnapshot;
+      return snapshot;
+    });
+  }
+
+  public async recordRestrictionRepairOutcome(
+    input: RestrictionRepairOutcome
+  ): Promise<RoleQuarantineSnapshot | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const requests = await tx.$queryRawUnsafe<Array<{ server_id: string }>>(
+        `select q.server_id from moderation_action_requests q where q.id=$1::uuid and ${restrictionActiveFenceSql} for update of q`,
+        input.requestId,
+        input.attemptToken
+      );
+      if (!requests.length) return null;
+      const rows = await tx.$queryRaw<
+        RoleQuarantineSnapshot[]
+      >`select * from role_quarantine_snapshots where id=${input.snapshotId}::uuid and server_id=${requests[0].server_id} for update`;
+      const snapshot = rows.at(0);
+      if (!snapshot) return null;
+      const metadata = (snapshot.metadata ?? {}) as Prisma.JsonObject;
+      const owners = (metadata.restriction_role_owners ?? {}) as Prisma.JsonObject;
+      const owner = owners[input.roleId] as Prisma.JsonObject | undefined;
+      if (
+        !owner ||
+        owner.requestId !== input.requestId ||
+        owner.attemptToken !== input.attemptToken ||
+        (owner.state !== 'started' && owner.state !== input.state)
+      )
+        return null;
+      return (await tx.role_quarantine_snapshots.update({
+        where: { id: snapshot.id },
+        data: {
+          removed_role_ids:
+            input.state === 'applied'
+              ? [...new Set([...snapshot.removed_role_ids, input.roleId])]
+              : snapshot.removed_role_ids,
+          metadata: {
+            ...metadata,
+            restriction_role_owners: {
+              ...owners,
+              [input.roleId]: { ...owner, state: input.state },
+            },
+          },
+          updated_at: new Date(),
+        },
+      })) as RoleQuarantineSnapshot;
+    });
+  }
 
   public async create(data: RoleQuarantineSnapshotCreate): Promise<RoleQuarantineSnapshot> {
     try {
@@ -118,10 +283,9 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
     data: RoleQuarantineSnapshotUpdate
   ): Promise<RoleQuarantineSnapshot | null> {
     try {
-      const updated = await this.prisma.role_quarantine_snapshots.update({
-        where: { id },
-        data: this.toUpdateData(data),
-      });
+      const updated = await this.prisma.$transaction((transaction) =>
+        this.updatePreservingRepairOwnership(transaction, id, data)
+      );
 
       return updated as RoleQuarantineSnapshot;
     } catch (error) {
@@ -143,10 +307,7 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
         if (!(await this.renewQuarantineAttempt(transaction, verificationEventId, attemptId))) {
           return null;
         }
-        const updated = await transaction.role_quarantine_snapshots.update({
-          where: { id },
-          data: this.toUpdateData(data),
-        });
+        const updated = await this.updatePreservingRepairOwnership(transaction, id, data);
         return updated as RoleQuarantineSnapshot;
       })) as RoleQuarantineSnapshot | null;
     } catch (error) {
@@ -155,6 +316,51 @@ export class RoleQuarantineSnapshotRepository implements IRoleQuarantineSnapshot
       }
       this.handleError(error, 'updateRoleQuarantineSnapshotForAttempt');
     }
+  }
+
+  private async updatePreservingRepairOwnership(
+    transaction: Prisma.TransactionClient,
+    id: string,
+    data: RoleQuarantineSnapshotUpdate
+  ): Promise<RoleQuarantineSnapshot | null> {
+    const rows = await transaction.$queryRaw<
+      RoleQuarantineSnapshot[]
+    >`select * from role_quarantine_snapshots where id=${id}::uuid for update`;
+    const current = rows.at(0);
+    if (!current) return null;
+    const update = this.toUpdateData(data);
+    const restorationWorksetChanged =
+      data.expectedRestorationRoleIds !== undefined &&
+      JSON.stringify(
+        [
+          ...new Set(
+            current.removed_role_ids.filter((id) => current.original_role_ids.includes(id))
+          ),
+        ].sort()
+      ) !== JSON.stringify([...data.expectedRestorationRoleIds].sort());
+    if (
+      current.status === RoleQuarantineSnapshotStatus.ACTIVE &&
+      data.status === RoleQuarantineSnapshotStatus.RESTORED &&
+      (unsettledRestrictionRoleIds(current).length || restorationWorksetChanged)
+    ) {
+      update.status = RoleQuarantineSnapshotStatus.ACTIVE;
+      update.restored_at = undefined;
+      update.restored_by = undefined;
+    }
+    if (data.metadata !== undefined) {
+      const incoming = data.metadata;
+      const currentMetadata = (current.metadata ?? {}) as Prisma.JsonObject;
+      const metadata: Prisma.JsonObject =
+        incoming && typeof incoming === 'object' && !Array.isArray(incoming) ? { ...incoming } : {};
+      delete metadata.restriction_role_owners;
+      if (currentMetadata.restriction_role_owners !== undefined)
+        metadata.restriction_role_owners = currentMetadata.restriction_role_owners;
+      update.metadata = metadata as Prisma.InputJsonValue;
+    }
+    return (await transaction.role_quarantine_snapshots.update({
+      where: { id },
+      data: update,
+    })) as RoleQuarantineSnapshot;
   }
 
   private async renewQuarantineAttempt(

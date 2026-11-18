@@ -1,0 +1,232 @@
+.layout {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 28px;
+  gap: 16px;
+  border-bottom: 1px solid var(--dr-line);
+}
+.main {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 32px 28px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.main h1 {
+  font-size: 30px;
+  line-height: 1.25;
+  margin: 8px 0;
+  letter-spacing: -0.04em;
+}
+.main h2 {
+  font-size: 15px;
+}
+.eyebrow {
+  color: var(--dr-muted);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.muted {
+  color: var(--dr-muted);
+  font-size: 12px;
+}
+.steps {
+  display: flex;
+  gap: 24px;
+  list-style: none;
+  padding: 0;
+  margin: 25px 0 !important;
+  color: var(--dr-muted);
+  font-size: 12px;
+}
+.steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.steps span {
+  border: 1px solid var(--dr-line);
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  text-align: center;
+}
+.steps [aria-current] {
+  color: var(--dr-positive);
+}
+.policy {
+  color: var(--dr-muted);
+  margin-bottom: 18px !important;
+  font-size: 12px;
+}
+.surface {
+  border: 1px solid var(--dr-line);
+  border-radius: 10px;
+  background: var(--dr-surface);
+  overflow: hidden;
+}
+.listHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--dr-line);
+}
+.bulk {
+  display: flex;
+  gap: 14px;
+}
+.bulk button {
+  background: none;
+  border: 0;
+  padding: 6px 0;
+  color: var(--dr-muted);
+  font-size: 12px;
+}
+.row {
+  border-bottom: 1px solid var(--dr-line);
+  padding: 18px 20px 14px;
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.row[data-selected='true'] {
+  background: color-mix(in srgb, var(--dr-positive) 7%, var(--dr-surface));
+}
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+}
+.choice input,
+.consent input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--dr-positive);
+  flex-shrink: 0;
+}
+.choice strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.choice small {
+  display: block;
+  color: var(--dr-muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.row details {
+  margin: 10px 0 0 30px;
+  font-size: 12px;
+}
+.row summary {
+  color: var(--dr-positive);
+  cursor: pointer;
+}
+.row details p {
+  margin-top: 10px;
+}
+.attention {
+  border-top: 1px solid var(--dr-line);
+  padding: 16px 0;
+  margin-top: 20px;
+  color: var(--dr-muted);
+  font-size: 12px;
+}
+.attention summary {
+  cursor: pointer;
+}
+.attention ul,
+.results {
+  padding-left: 20px;
+}
+.attention li {
+  margin-top: 10px;
+}
+.reviewList {
+  padding: 0 24px 0 42px;
+}
+.reviewList li {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--dr-line);
+}
+.reviewList li:last-child {
+  border: 0;
+}
+.reviewList p,
+.reviewList small {
+  color: var(--dr-muted);
+  font-size: 12px;
+  margin-top: 6px;
+}
+.consent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 20px;
+  border-top: 1px solid var(--dr-line);
+  font-size: 12px;
+}
+.footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px max(28px, calc((100% - 744px) / 2));
+  border-top: 1px solid var(--dr-line);
+  background: var(--dr-canvas);
+  font-size: 12px;
+  z-index: 2;
+}
+.empty {
+  padding: 20px;
+}
+.auditActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+  font-size: 12px;
+}
+@media (max-width: 540px) {
+  .header {
+    flex-shrink: 0;
+    padding: 12px 20px;
+    font-size: 12px;
+  }
+  .main {
+    padding: 26px 20px;
+  }
+  .steps {
+    gap: 12px;
+    font-size: 11px;
+  }
+  .listHead {
+    padding: 14px;
+    flex-wrap: wrap;
+  }
+  .row {
+    padding: 16px 14px;
+  }
+  .footer {
+    padding: 14px 20px;
+  }
+  .footer button {
+    padding: 10px;
+  }
+}

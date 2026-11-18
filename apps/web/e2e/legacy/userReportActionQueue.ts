@@ -41,6 +41,7 @@ export async function submitReportRequest(input: {
   if (result.kind === 'outcome') return result.outcome.status;
   const errors = {
     actor_unavailable: 'This report destination is not available to the signed-in Discord account.',
+    plan_required: 'Run a fresh restriction audit and review selected repairs.',
     permission_denied: 'You cannot report yourself.',
     reason_required: 'This server requires a report reason.',
     stale_state: 'This report intake is no longer available.',

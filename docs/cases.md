@@ -79,3 +79,11 @@ table should be considered only if Drasil needs richer case types that do not
 map to a user/server verification lifecycle, such as cross-server intelligence
 cases, multi-user incidents, evidence-only investigations, or global review
 workflows.
+
+## Restriction assessment and repair
+
+The restriction wizard reports server setup and each current case independently. The intended default is access to the member's own private case thread only. Administrators may explicitly configure read-only exception channels. Discord permissions and thread behavior can prevent complete isolation; the audit reports those limits instead of certifying message content.
+
+An existing case keeps its persisted case-role identity when the server's configured role changes. Approved current-case repairs bind the case revision and member join identity, preserve protected roles, and append removal evidence to the existing role snapshot before removing roles. Normal resolution uses that durable snapshot and existing restoration safeguards. Unknown in-flight removals remain unresolved until observed or handled manually.
+
+General setup diagnostics do not prevent configured automatic case or kick attempts. The wizard does not replay historical cases. See [restriction permissions](moderation-permissions.md#restriction-audit-and-selected-repairs) and the [controlled acceptance checklist](test-cases.md#restriction-wizard-controlled-acceptance).

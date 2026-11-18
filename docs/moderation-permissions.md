@@ -46,3 +46,11 @@ These guild settings control whether the reason field is optional or required:
 - For selected-message case opens, Drasil keeps the latest
   `source_channel_id`/`source_message_id` fields for existing renderers and also
   appends unique entries to `source_messages` for later evidence rendering.
+
+## Restriction audit and selected repairs
+
+Administrators and the server owner can use `/admin/guild/[guildId]/operations/restrictions`. The read-only audit assesses prospective setup and actual pending cases separately. Discord and MCP use the same durable audit, selected plan, receipts and status. Legacy apply calls without a selected plan cannot write.
+
+Choose fixes, review their access effects, then approve explicitly. Select all includes optional hardening and current-member repairs, but grants no approval. Selection changes clear approval. Reviews expire ten minutes after the original audit observation. Apply rechecks authority, member identity and relevant permissions/settings. Changed or expired evidence requires fresh admission.
+
+Drasil preserves protected staff roles. Member-specific overwrite corrections and recovery-thread migrations remain manual. Drasil does not elevate its own permissions. A batch stops on its first failure, lost precondition or uncertain outcome, without automatic retry or rollback. Read-back verification is separate from request completion. `verified` describes checked permissions and membership, never unread recovery-parent content. Missing evidence remains `unverified`; demonstrated access failures remain `incomplete`.

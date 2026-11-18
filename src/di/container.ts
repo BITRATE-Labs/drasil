@@ -1,4 +1,9 @@
 import {
+  IRestrictionAuditService,
+  RestrictionAuditService,
+} from '../services/RestrictionAuditService';
+import { DiscordRestrictionAuditReadPort } from '../services/DiscordRestrictionAuditReadPort';
+import {
   IReportIntakePresentationService,
   ReportIntakePresentationService,
 } from '../services/ReportIntakePresentationService';
@@ -325,9 +330,10 @@ function configureServices(container: Container): void {
         caseThreadClosureSweepService: context.get<ICaseThreadClosureSweepService>(
           TYPES.CaseThreadClosureSweepService
         ),
-        caseRoleLockdownService: context.get<ICaseRoleLockdownService>(
-          TYPES.CaseRoleLockdownService
+        restrictionAuditService: context.get<IRestrictionAuditService>(
+          TYPES.RestrictionAuditService
         ),
+        roleQuarantineService: context.get<IRoleQuarantineService>(TYPES.RoleQuarantineService),
         integrityAuditService: context.get<IIntegrityAuditService>(TYPES.IntegrityAuditService),
         messageDeletionJobs: context.get<IMessageDeletionJobRepository>(
           TYPES.MessageDeletionJobRepository
@@ -428,6 +434,20 @@ function configureServices(container: Container): void {
   container
     .bind<ISetupDiagnosticsService>(TYPES.SetupDiagnosticsService)
     .to(SetupDiagnosticsService)
+    .inSingletonScope();
+
+  container
+    .bind<IRestrictionAuditService>(TYPES.RestrictionAuditService)
+    .toDynamicValue(
+      (context) =>
+        new RestrictionAuditService(
+          new DiscordRestrictionAuditReadPort(
+            context.get<Client>(TYPES.DiscordClient),
+            context.get<IConfigService>(TYPES.ConfigService),
+            context.get<PrismaClient>(TYPES.PrismaClient)
+          )
+        )
+    )
     .inSingletonScope();
 
   container

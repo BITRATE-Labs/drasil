@@ -383,14 +383,9 @@ export class AccountQuarantineService implements IAccountQuarantineService {
     report: CaseRoleLockdownReport,
     memberAudit: CaseRoleLockdownMemberAudit
   ): boolean {
-    const blockingWarning = report.issues.some(
-      (issue) => issue.code === 'lockdown-case-role-global-permissions'
-    );
     return (
-      report.enabled &&
-      report.errorCount === 0 &&
-      report.plannedActions.length === 0 &&
-      !blockingWarning &&
+      report.assessment?.status === 'verified' &&
+      memberAudit.assessment?.status === 'verified' &&
       memberAudit.bypasses.length === 0 &&
       memberAudit.retainedPrivilegedRoleIds.length === 0 &&
       memberAudit.retainedAdministratorRoleIds.length === 0 &&

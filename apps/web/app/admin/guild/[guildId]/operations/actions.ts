@@ -81,16 +81,25 @@ function readOperationCommand(
         userId: null,
       };
     }
-    case 'apply_case_role_lockdown':
+    case 'apply_case_role_lockdown': {
+      if (
+        !readTrimmedString(formData, 'auditRequestId') ||
+        !readTrimmedString(formData, 'auditRevision') ||
+        !formData?.getAll('selectedFixIds').length
+      )
+        throw new Error('plan_required: Run a fresh audit and review selected repairs.');
       assertChecked(
         formData,
         'confirmApplyLockdown',
-        'Confirm case-role lockdown apply before queueing it.'
+        'Review and confirm the selected repair effects.'
       );
-      return {
+      return queuedOperationCommandSchema.parse({
         kind: action,
-        unsyncAllowedChannels: formData?.get('unsyncAllowedChannels') === 'on',
-      };
+        auditRequestId: readTrimmedString(formData, 'auditRequestId'),
+        auditRevision: readTrimmedString(formData, 'auditRevision'),
+        selectedFixIds: formData.getAll('selectedFixIds'),
+      }) as Extract<QueuedOperationCommand, { kind: 'apply_case_role_lockdown' }>;
+    }
     case 'intake_role_members': {
       const roleId = readTrimmedString(formData, 'roleId');
       if (!roleId) throw new Error('Choose a role before queueing role intake.');

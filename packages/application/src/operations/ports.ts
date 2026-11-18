@@ -2,7 +2,6 @@ import type { AuthorityPort } from '../authorization';
 import type { ConfirmationPort } from '../confirmation';
 import type { OperationCommand } from './commands';
 import type {
-  CaseRoleLockdownReport,
   CaseThreadClosureSweepReport,
   IntegrityAuditReport,
   RoleIntakeResult,
@@ -22,12 +21,13 @@ export interface OperationsDependencies {
     ): Promise<CaseThreadClosureSweepReport>;
   };
   readonly lockdown: {
-    audit(guildId: string): Promise<CaseRoleLockdownReport>;
-    apply(input: {
-      readonly guildId: string;
-      readonly actorId: string;
-      readonly unsyncAllowedChannels: boolean;
-    }): Promise<CaseRoleLockdownReport>;
+    audit(
+      context: import('../context').ActionContext
+    ): Promise<import('./restrictionTypes').RestrictionAudit>;
+    apply(
+      context: import('../context').ActionContext,
+      selection: import('./restrictionTypes').RestrictionSelection
+    ): Promise<import('./restrictionTypes').RestrictionApplyResult>;
   };
   readonly integrity: {
     audit(
