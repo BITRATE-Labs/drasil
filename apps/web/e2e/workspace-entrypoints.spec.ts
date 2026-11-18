@@ -1,11 +1,8 @@
 import { createHash } from 'node:crypto';
 import { inspectEntryPresentation } from './entrypointPresentation';
-import { expect, test, type Page } from '@playwright/test';
-import { workspaceIds as id, workspaceFixtures } from './workspaceFixtures';
-const fixtures = workspaceFixtures();
-test.beforeAll(() => fixtures.start());
-test.afterAll(() => fixtures.stop());
-test.beforeEach(async ({ context, baseURL }) => fixtures.reset(context, baseURL!));
+import type { Page } from '@playwright/test';
+import { expect, test, fixtures } from './workspaceTest';
+import { workspaceIds as id } from './workspaceFixtures';
 
 async function chrome(page: Page) {
   await expect(page.getByRole('main')).toHaveCount(1);

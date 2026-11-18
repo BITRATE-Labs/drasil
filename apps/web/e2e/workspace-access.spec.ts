@@ -1,11 +1,7 @@
-import { expect, test } from '@playwright/test';
-import { workspaceIds as id, workspaceFixtures } from './workspaceFixtures';
-const fixtures = workspaceFixtures();
+import { expect, test, fixtures } from './workspaceTest';
+import { workspaceIds as id } from './workspaceFixtures';
 const inbox = `/admin/guild/${id.guild}/inbox`;
 const detailUrl = `/api/admin/guild/${id.guild}/inbox/case:${id.case}`;
-test.beforeAll(() => fixtures.start());
-test.afterAll(() => fixtures.stop());
-test.beforeEach(async ({ context, baseURL }) => fixtures.reset(context, baseURL!));
 
 test('selected pages and detail work without OAuth guild enumeration', async ({
   page,

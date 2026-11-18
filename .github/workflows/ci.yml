@@ -110,8 +110,11 @@ jobs:
         with:
           path: .cache/jest
           key: ${{ runner.os }}-node24-jest-${{ matrix.lane }}-${{ hashFiles('package.json', 'package-lock.json', 'jest.config.js', 'babel.config.js', 'tsconfig*.json') }}
-      - name: Build application and bot once
-        run: npm run application:build && npm --ignore-scripts run build
+      - name: Build application once
+        run: npm run application:build
+      - name: Build bot for native and worker acceptance
+        if: matrix.lane != 'workspace'
+        run: npm --ignore-scripts run build
       - name: Serial database acceptance
         if: matrix.lane != 'workspace'
         run: npm --ignore-scripts run ci:${{ matrix.lane }}:prepared

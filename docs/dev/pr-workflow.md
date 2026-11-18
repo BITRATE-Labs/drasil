@@ -52,6 +52,9 @@ matrix runners:
 - **Native integration** runs bot integration, web integration and RLS.
 - **Workspace** runs production build/packaging/graph checks, all workspace browsers and RLS.
   Two Playwright shards each get their own runner, database and one worker.
+  A shared worker-scoped provider fixture lets Playwright balance individual tests across shards;
+  database reset still runs before every test. Workspace runners build the application and web,
+  while native/MCP runners retain the bot build required by compiled worker acceptance.
   Standalone/local workspace acceptance remains unsharded.
 - **MCP** runs all MCP browser acceptance and RLS.
 - **Browser smoke** runs persisted web coverage against its own disposable database, then the nine
