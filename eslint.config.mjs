@@ -10,6 +10,8 @@ const configs = [
   {
     ignores: [
       '.superpowers/sdd/**',
+      '.debug/**',
+      '.cache/**',
       'coverage/**',
       'dist/**',
       'build/**',
