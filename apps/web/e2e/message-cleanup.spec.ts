@@ -1,9 +1,5 @@
-import { expect, test } from '@playwright/test';
-import { workspaceIds as id, workspaceFixtures } from './workspaceFixtures';
-const fixtures = workspaceFixtures();
-test.beforeAll(() => fixtures.start());
-test.afterAll(() => fixtures.stop());
-test.beforeEach(async ({ context, baseURL }) => fixtures.reset(context, baseURL!));
+import { expect, test, fixtures } from './workspaceTest';
+import { workspaceIds as id } from './workspaceFixtures';
 
 for (const scope of ['source_message', 'last_hour', 'last_day', 'last_7_days'])
   test(`cleanup ${scope} preview confirms scope, member and reason before persistence`, async ({

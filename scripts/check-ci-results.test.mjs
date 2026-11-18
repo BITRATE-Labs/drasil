@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { assertCiResults } from './check-ci-results.mjs';
 
-const jobs = ['static-unit', 'database-acceptance', 'isolated-browsers', 'package-smoke'];
+const jobs = ['static-unit', 'database-acceptance', 'browser-smoke', 'package-smoke'];
 const successful = () => Object.fromEntries(jobs.map((job) => [job, { result: 'success' }]));
 
 test('accepts success from every required execution job', () => {

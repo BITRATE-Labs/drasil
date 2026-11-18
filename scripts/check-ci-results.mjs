@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
 export function assertCiResults(results) {
-  for (const job of ['static-unit', 'database-acceptance', 'isolated-browsers', 'package-smoke']) {
+  for (const job of ['static-unit', 'database-acceptance', 'browser-smoke', 'package-smoke']) {
     assert.equal(results?.[job]?.result, 'success', `${job} must succeed`);
   }
   for (const [job, value] of Object.entries(results)) {
