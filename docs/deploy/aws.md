@@ -112,8 +112,9 @@ terraform apply
 ```
 
 For GitHub-hosted operation, use the manual `Deploy Domain DNS (prod)` workflow. It is
-`workflow_dispatch` only. Its approval job uses the main-only `Deploy - DNS prod` environment and
-requires a reviewer before Terraform runs. The Terraform job uses `Deploy - web-prod` for the
+`workflow_dispatch` only. Launch it from `main`. The `Deploy - DNS prod` environment checks the
+dispatch branch and requires a reviewer before Terraform runs. The approval job shows the requested
+mode and `ref` input, which controls the Terraform checkout. The Terraform job uses `Deploy - web-prod` for the
 existing AWS OIDC trust and imports the hosted zone into the remote domain state if it is missing.
 DNS changes happen only when an operator runs the workflow in `apply` mode.
 
