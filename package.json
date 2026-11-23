@@ -162,6 +162,9 @@
     "@opentelemetry/sdk-trace-base": "2.8.0",
     "@opentelemetry/sdk-trace-node": "2.8.0",
     "js-yaml": "4.3.2",
-    "undici": "6.29.1"
+    "undici": "6.29.1",
+    "@prisma/config": {
+      "effect": "3.22.1"
+    }
   }
 }
