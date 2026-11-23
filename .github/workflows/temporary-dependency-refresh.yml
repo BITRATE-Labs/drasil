@@ -2,7 +2,7 @@ name: Temporary dependency refresh
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize]
 
 permissions: {}
 
@@ -37,6 +37,7 @@ jobs:
             const audit = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'dependency-' + kind + '-audit.json'), 'utf8'));
             if (!audit.metadata?.vulnerabilities) throw new Error('Audit did not return vulnerability metadata: ' + kind);
             console.log('DRASIL_AUDIT_' + kind.toUpperCase() + ' ' + JSON.stringify(audit.metadata.vulnerabilities));
+            if (kind === 'runtime') for (const [name, entry] of Object.entries(audit.vulnerabilities || {})) console.log('DRASIL_VULNERABILITY ' + JSON.stringify({ name, ...entry }));
           }
           let changes = 0;
           for (const [entry, value] of Object.entries(after.packages)) {
