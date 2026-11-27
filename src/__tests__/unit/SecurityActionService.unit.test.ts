@@ -3580,9 +3580,9 @@ describe('SecurityActionService (unit)', () => {
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])(
-    'preserves a local report and posts the case bundle only for new evidence threads (existing=%s)',
-    async (hasEvidenceThread) => {
+  it.each(['new', 'existing', 'failed retry'] as const)(
+    'preserves a local report without duplicating case evidence or failure (%s)',
+    async (scenario) => {
       const guildId = 'guild-active-message-report';
       const userId = 'user-active-message-report';
       await serverRepository.getOrCreateServer(guildId);
@@ -3596,10 +3596,20 @@ describe('SecurityActionService (unit)', () => {
         detected_at: new Date(),
       });
       const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
-      if (hasEvidenceThread) {
+      const priorFailure = {
+        action: 'private_evidence_thread',
+        message: 'thread_creation_failed',
+        at: '2026-11-11T00:00:00Z',
+      };
+      if (scenario === 'existing') {
         await verificationEventRepository.update(activeCase.id, {
           private_evidence_thread_id: 'evidence-1',
         });
+      } else if (scenario === 'failed retry') {
+        await verificationEventRepository.patchMetadata(activeCase.id, {
+          action_failures: [priorFailure],
+        });
+        threadManager.createPrivateEvidenceThread.mockResolvedValueOnce(null);
       }
       const client = {
         guilds: {
@@ -3630,10 +3640,13 @@ describe('SecurityActionService (unit)', () => {
         report
       );
       const metadata = (await verificationEventRepository.findById(activeCase.id))?.metadata;
-      if (hasEvidenceThread) {
-        expect(metadata ?? {}).not.toHaveProperty('evidence_bundle');
-      } else {
+      if (scenario === 'new') {
         expect(metadata).toMatchObject({ evidence_bundle: { posted_at: expect.any(String) } });
+      } else {
+        expect(metadata ?? {}).not.toHaveProperty('evidence_bundle');
+      }
+      if (scenario === 'failed retry') {
+        expect(metadata).toMatchObject({ action_failures: [priorFailure] });
       }
     }
   );

@@ -1088,6 +1088,9 @@ export class SecurityActionService implements ISecurityActionService {
     reportedMessage?: MessageReportContext
   ): Promise<VerificationEvent> {
     const existingThreadId = verificationEvent.private_evidence_thread_id;
+    const hadEvidenceThreadFailure = getVerificationActionFailures(verificationEvent.metadata).some(
+      (failure) => failure.action === 'private_evidence_thread'
+    );
     try {
       const thread = await this.threadManager.createPrivateEvidenceThread(
         member,
@@ -1107,15 +1110,13 @@ export class SecurityActionService implements ISecurityActionService {
         verificationEvent,
         detectionResult
       );
-      const hadEvidenceThreadFailure = getVerificationActionFailures(withEvidence.metadata).some(
-        (failure) => failure.action === 'private_evidence_thread'
-      );
       return hadEvidenceThreadFailure
         ? await this.clearResolvedVerificationActionFailures(withEvidence, [
             'private_evidence_thread',
           ])
         : withEvidence;
     } catch (error) {
+      if (reportedMessage && hadEvidenceThreadFailure) return verificationEvent;
       return this.recordVerificationActionFailure(
         verificationEvent,
         'private_evidence_thread',

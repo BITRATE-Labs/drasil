@@ -1,11 +1,17 @@
 import { MessageScamShadow } from '../../services/MessageScamShadow';
 import type { UserProfileData } from '../../services/GPTService';
-import { recordObservation } from '../../observability/langfuse';
+import { recordObservation, withObservation } from '../../observability/langfuse';
 
 jest.mock('../../observability/langfuse', () => ({
-  withObservation: (_name: string, _kind: string, operation: () => Promise<unknown>) => operation(),
+  withObservation: jest.fn((_name: string, _kind: string, operation: () => Promise<unknown>) =>
+    operation()
+  ),
   recordObservation: jest.fn(),
 }));
+
+beforeEach(() => {
+  jest.mocked(withObservation).mockImplementation(async (_name, _kind, operation) => operation());
+});
 
 const profile: UserProfileData = {
   username: 'excluded-name',
@@ -94,8 +100,18 @@ it('distinguishes provider HTTP and response validation failures', async () => {
     .mockResolvedValueOnce(new Response(null, { status: 403 }))
     .mockResolvedValueOnce(new Response('{}'));
   try {
-    new MessageScamShadow().observe('guild', 'first', 'current message', profile);
+    const recentMessages = [...profile.recentMessages];
+    jest
+      .mocked(withObservation)
+      .mockImplementationOnce(async (_name, _kind, operation) => Promise.resolve().then(operation));
+    new MessageScamShadow().observe('guild', 'first', 'current message', {
+      ...profile,
+      recentMessages,
+    });
+    recentMessages.push('late mutation');
     await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(fetchSpy.mock.calls[0][1]?.body).not.toContain('late mutation');
+    expect(fetchSpy.mock.calls[1][1]?.body).not.toContain('late mutation');
     expect(recordObservation).toHaveBeenCalledWith('span', {
       metadata: expect.objectContaining({
         outcome: 'compared',

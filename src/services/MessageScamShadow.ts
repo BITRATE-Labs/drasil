@@ -54,6 +54,9 @@ export class MessageScamShadow {
     if (!this.enabled || guildId !== this.guildId || !content.trim()) return;
 
     const messageHash = hashIdentifier(messageId);
+    const history = profile.recentMessages.slice(-5);
+    const accountCreatedAt = profile.accountCreatedAt.getTime();
+    const joinedServerAt = profile.joinedServerAt.getTime();
     void withObservation('message-scam-shadow', 'span', async () => {
       const hour = Math.floor(Date.now() / HOUR_MS);
       if (hour !== this.hour) {
@@ -77,11 +80,9 @@ export class MessageScamShadow {
         recordObservation('span', { metadata: { cost_source: 'unknown' } });
         const input = JSON.stringify({
           current_message: content.slice(0, MESSAGE_LIMIT),
-          sender_context: profile.recentMessages
-            .slice(-5)
-            .map((message) => message.slice(0, MESSAGE_LIMIT)),
-          account_age_days: Math.floor((Date.now() - profile.accountCreatedAt.getTime()) / DAY_MS),
-          server_member_days: Math.floor((Date.now() - profile.joinedServerAt.getTime()) / DAY_MS),
+          sender_context: history.map((message) => message.slice(0, MESSAGE_LIMIT)),
+          account_age_days: Math.floor((Date.now() - accountCreatedAt) / DAY_MS),
+          server_member_days: Math.floor((Date.now() - joinedServerAt) / DAY_MS),
         });
         const signal = AbortSignal.timeout(DEADLINE_MS);
         const [jev, luna] = await Promise.all([

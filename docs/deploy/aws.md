@@ -255,7 +255,9 @@ It will:
 ### Message scam comparison pilot
 
 Leave the pilot disabled until the selected server permits sending eligible
-message text and recent sender messages to both providers. Set
+message text and recent sender messages to both providers. The pilot samples
+all eligible messages, including messages that production heuristics would
+clear without a provider call. Set
 `DRASIL_MESSAGE_SCAM_SHADOW_GUILD_ID` and
 `DRASIL_MESSAGE_SCAM_SHADOW_HOURLY_LIMIT` on one bot process with both provider
 keys. The cap counts message pairs per process per UTC hour, so each additional
