@@ -124,9 +124,7 @@ export async function postReportedMessageEvidence(
     const reportedImageCount = attachments.filter((attachment) =>
       attachment.contentType?.toLowerCase().startsWith('image/')
     ).length;
-    if (reportedImageCount > 0) {
-      lines.push(`Reported images copied: ${files.length} of ${reportedImageCount}.`);
-    }
+    const textFiles: typeof files = [];
     const otherAttachmentCount = attachments.length - reportedImageCount;
     if (otherAttachmentCount > 0) {
       lines.push(`Other reported files: ${otherAttachmentCount}.`);
@@ -136,23 +134,36 @@ export async function postReportedMessageEvidence(
       if (content.length <= 1600 && !content.includes('```')) {
         lines.push('```\n' + content + '\n```');
       } else {
-        files.push({
+        textFiles.push({
           attachment: Buffer.from(content),
           name: toSpoilerFilename('reported-message.txt'),
         });
       }
     }
-    await thread.send({
-      content: lines.join('\n'),
-      files,
-      flags: MessageFlags.SuppressEmbeds,
-      allowedMentions: { parse: [], repliedUser: false },
-      nonce: createHash('sha256')
-        .update(`${thread.id}:${report.messageId}`)
-        .digest('hex')
-        .slice(0, 24),
-      enforceNonce: true,
-    });
+    const nonce = createHash('sha256')
+      .update(`${thread.id}:${report.messageId}`)
+      .digest('hex')
+      .slice(0, 24);
+    const sendEvidence = (images: typeof files): ReturnType<ThreadChannel['send']> =>
+      thread.send({
+        content: [
+          ...lines,
+          ...(reportedImageCount
+            ? [`Reported images copied: ${images.length} of ${reportedImageCount}.`]
+            : []),
+        ].join('\n'),
+        files: [...images, ...textFiles],
+        flags: MessageFlags.SuppressEmbeds,
+        allowedMentions: { parse: [], repliedUser: false },
+        nonce,
+        enforceNonce: true,
+      });
+    try {
+      await sendEvidence(files);
+    } catch (error) {
+      if (files.length === 0) throw error;
+      await sendEvidence([]);
+    }
   } catch (error) {
     console.warn('Could not copy reported message into admin evidence:', error);
   }

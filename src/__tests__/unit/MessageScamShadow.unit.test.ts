@@ -61,10 +61,10 @@ it('starts both providers on identical evidence and caps the opted-in guild', as
     );
     const jev = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
     const luna = JSON.parse(String(fetchSpy.mock.calls[1][1]?.body));
-    expect(jev.state).toBe(luna.input);
-    expect(jev.state).toContain('current message');
-    expect(jev.state).not.toContain('excluded');
-    expect(JSON.parse(jev.state).sender_context).toEqual(profile.recentMessages.slice(1));
+    expect(luna.input).toBe(JSON.stringify(jev.state));
+    expect(luna.input).toContain('current message');
+    expect(luna.input).not.toContain('excluded');
+    expect(jev.state.sender_context).toEqual(profile.recentMessages.slice(1));
     expect(fetchSpy.mock.calls[0][1]?.signal).toBe(fetchSpy.mock.calls[1][1]?.signal);
     release();
     await new Promise<void>((resolve) => setImmediate(resolve));

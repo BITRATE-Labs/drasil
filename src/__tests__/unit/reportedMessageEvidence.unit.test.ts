@@ -34,9 +34,10 @@ it('posts the captured report text without fetching the deleted source message',
   expect(send.mock.calls[0][0].content).not.toContain(report.reason);
 });
 
-it.each([true, false])(
-  'copies a deleted Discord image only with current source access (%s)',
-  async (canRead) => {
+it.each(['copied', 'source denied', 'upload failed'] as const)(
+  'preserves evidence when a source image is deleted (%s)',
+  async (scenario) => {
+    const canRead = scenario !== 'source denied';
     const { thread, send } = destination();
     const url = 'https://cdn.discordapp.com/attachments/456/345/proof.png';
     const sourceMessage = jest
@@ -59,9 +60,10 @@ it.each([true, false])(
     } as unknown as GuildMember;
     const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('image'));
     try {
+      if (scenario === 'upload failed') send.mockRejectedValueOnce(new Error('Upload failed'));
       await postReportedMessageEvidence(thread, authorizedMember, {
         ...report,
-        content: undefined,
+        content: scenario === 'upload failed' ? report.content : undefined,
         attachments: [
           { id: '345', url, name: 'proof.png', contentType: 'image/png', size: 5 },
           {
@@ -83,6 +85,17 @@ it.each([true, false])(
           expect.objectContaining({
             files: [],
             content: expect.stringContaining('Reported images copied: 0 of 2'),
+          })
+        );
+        return;
+      }
+      if (scenario === 'upload failed') {
+        expect(send).toHaveBeenCalledTimes(2);
+        expect(send).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            files: [],
+            content: expect.stringContaining(report.content),
+            nonce: send.mock.calls[0][0].nonce,
           })
         );
         return;

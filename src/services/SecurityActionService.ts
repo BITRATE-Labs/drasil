@@ -1103,18 +1103,22 @@ export class SecurityActionService implements ISecurityActionService {
       if (!thread) {
         throw new Error(`Failed to create admin evidence thread for ${member.user.tag}`);
       }
-      if (thread.id === existingThreadId) return verificationEvent;
+      if (reportedMessage && thread.id === existingThreadId) return verificationEvent;
       const withEvidence = await this.sendCaseEvidenceBundle(
         thread,
         member,
         verificationEvent,
         detectionResult
       );
-      return hadEvidenceThreadFailure
-        ? await this.clearResolvedVerificationActionFailures(withEvidence, [
-            'private_evidence_thread',
-          ])
-        : withEvidence;
+      if (!hadEvidenceThreadFailure) return withEvidence;
+      const actionFailures = getVerificationActionFailures(withEvidence.metadata).filter(
+        (failure) => failure.action !== 'private_evidence_thread'
+      );
+      return (
+        (await this.verificationEventRepository.patchMetadata(withEvidence.id, {
+          action_failures: actionFailures,
+        })) ?? withEvidence
+      );
     } catch (error) {
       if (reportedMessage && hadEvidenceThreadFailure) return verificationEvent;
       return this.recordVerificationActionFailure(

@@ -262,7 +262,9 @@ clear without a provider call. Set
 `DRASIL_MESSAGE_SCAM_SHADOW_HOURLY_LIMIT` on one bot process with both provider
 keys. The cap counts message pairs per process per UTC hour, so each additional
 process multiplies the cap. Shadow verdicts are used only for telemetry. Unset
-the guild ID to disable the pilot.
+the guild ID and restart the bot to disable the pilot. This pilot applies to
+eligible channels across the selected server. Use a dedicated test server if
+only some channels are approved for provider processing.
 
 Verify the configured account's retention controls before enabling live
 traffic. [OpenAI Decisions data controls](https://developers.openai.com/api/docs/guides/your-data#v1decisions)
