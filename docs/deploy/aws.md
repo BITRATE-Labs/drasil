@@ -262,6 +262,13 @@ keys. The cap counts message pairs per process per UTC hour, so each additional
 process multiplies the cap. Shadow verdicts are used only for telemetry. Unset
 the guild ID to disable the pilot.
 
+Verify the configured account's retention controls before enabling live
+traffic. [OpenAI Decisions data controls](https://developers.openai.com/api/docs/guides/your-data#v1decisions)
+describe no default application-state storage and up to 30 days of standard
+abuse-monitoring retention. Decisions does not accept a per-request
+`store` option. Use the pilot telemetry to verify that both providers return
+verdicts on approved test messages before leaving the pilot enabled.
+
 ## Rollback
 
 Re-run the deploy workflow and set the `ref` input to an older commit SHA. The workflow resolves that commit SHA and reuses the existing immutable ECR tag if it already exists (or builds/pushes it if missing), then updates ECS to a new task definition revision referencing that image.

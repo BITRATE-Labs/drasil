@@ -114,3 +114,18 @@ it('skips cross-guild and publicly visible destinations', async () => {
     warning.mockRestore();
   }
 });
+
+it('fetches an uncached evidence parent before checking its permissions', async () => {
+  const { thread, send } = destination();
+  const fetchChannel = jest.fn().mockResolvedValue(thread.parent);
+  const uncachedThread = { ...thread, parent: null, parentId: '987' } as unknown as ThreadChannel;
+  const reportingMember = {
+    ...member,
+    guild: { ...member.guild, channels: { fetch: fetchChannel } },
+  } as unknown as GuildMember;
+
+  await postReportedMessageEvidence(uncachedThread, reportingMember, report);
+
+  expect(fetchChannel).toHaveBeenCalledWith('987');
+  expect(send).toHaveBeenCalledTimes(1);
+});

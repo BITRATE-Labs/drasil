@@ -3580,48 +3580,63 @@ describe('SecurityActionService (unit)', () => {
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
   });
 
-  it('preserves a local message report and initializes the evidence bundle for an active case', async () => {
-    const guildId = 'guild-active-message-report';
-    const userId = 'user-active-message-report';
-    await serverRepository.getOrCreateServer(guildId);
-    const member = buildMember(guildId, userId);
-    const initialDetection = await detectionEventsRepository.create({
-      server_id: guildId,
-      user_id: userId,
-      detection_type: DetectionType.SUSPICIOUS_CONTENT,
-      confidence: 0.8,
-      reasons: ['Initial detection'],
-      detected_at: new Date(),
-    });
-    const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
-    const client = {
-      guilds: {
-        fetch: jest.fn().mockResolvedValue({
-          members: { fetch: jest.fn().mockResolvedValue(member) },
-        }),
-      },
-    } as unknown as Client;
-    const report = {
-      guildId,
-      channelId: 'channel',
-      messageId: 'message',
-      content: 'Captured text',
-    };
+  it.each([true, false])(
+    'preserves a local report and posts the case bundle only for new evidence threads (existing=%s)',
+    async (hasEvidenceThread) => {
+      const guildId = 'guild-active-message-report';
+      const userId = 'user-active-message-report';
+      await serverRepository.getOrCreateServer(guildId);
+      const member = buildMember(guildId, userId);
+      const initialDetection = await detectionEventsRepository.create({
+        server_id: guildId,
+        user_id: userId,
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.8,
+        reasons: ['Initial detection'],
+        detected_at: new Date(),
+      });
+      const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
+      if (hasEvidenceThread) {
+        await verificationEventRepository.update(activeCase.id, {
+          private_evidence_thread_id: 'evidence-1',
+        });
+      }
+      const client = {
+        guilds: {
+          fetch: jest.fn().mockResolvedValue({
+            members: { fetch: jest.fn().mockResolvedValue(member) },
+          }),
+        },
+      } as unknown as Client;
+      const report = {
+        guildId,
+        channelId: 'channel',
+        messageId: 'message',
+        content: 'Captured text',
+      };
 
-    await buildService(client).handleMessageReport(member.user, { id: 'reporter' } as User, report);
+      await buildService(client).handleMessageReport(
+        member.user,
+        { id: 'reporter' } as User,
+        report
+      );
 
-    expect(threadManager.createPrivateEvidenceThread).toHaveBeenCalledWith(
-      member,
-      expect.objectContaining({ id: activeCase.id }),
-      expect.objectContaining({ triggerSource: DetectionType.USER_REPORT }),
-      expect.objectContaining({ id: expect.any(String) }),
-      undefined,
-      report
-    );
-    expect((await verificationEventRepository.findById(activeCase.id))?.metadata).toMatchObject({
-      evidence_bundle: { posted_at: expect.any(String) },
-    });
-  });
+      expect(threadManager.createPrivateEvidenceThread).toHaveBeenCalledWith(
+        member,
+        expect.objectContaining({ id: activeCase.id }),
+        expect.objectContaining({ triggerSource: DetectionType.USER_REPORT }),
+        expect.objectContaining({ id: expect.any(String) }),
+        undefined,
+        report
+      );
+      const metadata = (await verificationEventRepository.findById(activeCase.id))?.metadata;
+      if (hasEvidenceThread) {
+        expect(metadata ?? {}).not.toHaveProperty('evidence_bundle');
+      } else {
+        expect(metadata).toMatchObject({ evidence_bundle: { posted_at: expect.any(String) } });
+      }
+    }
+  );
 
   it('notifies opted-in servers for external message reports', async () => {
     const member = buildMember('guild-external-1', 'user-6');

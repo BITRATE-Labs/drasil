@@ -60,22 +60,28 @@ export async function postReportedMessageEvidence(
   )
     return;
 
-  const parent = thread.parent;
-  if (
-    !parent ||
-    parent.permissionsFor(member.guild.roles.everyone).has(PermissionFlagsBits.ViewChannel) !==
-      false ||
-    parent.permissionsFor(member).has(PermissionFlagsBits.ViewChannel) !== false
-  ) {
-    console.warn('Reported message evidence requires a staff-only thread.');
-    return;
-  }
-
   const content = report.content;
   const attachments = report.attachments ?? [];
   if (!content?.trim() && attachments.length === 0) return;
 
   try {
+    const parent =
+      thread.parent ??
+      (thread.parentId ? await member.guild.channels.fetch(thread.parentId) : null);
+    const everyonePermissions = parent?.permissionsFor(member.guild.id);
+    const memberPermissions = parent?.permissionsFor(member);
+    if (!everyonePermissions || !memberPermissions) {
+      console.warn('Could not verify reported message evidence destination permissions.');
+      return;
+    }
+    if (
+      everyonePermissions.has(PermissionFlagsBits.ViewChannel) ||
+      memberPermissions.has(PermissionFlagsBits.ViewChannel)
+    ) {
+      console.warn('Reported message evidence requires a staff-only thread.');
+      return;
+    }
+
     const sources = await resolveImageSources(
       member,
       report.channelId,
