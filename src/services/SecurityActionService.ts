@@ -1737,7 +1737,8 @@ export class SecurityActionService implements ISecurityActionService {
     detectionResult: DetectionResult,
     detectionEventId: string,
     sourceMessage?: Message,
-    caseRoutingAttempt = 0
+    caseRoutingAttempt = 0,
+    reportedMessage?: MessageReportContext
   ): Promise<void> {
     return withObservation('apply-outcome', 'tool', async (): Promise<void> => {
       let activeVerificationEvent =
@@ -1759,7 +1760,8 @@ export class SecurityActionService implements ISecurityActionService {
           member,
           detectionResult,
           notificationMessage,
-          sourceMessage
+          sourceMessage,
+          reportedMessage
         );
         await this.runModerationQueueTask(
           `mirror observed alert ${detectionEventId} to the live moderation queue`,
@@ -1791,14 +1793,32 @@ export class SecurityActionService implements ISecurityActionService {
           detectionResult,
           detectionEventId,
           sourceMessage,
-          caseRoutingAttempt + 1
+          caseRoutingAttempt + 1,
+          reportedMessage
         );
         return;
       }
 
-      activeVerificationEvent = (
-        await this.upsertNotification(member, detectionResult, activeVerificationEvent)
-      ).event;
+      const updatedCase = await this.upsertNotification(
+        member,
+        detectionResult,
+        activeVerificationEvent
+      );
+      activeVerificationEvent = updatedCase.event;
+      if (reportedMessage) {
+        await this.threadManager
+          .createPrivateEvidenceThread(
+            member,
+            activeVerificationEvent,
+            detectionResult,
+            updatedCase.message,
+            undefined,
+            reportedMessage
+          )
+          .catch((error) =>
+            console.warn('Could not copy reported message into admin evidence:', error)
+          );
+      }
       await this.runModerationQueueTask(
         `mirror case ${activeVerificationEvent.id} to the live moderation queue`,
         (moderationQueueService) => moderationQueueService.upsertCaseMirror(activeVerificationEvent)
@@ -1899,7 +1919,8 @@ export class SecurityActionService implements ISecurityActionService {
     member: GuildMember,
     detectionResult: DetectionResult,
     notificationMessage: Message,
-    sourceMessage?: Message
+    sourceMessage?: Message,
+    reportedMessage?: MessageReportContext
   ): Promise<void> {
     if (!detectionResult.detectionEventId) {
       return;
@@ -1918,7 +1939,8 @@ export class SecurityActionService implements ISecurityActionService {
         member,
         detectionResult,
         notificationMessage,
-        sourceMessage
+        sourceMessage,
+        ...(reportedMessage ? [reportedMessage] : [])
       );
       if (!thread) {
         return;
@@ -4189,7 +4211,10 @@ export class SecurityActionService implements ISecurityActionService {
           await this.upsertReportObservedAlertOrActiveCase(
             member,
             detectionResult,
-            serverDetectionEvent.id
+            serverDetectionEvent.id,
+            undefined,
+            0,
+            isLocalReport ? report : undefined
           );
           this.captureMemberAnalytics(
             member,

@@ -3565,6 +3565,18 @@ describe('SecurityActionService (unit)', () => {
         triggerContent: 'reported from native context menu',
       })
     );
+    expect(threadManager.createObservedEvidenceThread).toHaveBeenCalledWith(
+      member,
+      expect.objectContaining({ triggerSource: DetectionType.USER_REPORT }),
+      expect.objectContaining({ id: expect.any(String) }),
+      undefined,
+      expect.objectContaining({
+        guildId,
+        channelId: 'channel-local',
+        messageId: 'message-local',
+        content: 'local suspicious message',
+      })
+    );
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
   });
 
