@@ -1084,20 +1084,37 @@ export class SecurityActionService implements ISecurityActionService {
     verificationEvent: VerificationEvent,
     detectionResult: DetectionResult,
     notificationMessage: Message,
-    sourceMessage?: Message
+    sourceMessage?: Message,
+    reportedMessage?: MessageReportContext
   ): Promise<VerificationEvent> {
+    const existingThreadId = verificationEvent.private_evidence_thread_id;
     try {
       const thread = await this.threadManager.createPrivateEvidenceThread(
         member,
         verificationEvent,
         detectionResult,
         notificationMessage,
-        sourceMessage
+        sourceMessage,
+        ...(reportedMessage ? [reportedMessage] : [])
       );
       if (!thread) {
         throw new Error(`Failed to create admin evidence thread for ${member.user.tag}`);
       }
-      return await this.sendCaseEvidenceBundle(thread, member, verificationEvent, detectionResult);
+      if (thread.id === existingThreadId) return verificationEvent;
+      const withEvidence = await this.sendCaseEvidenceBundle(
+        thread,
+        member,
+        verificationEvent,
+        detectionResult
+      );
+      const hadEvidenceThreadFailure = getVerificationActionFailures(withEvidence.metadata).some(
+        (failure) => failure.action === 'private_evidence_thread'
+      );
+      return hadEvidenceThreadFailure
+        ? await this.clearResolvedVerificationActionFailures(withEvidence, [
+            'private_evidence_thread',
+          ])
+        : withEvidence;
     } catch (error) {
       return this.recordVerificationActionFailure(
         verificationEvent,
@@ -1806,18 +1823,14 @@ export class SecurityActionService implements ISecurityActionService {
       );
       activeVerificationEvent = updatedCase.event;
       if (reportedMessage) {
-        await this.threadManager
-          .createPrivateEvidenceThread(
-            member,
-            activeVerificationEvent,
-            detectionResult,
-            updatedCase.message,
-            undefined,
-            reportedMessage
-          )
-          .catch((error) =>
-            console.warn('Could not copy reported message into admin evidence:', error)
-          );
+        activeVerificationEvent = await this.tryCreatePrivateEvidenceThread(
+          member,
+          activeVerificationEvent,
+          detectionResult,
+          updatedCase.message,
+          undefined,
+          reportedMessage
+        );
       }
       await this.runModerationQueueTask(
         `mirror case ${activeVerificationEvent.id} to the live moderation queue`,

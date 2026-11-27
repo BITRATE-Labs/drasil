@@ -11,7 +11,7 @@ const profile: UserProfileData = {
   username: 'excluded-name',
   accountCreatedAt: new Date(0),
   joinedServerAt: new Date(0),
-  recentMessages: ['sender context'],
+  recentMessages: ['old context', 'recent 1', 'recent 2', 'recent 3', 'recent 4', 'recent 5'],
   channelContext: ['excluded bystander'],
 };
 
@@ -52,6 +52,7 @@ it('starts both providers on identical evidence and caps the opted-in guild', as
     expect(jev.state).toBe(luna.input);
     expect(jev.state).toContain('current message');
     expect(jev.state).not.toContain('excluded');
+    expect(JSON.parse(jev.state).sender_context).toEqual(profile.recentMessages.slice(1));
     expect(fetchSpy.mock.calls[0][1]?.signal).toBe(fetchSpy.mock.calls[1][1]?.signal);
     release();
     await new Promise<void>((resolve) => setImmediate(resolve));

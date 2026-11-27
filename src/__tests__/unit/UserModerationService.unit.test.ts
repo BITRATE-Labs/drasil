@@ -2776,7 +2776,9 @@ describe('UserModerationService (unit)', () => {
       confidence: 0.8,
       metadata: { observed_notification_message_id: 'report-message' },
     });
-    notificationManager.markObservedDetectionActionTaken.mockResolvedValueOnce(false);
+    notificationManager.markObservedDetectionActionTaken.mockImplementation(
+      async (detectionId) => detectionId !== f.detection.id
+    );
     await f.run();
     expect(notificationManager.markObservedDetectionActionTaken).toHaveBeenCalledTimes(2);
     expect((await detectionEventsRepository.findById(second.id))?.metadata).toMatchObject({

@@ -19,13 +19,31 @@ const instructions =
 const DEADLINE_MS = 1500;
 const MAX_IN_FLIGHT = 4;
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const MESSAGE_LIMIT = 500;
 
 export class MessageScamShadow {
   private readonly guildId = process.env.DRASIL_MESSAGE_SCAM_SHADOW_GUILD_ID;
   private readonly hourlyLimit = Number(process.env.DRASIL_MESSAGE_SCAM_SHADOW_HOURLY_LIMIT);
+  private readonly jevKey = process.env.TYPESAFE_API_KEY;
+  private readonly lunaKey = process.env.OPENAI_API_KEY;
+  private readonly enabled: boolean;
   private inFlight = 0;
   private attempts = 0;
   private hour = -1;
+
+  public constructor() {
+    this.enabled = Boolean(
+      this.guildId &&
+      this.jevKey &&
+      this.lunaKey &&
+      Number.isSafeInteger(this.hourlyLimit) &&
+      this.hourlyLimit > 0
+    );
+    if (this.guildId && !this.enabled) {
+      console.warn('Message scam shadow requires a positive hourly limit and both provider keys.');
+    }
+  }
 
   public observe(
     guildId: string,
@@ -33,14 +51,7 @@ export class MessageScamShadow {
     content: string,
     profile: UserProfileData
   ): void {
-    if (
-      !this.guildId ||
-      guildId !== this.guildId ||
-      !content.trim() ||
-      !Number.isSafeInteger(this.hourlyLimit) ||
-      this.hourlyLimit < 1
-    )
-      return;
+    if (!this.enabled || guildId !== this.guildId || !content.trim()) return;
 
     const messageHash = hashIdentifier(messageId);
     void withObservation('message-scam-shadow', 'span', async () => {
@@ -64,12 +75,12 @@ export class MessageScamShadow {
       this.inFlight++;
       try {
         const input = JSON.stringify({
-          current_message: content.slice(0, 4000),
+          current_message: content.slice(0, MESSAGE_LIMIT),
           sender_context: profile.recentMessages
-            .slice(0, 5)
-            .map((message) => message.slice(0, 500)),
-          account_created_at: profile.accountCreatedAt,
-          joined_at: profile.joinedServerAt,
+            .slice(-5)
+            .map((message) => message.slice(0, MESSAGE_LIMIT)),
+          account_age_days: Math.floor((Date.now() - profile.accountCreatedAt.getTime()) / DAY_MS),
+          server_member_days: Math.floor((Date.now() - profile.joinedServerAt.getTime()) / DAY_MS),
         });
         const signal = AbortSignal.timeout(DEADLINE_MS);
         const [jev, luna] = await Promise.all([
@@ -79,6 +90,7 @@ export class MessageScamShadow {
         recordObservation('span', {
           metadata: {
             outcome: 'compared',
+            cost_source: 'unknown',
             message_hash: messageHash,
             input_chars: input.length,
             jev_verdict: jev.verdict,
@@ -106,7 +118,7 @@ export class MessageScamShadow {
   }> {
     const started = performance.now();
     const isJev = provider === 'jev';
-    const key = isJev ? process.env.TYPESAFE_API_KEY : process.env.OPENAI_API_KEY;
+    const key = isJev ? this.jevKey : this.lunaKey;
     let verdict: z.infer<typeof VERDICT> | 'unavailable' | 'timeout' = 'unavailable';
     let inputTokens: number | undefined;
     if (key) {

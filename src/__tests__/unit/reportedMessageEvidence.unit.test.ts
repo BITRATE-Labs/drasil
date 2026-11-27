@@ -1,4 +1,4 @@
-import type { GuildMember, ThreadChannel } from 'discord.js';
+import { DiscordAPIError, type GuildMember, type ThreadChannel } from 'discord.js';
 import { postReportedMessageEvidence } from '../../services/reportedMessageEvidence';
 
 const report = {
@@ -34,36 +34,72 @@ it('posts the captured report text without fetching the deleted source message',
   expect(send.mock.calls[0][0].content).not.toContain(report.reason);
 });
 
-it('copies a same-channel Discord image even when the report has no text', async () => {
-  const { thread, send } = destination();
-  const url = 'https://cdn.discordapp.com/attachments/456/345/proof.png';
-  const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('image'));
-  try {
-    await postReportedMessageEvidence(thread, member, {
-      ...report,
-      content: undefined,
-      attachments: [
-        { id: '345', url, name: 'proof.png', contentType: 'image/png', size: 5 },
-        {
-          id: '999',
-          url: 'https://example.com/attachments/456/999/x.png',
-          size: 5,
-          contentType: 'image/png',
+it.each([true, false])(
+  'copies a deleted Discord image only with current source access (%s)',
+  async (canRead) => {
+    const { thread, send } = destination();
+    const url = 'https://cdn.discordapp.com/attachments/456/345/proof.png';
+    const sourceMessage = jest
+      .fn()
+      .mockRejectedValue(
+        new DiscordAPIError({ code: 10008, message: 'Unknown Message' }, 10008, 404, 'GET', url, {})
+      );
+    const authorizedMember = {
+      guild: {
+        ...member.guild,
+        members: { me: {} },
+        channels: {
+          fetch: jest.fn().mockResolvedValue({
+            isTextBased: () => true,
+            messages: { fetch: sourceMessage },
+            permissionsFor: () => ({ has: () => canRead }),
+          }),
         },
-      ],
-    });
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(fetchSpy).toHaveBeenCalledWith(url, expect.objectContaining({ redirect: 'error' }));
-    expect(send).toHaveBeenCalledWith(
-      expect.objectContaining({
-        files: [{ name: 'SPOILER_proof.png', attachment: Buffer.from('image') }],
-        content: expect.stringContaining('Attachments preserved: 1 of 2'),
-      })
-    );
-  } finally {
-    fetchSpy.mockRestore();
+      },
+    } as unknown as GuildMember;
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('image'));
+    try {
+      await postReportedMessageEvidence(thread, authorizedMember, {
+        ...report,
+        content: undefined,
+        attachments: [
+          { id: '345', url, name: 'proof.png', contentType: 'image/png', size: 5 },
+          {
+            id: '999',
+            url: 'https://example.com/attachments/456/999/x.png',
+            size: 5,
+            contentType: 'image/png',
+          },
+        ],
+      });
+      expect(sourceMessage).toHaveBeenCalledWith({
+        message: report.messageId,
+        force: true,
+        cache: false,
+      });
+      if (!canRead) {
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            files: [],
+            content: expect.stringContaining('Attachments preserved: 0 of 2'),
+          })
+        );
+        return;
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledWith(url, expect.objectContaining({ redirect: 'error' }));
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          files: [{ name: 'SPOILER_proof.png', attachment: Buffer.from('image') }],
+          content: expect.stringContaining('Attachments preserved: 1 of 2'),
+        })
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
   }
-});
+);
 
 it('skips cross-guild and publicly visible destinations', async () => {
   const privateThread = destination();

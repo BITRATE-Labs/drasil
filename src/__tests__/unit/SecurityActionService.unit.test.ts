@@ -3580,6 +3580,49 @@ describe('SecurityActionService (unit)', () => {
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
   });
 
+  it('preserves a local message report and initializes the evidence bundle for an active case', async () => {
+    const guildId = 'guild-active-message-report';
+    const userId = 'user-active-message-report';
+    await serverRepository.getOrCreateServer(guildId);
+    const member = buildMember(guildId, userId);
+    const initialDetection = await detectionEventsRepository.create({
+      server_id: guildId,
+      user_id: userId,
+      detection_type: DetectionType.SUSPICIOUS_CONTENT,
+      confidence: 0.8,
+      reasons: ['Initial detection'],
+      detected_at: new Date(),
+    });
+    const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
+    const client = {
+      guilds: {
+        fetch: jest.fn().mockResolvedValue({
+          members: { fetch: jest.fn().mockResolvedValue(member) },
+        }),
+      },
+    } as unknown as Client;
+    const report = {
+      guildId,
+      channelId: 'channel',
+      messageId: 'message',
+      content: 'Captured text',
+    };
+
+    await buildService(client).handleMessageReport(member.user, { id: 'reporter' } as User, report);
+
+    expect(threadManager.createPrivateEvidenceThread).toHaveBeenCalledWith(
+      member,
+      expect.objectContaining({ id: activeCase.id }),
+      expect.objectContaining({ triggerSource: DetectionType.USER_REPORT }),
+      expect.objectContaining({ id: expect.any(String) }),
+      undefined,
+      report
+    );
+    expect((await verificationEventRepository.findById(activeCase.id))?.metadata).toMatchObject({
+      evidence_bundle: { posted_at: expect.any(String) },
+    });
+  });
+
   it('notifies opted-in servers for external message reports', async () => {
     const member = buildMember('guild-external-1', 'user-6');
     await serverRepository.upsertByGuildId('guild-external-1', {
@@ -3615,6 +3658,12 @@ describe('SecurityActionService (unit)', () => {
         triggerSource: DetectionType.USER_REPORT,
         triggerContent: 'external suspicious DM',
       })
+    );
+    expect(threadManager.createObservedEvidenceThread).toHaveBeenCalledWith(
+      member,
+      expect.objectContaining({ triggerSource: DetectionType.USER_REPORT }),
+      expect.objectContaining({ id: expect.any(String) }),
+      undefined
     );
     expect(threadManager.createVerificationThread).not.toHaveBeenCalled();
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();

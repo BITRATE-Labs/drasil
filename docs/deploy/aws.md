@@ -252,6 +252,16 @@ It will:
   - activate at least `Project` and `Environment` as cost allocation tags
   - allow up to 24 hours for billing views to reflect newly activated tags
 
+### Message scam comparison pilot
+
+Leave the pilot disabled until the selected server permits sending eligible
+message text and recent sender messages to both providers. Set
+`DRASIL_MESSAGE_SCAM_SHADOW_GUILD_ID` and
+`DRASIL_MESSAGE_SCAM_SHADOW_HOURLY_LIMIT` on one bot process with both provider
+keys. The cap counts message pairs per process per UTC hour, so each additional
+process multiplies the cap. Shadow verdicts are used only for telemetry. Unset
+the guild ID to disable the pilot.
+
 ## Rollback
 
 Re-run the deploy workflow and set the `ref` input to an older commit SHA. The workflow resolves that commit SHA and reuses the existing immutable ECR tag if it already exists (or builds/pushes it if missing), then updates ECS to a new task definition revision referencing that image.

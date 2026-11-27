@@ -1,11 +1,50 @@
 import { createHash } from 'node:crypto';
-import { GuildMember, MessageFlags, PermissionFlagsBits, ThreadChannel } from 'discord.js';
-import { buildSpoilerImageAttachmentFiles, toSpoilerFilename } from '../utils/reportAttachments';
+import {
+  DiscordAPIError,
+  GuildMember,
+  MessageFlags,
+  PermissionFlagsBits,
+  RESTJSONErrorCodes,
+  ThreadChannel,
+} from 'discord.js';
+import {
+  buildSpoilerImageAttachmentFiles,
+  messageAttachmentsToReportMetadata,
+  toSpoilerFilename,
+} from '../utils/reportAttachments';
 import { isCurrentReportImageSource } from '../utils/reportAiSettings';
-import type { MessageReportContext } from './SecurityActionService';
+import type { MessageReportAttachment, MessageReportContext } from './SecurityActionService';
 
 const MAX_COPIED_IMAGES = 4;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+async function resolveImageSources(
+  member: GuildMember,
+  channelId: string,
+  messageId: string,
+  captured: readonly MessageReportAttachment[]
+): Promise<readonly MessageReportAttachment[]> {
+  if (captured.length === 0) return [];
+  const channel = await member.guild.channels.fetch(channelId, { force: true }).catch(() => null);
+  if (!channel?.isTextBased()) return [];
+  try {
+    const message = await channel.messages.fetch({ message: messageId, force: true, cache: false });
+    const capturedIds = new Set(captured.map((attachment) => attachment.id));
+    return messageAttachmentsToReportMetadata(message).filter(
+      (attachment) => attachment.id && capturedIds.has(attachment.id)
+    );
+  } catch (error) {
+    // An explicit source deletion can race evidence capture. Require a current bot
+    // permission check before using the report's original signed attachment URL.
+    const bot = member.guild.members.me;
+    const permissions = bot && channel.permissionsFor(bot);
+    return error instanceof DiscordAPIError &&
+      error.code === RESTJSONErrorCodes.UnknownMessage &&
+      permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
+      ? captured
+      : [];
+  }
+}
 
 export async function postReportedMessageEvidence(
   thread: ThreadChannel,
@@ -37,7 +76,13 @@ export async function postReportedMessageEvidence(
   if (!content?.trim() && attachments.length === 0) return;
 
   try {
-    const images = attachments
+    const sources = await resolveImageSources(
+      member,
+      report.channelId,
+      report.messageId,
+      attachments
+    );
+    const images = sources
       .flatMap((item) => {
         const { url, id, contentType, size } = item;
         if (
