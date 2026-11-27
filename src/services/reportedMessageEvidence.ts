@@ -12,6 +12,7 @@ import {
   messageAttachmentsToReportMetadata,
   toSpoilerFilename,
 } from '../utils/reportAttachments';
+import { recordObservation } from '../observability/langfuse';
 import { isCurrentReportImageSource } from '../utils/reportAiSettings';
 import type { MessageReportAttachment, MessageReportContext } from './SecurityActionService';
 
@@ -71,6 +72,7 @@ export async function postReportedMessageEvidence(
     const everyonePermissions = parent?.permissionsFor(member.guild.id);
     const memberPermissions = parent?.permissionsFor(member);
     if (!everyonePermissions || !memberPermissions) {
+      recordObservation('tool', { metadata: { report_evidence_delivery: 'unknown_permissions' } });
       console.warn('Could not verify reported message evidence destination permissions.');
       return;
     }
@@ -78,6 +80,7 @@ export async function postReportedMessageEvidence(
       everyonePermissions.has(PermissionFlagsBits.ViewChannel) ||
       memberPermissions.has(PermissionFlagsBits.ViewChannel)
     ) {
+      recordObservation('tool', { metadata: { report_evidence_delivery: 'unsafe_destination' } });
       console.warn('Reported message evidence requires a staff-only thread.');
       return;
     }
@@ -118,7 +121,7 @@ export async function postReportedMessageEvidence(
       logger: console,
     });
     const lines = [
-      '**Reported message Â· captured at report time**',
+      '**Reported message (captured at report time)**',
       `Source: <https://discord.com/channels/${report.guildId}/${report.channelId}/${report.messageId}>`,
     ];
     const reportedImageCount = attachments.filter((attachment) =>
@@ -164,7 +167,8 @@ export async function postReportedMessageEvidence(
       if (files.length === 0) throw error;
       await sendEvidence([]);
     }
-  } catch (error) {
-    console.warn('Could not copy reported message into admin evidence:', error);
+  } catch {
+    recordObservation('tool', { metadata: { report_evidence_delivery: 'copy_failed' } });
+    console.warn('Could not copy reported message into admin evidence.');
   }
 }

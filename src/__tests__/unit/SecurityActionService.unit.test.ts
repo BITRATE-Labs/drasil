@@ -3580,7 +3580,7 @@ describe('SecurityActionService (unit)', () => {
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
   });
 
-  it.each(['new', 'existing', 'failed retry'] as const)(
+  it.each(['new', 'existing', 'failed retry', 'first failure'] as const)(
     'preserves a local report without duplicating case evidence or failure (%s)',
     async (scenario) => {
       const guildId = 'guild-active-message-report';
@@ -3609,6 +3609,8 @@ describe('SecurityActionService (unit)', () => {
         await verificationEventRepository.patchMetadata(activeCase.id, {
           action_failures: [priorFailure],
         });
+      }
+      if (scenario === 'failed retry' || scenario === 'first failure') {
         threadManager.createPrivateEvidenceThread.mockResolvedValueOnce(null);
       }
       const client = {
@@ -3647,6 +3649,9 @@ describe('SecurityActionService (unit)', () => {
       }
       if (scenario === 'failed retry') {
         expect(metadata).toMatchObject({ action_failures: [priorFailure] });
+      }
+      if (scenario === 'first failure') {
+        expect(metadata ?? {}).not.toHaveProperty('action_failures');
       }
     }
   );

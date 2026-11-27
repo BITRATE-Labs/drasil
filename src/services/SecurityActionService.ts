@@ -1110,17 +1110,27 @@ export class SecurityActionService implements ISecurityActionService {
         verificationEvent,
         detectionResult
       );
-      if (!hadEvidenceThreadFailure) return withEvidence;
+      if (!reportedMessage || !hadEvidenceThreadFailure) return withEvidence;
       const actionFailures = getVerificationActionFailures(withEvidence.metadata).filter(
         (failure) => failure.action !== 'private_evidence_thread'
       );
       return (
-        (await this.verificationEventRepository.patchMetadata(withEvidence.id, {
-          action_failures: actionFailures,
-        })) ?? withEvidence
+        (await this.verificationEventRepository.patchMetadata(
+          withEvidence.id,
+          { action_failures: actionFailures },
+          { expectedRepairState: withEvidence.metadata }
+        )) ??
+        (await this.verificationEventRepository.findById(withEvidence.id)) ??
+        withEvidence
       );
     } catch (error) {
-      if (reportedMessage && hadEvidenceThreadFailure) return verificationEvent;
+      if (reportedMessage) {
+        recordObservation('tool', {
+          metadata: { report_evidence_delivery: 'thread_setup_failed' },
+        });
+        console.warn('Could not set up the admin evidence thread for a report.');
+        return verificationEvent;
+      }
       return this.recordVerificationActionFailure(
         verificationEvent,
         'private_evidence_thread',
