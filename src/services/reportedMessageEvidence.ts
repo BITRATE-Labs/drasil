@@ -107,17 +107,23 @@ export async function postReportedMessageEvidence(
       remainingBytes -= size;
       return true;
     });
-    const signal = AbortSignal.timeout(2500);
     const files = await buildSpoilerImageAttachmentFiles(boundedImages, {
-      fetchImage: (url) => fetch(url, { redirect: 'error', signal }),
+      fetchImage: (url) => fetch(url, { redirect: 'error', signal: AbortSignal.timeout(2500) }),
       logger: console,
     });
     const lines = [
       '**Reported message Â· captured at report time**',
       `Source: <https://discord.com/channels/${report.guildId}/${report.channelId}/${report.messageId}>`,
     ];
-    if (attachments.length > files.length) {
-      lines.push(`Attachments preserved: ${files.length} of ${attachments.length}.`);
+    const reportedImageCount = attachments.filter((attachment) =>
+      attachment.contentType?.toLowerCase().startsWith('image/')
+    ).length;
+    if (reportedImageCount > 0) {
+      lines.push(`Reported images copied: ${files.length} of ${reportedImageCount}.`);
+    }
+    const otherAttachmentCount = attachments.length - reportedImageCount;
+    if (otherAttachmentCount > 0) {
+      lines.push(`Other reported files: ${otherAttachmentCount}.`);
     }
     if (content?.trim()) {
       // Attach long or code-fenced messages to keep their original text intact.

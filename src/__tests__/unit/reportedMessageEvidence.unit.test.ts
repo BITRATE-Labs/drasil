@@ -82,7 +82,7 @@ it.each([true, false])(
         expect(send).toHaveBeenCalledWith(
           expect.objectContaining({
             files: [],
-            content: expect.stringContaining('Attachments preserved: 0 of 2'),
+            content: expect.stringContaining('Reported images copied: 0 of 2'),
           })
         );
         return;
@@ -92,7 +92,7 @@ it.each([true, false])(
       expect(send).toHaveBeenCalledWith(
         expect.objectContaining({
           files: [{ name: 'SPOILER_proof.png', attachment: Buffer.from('image') }],
-          content: expect.stringContaining('Attachments preserved: 1 of 2'),
+          content: expect.stringContaining('Reported images copied: 1 of 2'),
         })
       );
     } finally {

@@ -47,6 +47,12 @@ it('starts both providers on identical evidence and caps the opted-in guild', as
     shadow.observe('guild', 'first', 'current message', profile);
     shadow.observe('guild', 'second', 'over the cap', profile);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(recordObservation).toHaveBeenCalledWith('span', {
+      metadata: { cost_source: 'unknown' },
+    });
+    expect(jest.mocked(recordObservation).mock.invocationCallOrder[0]).toBeLessThan(
+      fetchSpy.mock.invocationCallOrder[0]
+    );
     const jev = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
     const luna = JSON.parse(String(fetchSpy.mock.calls[1][1]?.body));
     expect(jev.state).toBe(luna.input);
@@ -71,5 +77,38 @@ it('starts both providers on identical evidence and caps the opted-in guild', as
   } finally {
     process.env = priorEnv;
     fetchSpy.mockRestore();
+  }
+});
+
+it('distinguishes provider HTTP and response validation failures', async () => {
+  const priorEnv = process.env;
+  process.env = {
+    ...priorEnv,
+    DRASIL_MESSAGE_SCAM_SHADOW_GUILD_ID: 'guild',
+    DRASIL_MESSAGE_SCAM_SHADOW_HOURLY_LIMIT: '1',
+    TYPESAFE_API_KEY: 'test',
+    OPENAI_API_KEY: 'test',
+  };
+  const fetchSpy = jest
+    .spyOn(global, 'fetch')
+    .mockResolvedValueOnce(new Response(null, { status: 403 }))
+    .mockResolvedValueOnce(new Response('{}'));
+  try {
+    new MessageScamShadow().observe('guild', 'first', 'current message', profile);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(recordObservation).toHaveBeenCalledWith('span', {
+      metadata: expect.objectContaining({
+        outcome: 'compared',
+        jev_verdict: 'unavailable',
+        jev_http_status: 403,
+        jev_failure: 'http_error',
+        luna_verdict: 'unavailable',
+        luna_http_status: 200,
+        luna_failure: 'invalid_response',
+      }),
+    });
+  } finally {
+    fetchSpy.mockRestore();
+    process.env = priorEnv;
   }
 });

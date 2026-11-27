@@ -74,6 +74,7 @@ export class MessageScamShadow {
       this.attempts++;
       this.inFlight++;
       try {
+        recordObservation('span', { metadata: { cost_source: 'unknown' } });
         const input = JSON.stringify({
           current_message: content.slice(0, MESSAGE_LIMIT),
           sender_context: profile.recentMessages
@@ -96,9 +97,13 @@ export class MessageScamShadow {
             jev_verdict: jev.verdict,
             jev_ms: jev.elapsedMs,
             jev_input_tokens: jev.inputTokens,
+            jev_http_status: jev.httpStatus,
+            jev_failure: jev.failure,
             luna_verdict: luna.verdict,
             luna_ms: luna.elapsedMs,
             luna_input_tokens: luna.inputTokens,
+            luna_http_status: luna.httpStatus,
+            luna_failure: luna.failure,
           },
         });
       } finally {
@@ -115,12 +120,16 @@ export class MessageScamShadow {
     verdict: z.infer<typeof VERDICT> | 'unavailable' | 'timeout';
     elapsedMs: number;
     inputTokens?: number;
+    httpStatus?: number;
+    failure?: 'http_error' | 'invalid_response' | 'network_error' | 'timeout';
   }> {
     const started = performance.now();
     const isJev = provider === 'jev';
     const key = isJev ? this.jevKey : this.lunaKey;
     let verdict: z.infer<typeof VERDICT> | 'unavailable' | 'timeout' = 'unavailable';
     let inputTokens: number | undefined;
+    let httpStatus: number | undefined;
+    let failure: 'http_error' | 'invalid_response' | 'network_error' | 'timeout' | undefined;
     if (key) {
       try {
         const url = isJev
@@ -154,6 +163,7 @@ export class MessageScamShadow {
           redirect: 'error',
           signal,
         });
+        httpStatus = response.status;
         if (response.ok) {
           const data: unknown = await response.json();
           const usage = z
@@ -166,11 +176,25 @@ export class MessageScamShadow {
             ? jevAnswer.parse(data).answers.verdict.choice
             : (lunaAnswer.parse(data).answers.find((answer) => answer.name === 'verdict')?.choice ??
               'unavailable');
+          if (verdict === 'unavailable') failure = 'invalid_response';
+        } else {
+          failure = 'http_error';
         }
       } catch {
-        if (signal.aborted) verdict = 'timeout';
+        if (signal.aborted) {
+          verdict = 'timeout';
+          failure = 'timeout';
+        } else {
+          failure = httpStatus === undefined ? 'network_error' : 'invalid_response';
+        }
       }
     }
-    return { verdict, elapsedMs: Math.round(performance.now() - started), inputTokens };
+    return {
+      verdict,
+      elapsedMs: Math.round(performance.now() - started),
+      inputTokens,
+      httpStatus,
+      failure,
+    };
   }
 }
