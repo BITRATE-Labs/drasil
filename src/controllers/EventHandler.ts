@@ -1,3 +1,4 @@
+import { MessageScamShadow } from '../services/MessageScamShadow';
 import { WelcomeMessageCleanupService } from '../services/WelcomeMessageCleanupService';
 import { isInLocalGuildScope } from '../localGuildScope';
 import { IReportMemberDirectory } from '../services/ReportMemberDirectory';
@@ -180,6 +181,8 @@ export class EventHandler implements IEventHandler {
   private globalMessageWatchlistLoadPromise: Promise<
     readonly GlobalMessageWatchlistEntry[]
   > | null = null;
+
+  private readonly messageScamShadow = new MessageScamShadow();
 
   constructor(
     @inject(TYPES.DiscordClient) client: Client,
@@ -561,6 +564,10 @@ export class EventHandler implements IEventHandler {
             recentMessages,
             channelContext: this.getCachedChannelContext(message),
           });
+
+          if (!responseSettings.automaticDetectionExemptModerators || !hasExemptPermissions) {
+            this.messageScamShadow.observe(serverId, message.id, content, profileData);
+          }
 
           // Use the detection orchestrator unless a high-confidence watchlist entry matched.
           const detectionResult = watchlistMatch

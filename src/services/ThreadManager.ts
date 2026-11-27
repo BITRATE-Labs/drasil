@@ -1,3 +1,5 @@
+import type { MessageReportContext } from './SecurityActionService';
+import { postReportedMessageEvidence } from './reportedMessageEvidence';
 import { IReportIntakePresentationService } from './ReportIntakePresentationService';
 import type { ImageChallengeReference } from './CaptchaImageService';
 import type { ResolvedThreadClosureResult } from '@drasil/application';
@@ -137,14 +139,16 @@ export interface IThreadManager {
     verificationEvent: VerificationEvent,
     detectionResult: DetectionResult,
     notificationMessage: Message,
-    sourceMessage?: Message
+    sourceMessage?: Message,
+    reportedMessage?: MessageReportContext
   ): Promise<ThreadChannel | null>;
 
   createObservedEvidenceThread(
     member: GuildMember,
     detectionResult: DetectionResult,
     notificationMessage: Message,
-    sourceMessage?: Message
+    sourceMessage?: Message,
+    reportedMessage?: MessageReportContext
   ): Promise<ThreadChannel | null>;
 
   createReportIntakeThread(
@@ -1473,7 +1477,8 @@ export class ThreadManager implements IThreadManager {
     verificationEvent: VerificationEvent,
     detectionResult: DetectionResult,
     notificationMessage: Message,
-    sourceMessage?: Message
+    sourceMessage?: Message,
+    reportedMessage?: MessageReportContext
   ): Promise<ThreadChannel | null> {
     if (verificationEvent.private_evidence_thread_id) {
       const existing = await this.fetchThreadById(
@@ -1481,6 +1486,7 @@ export class ThreadManager implements IThreadManager {
         verificationEvent.server_id
       );
       if (existing) {
+        if (reportedMessage) await postReportedMessageEvidence(existing, member, reportedMessage);
         return existing;
       }
     }
@@ -1541,6 +1547,7 @@ export class ThreadManager implements IThreadManager {
         }),
       });
 
+      if (reportedMessage) await postReportedMessageEvidence(thread, member, reportedMessage);
       return thread;
     } catch (error) {
       console.error('Failed to create admin evidence thread:', error);
@@ -1555,7 +1562,8 @@ export class ThreadManager implements IThreadManager {
     member: GuildMember,
     detectionResult: DetectionResult,
     notificationMessage: Message,
-    sourceMessage?: Message
+    sourceMessage?: Message,
+    reportedMessage?: MessageReportContext
   ): Promise<ThreadChannel | null> {
     let setupStage = 'prepare observed evidence thread records';
     let threadWasCreated = false;
@@ -1597,6 +1605,7 @@ export class ThreadManager implements IThreadManager {
         allowedMentions: this.createNoMentionAllowedMentions(),
       });
 
+      if (reportedMessage) await postReportedMessageEvidence(thread, member, reportedMessage);
       return thread;
     } catch (error) {
       console.error('Failed to create observed evidence thread:', error);

@@ -252,6 +252,27 @@ It will:
   - activate at least `Project` and `Environment` as cost allocation tags
   - allow up to 24 hours for billing views to reflect newly activated tags
 
+### Message scam comparison pilot
+
+Leave the pilot disabled until the selected server permits sending eligible
+message text and recent sender messages to both providers. The pilot samples
+all eligible messages, including messages that production heuristics would
+clear without a provider call. Set
+`DRASIL_MESSAGE_SCAM_SHADOW_GUILD_ID` and
+`DRASIL_MESSAGE_SCAM_SHADOW_HOURLY_LIMIT` on one bot process with both provider
+keys. The cap counts message pairs per process per UTC hour, so each additional
+process multiplies the cap. Shadow verdicts are used only for telemetry. Unset
+the guild ID and restart the bot to disable the pilot. This pilot applies to
+eligible channels across the selected server. Use a dedicated test server if
+only some channels are approved for provider processing.
+
+Verify the configured account's retention controls before enabling live
+traffic. [OpenAI Decisions data controls](https://developers.openai.com/api/docs/guides/your-data#v1decisions)
+describe no default application-state storage and up to 30 days of standard
+abuse-monitoring retention. Decisions does not accept a per-request
+`store` option. Use the pilot telemetry to verify that both providers return
+verdicts on approved test messages before leaving the pilot enabled.
+
 ## Rollback
 
 Re-run the deploy workflow and set the `ref` input to an older commit SHA. The workflow resolves that commit SHA and reuses the existing immutable ECR tag if it already exists (or builds/pushes it if missing), then updates ECS to a new task definition revision referencing that image.

@@ -3565,8 +3565,96 @@ describe('SecurityActionService (unit)', () => {
         triggerContent: 'reported from native context menu',
       })
     );
+    expect(threadManager.createObservedEvidenceThread).toHaveBeenCalledWith(
+      member,
+      expect.objectContaining({ triggerSource: DetectionType.USER_REPORT }),
+      expect.objectContaining({ id: expect.any(String) }),
+      undefined,
+      expect.objectContaining({
+        guildId,
+        channelId: 'channel-local',
+        messageId: 'message-local',
+        content: 'local suspicious message',
+      })
+    );
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();
   });
+
+  it.each(['new', 'existing', 'failed retry', 'first failure'] as const)(
+    'preserves a local report without duplicating case evidence or failure (%s)',
+    async (scenario) => {
+      const guildId = 'guild-active-message-report';
+      const userId = 'user-active-message-report';
+      await serverRepository.getOrCreateServer(guildId);
+      const member = buildMember(guildId, userId);
+      const initialDetection = await detectionEventsRepository.create({
+        server_id: guildId,
+        user_id: userId,
+        detection_type: DetectionType.SUSPICIOUS_CONTENT,
+        confidence: 0.8,
+        reasons: ['Initial detection'],
+        detected_at: new Date(),
+      });
+      const activeCase = await createPendingCase(guildId, userId, initialDetection.id);
+      const priorFailure = {
+        action: 'private_evidence_thread',
+        message: 'thread_creation_failed',
+        at: '2026-11-11T00:00:00Z',
+      };
+      if (scenario === 'existing') {
+        await verificationEventRepository.update(activeCase.id, {
+          private_evidence_thread_id: 'evidence-1',
+        });
+      } else if (scenario === 'failed retry') {
+        await verificationEventRepository.patchMetadata(activeCase.id, {
+          action_failures: [priorFailure],
+        });
+      }
+      if (scenario === 'failed retry' || scenario === 'first failure') {
+        threadManager.createPrivateEvidenceThread.mockResolvedValueOnce(null);
+      }
+      const client = {
+        guilds: {
+          fetch: jest.fn().mockResolvedValue({
+            members: { fetch: jest.fn().mockResolvedValue(member) },
+          }),
+        },
+      } as unknown as Client;
+      const report = {
+        guildId,
+        channelId: 'channel',
+        messageId: 'message',
+        content: 'Captured text',
+      };
+
+      await buildService(client).handleMessageReport(
+        member.user,
+        { id: 'reporter' } as User,
+        report
+      );
+
+      expect(threadManager.createPrivateEvidenceThread).toHaveBeenCalledWith(
+        member,
+        expect.objectContaining({ id: activeCase.id }),
+        expect.objectContaining({ triggerSource: DetectionType.USER_REPORT }),
+        expect.objectContaining({ id: expect.any(String) }),
+        undefined,
+        report
+      );
+      const metadata = (await verificationEventRepository.findById(activeCase.id))?.metadata;
+      if (scenario === 'new') {
+        expect(metadata).toMatchObject({ evidence_bundle: { posted_at: expect.any(String) } });
+      } else {
+        expect(metadata ?? {}).not.toHaveProperty('evidence_bundle');
+      }
+      if (scenario === 'failed retry') {
+        expect(metadata).toMatchObject({ action_failures: [priorFailure] });
+      }
+      if (scenario === 'first failure') {
+        expect(metadata ?? {}).not.toHaveProperty('action_failures');
+      }
+    }
+  );
 
   it('notifies opted-in servers for external message reports', async () => {
     const member = buildMember('guild-external-1', 'user-6');
@@ -3603,6 +3691,12 @@ describe('SecurityActionService (unit)', () => {
         triggerSource: DetectionType.USER_REPORT,
         triggerContent: 'external suspicious DM',
       })
+    );
+    expect(threadManager.createObservedEvidenceThread).toHaveBeenCalledWith(
+      member,
+      expect.objectContaining({ triggerSource: DetectionType.USER_REPORT }),
+      expect.objectContaining({ id: expect.any(String) }),
+      undefined
     );
     expect(threadManager.createVerificationThread).not.toHaveBeenCalled();
     expect(userModerationService.applyCaseRole).not.toHaveBeenCalled();

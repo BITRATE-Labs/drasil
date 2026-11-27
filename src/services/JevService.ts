@@ -5,7 +5,7 @@ import type { UserProfileData, VerificationThreadAnalysisData } from './GPTServi
 
 export const JEV_MODEL = 'jev-1.13.0';
 const JEV_URL = 'https://api.typesafe.ai/v1/systemone';
-const JEV_TIMEOUT_MS = 5000;
+export const JEV_TIMEOUT_MS = 5000;
 
 const spamReasons = {
   phishing_or_credential_request: 'A request for credentials or a link designed to collect them.',

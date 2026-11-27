@@ -1084,21 +1084,53 @@ export class SecurityActionService implements ISecurityActionService {
     verificationEvent: VerificationEvent,
     detectionResult: DetectionResult,
     notificationMessage: Message,
-    sourceMessage?: Message
+    sourceMessage?: Message,
+    reportedMessage?: MessageReportContext
   ): Promise<VerificationEvent> {
+    const existingThreadId = verificationEvent.private_evidence_thread_id;
+    const hadEvidenceThreadFailure = getVerificationActionFailures(verificationEvent.metadata).some(
+      (failure) => failure.action === 'private_evidence_thread'
+    );
     try {
       const thread = await this.threadManager.createPrivateEvidenceThread(
         member,
         verificationEvent,
         detectionResult,
         notificationMessage,
-        sourceMessage
+        sourceMessage,
+        ...(reportedMessage ? [reportedMessage] : [])
       );
       if (!thread) {
         throw new Error(`Failed to create admin evidence thread for ${member.user.tag}`);
       }
-      return await this.sendCaseEvidenceBundle(thread, member, verificationEvent, detectionResult);
+      if (reportedMessage && thread.id === existingThreadId) return verificationEvent;
+      const withEvidence = await this.sendCaseEvidenceBundle(
+        thread,
+        member,
+        verificationEvent,
+        detectionResult
+      );
+      if (!reportedMessage || !hadEvidenceThreadFailure) return withEvidence;
+      const actionFailures = getVerificationActionFailures(withEvidence.metadata).filter(
+        (failure) => failure.action !== 'private_evidence_thread'
+      );
+      return (
+        (await this.verificationEventRepository.patchMetadata(
+          withEvidence.id,
+          { action_failures: actionFailures },
+          { expectedRepairState: withEvidence.metadata }
+        )) ??
+        (await this.verificationEventRepository.findById(withEvidence.id)) ??
+        withEvidence
+      );
     } catch (error) {
+      if (reportedMessage) {
+        recordObservation('tool', {
+          metadata: { report_evidence_delivery: 'thread_setup_failed' },
+        });
+        console.warn('Could not set up the admin evidence thread for a report.');
+        return verificationEvent;
+      }
       return this.recordVerificationActionFailure(
         verificationEvent,
         'private_evidence_thread',
@@ -1737,7 +1769,8 @@ export class SecurityActionService implements ISecurityActionService {
     detectionResult: DetectionResult,
     detectionEventId: string,
     sourceMessage?: Message,
-    caseRoutingAttempt = 0
+    caseRoutingAttempt = 0,
+    reportedMessage?: MessageReportContext
   ): Promise<void> {
     return withObservation('apply-outcome', 'tool', async (): Promise<void> => {
       let activeVerificationEvent =
@@ -1759,7 +1792,8 @@ export class SecurityActionService implements ISecurityActionService {
           member,
           detectionResult,
           notificationMessage,
-          sourceMessage
+          sourceMessage,
+          reportedMessage
         );
         await this.runModerationQueueTask(
           `mirror observed alert ${detectionEventId} to the live moderation queue`,
@@ -1791,14 +1825,28 @@ export class SecurityActionService implements ISecurityActionService {
           detectionResult,
           detectionEventId,
           sourceMessage,
-          caseRoutingAttempt + 1
+          caseRoutingAttempt + 1,
+          reportedMessage
         );
         return;
       }
 
-      activeVerificationEvent = (
-        await this.upsertNotification(member, detectionResult, activeVerificationEvent)
-      ).event;
+      const updatedCase = await this.upsertNotification(
+        member,
+        detectionResult,
+        activeVerificationEvent
+      );
+      activeVerificationEvent = updatedCase.event;
+      if (reportedMessage) {
+        activeVerificationEvent = await this.tryCreatePrivateEvidenceThread(
+          member,
+          activeVerificationEvent,
+          detectionResult,
+          updatedCase.message,
+          undefined,
+          reportedMessage
+        );
+      }
       await this.runModerationQueueTask(
         `mirror case ${activeVerificationEvent.id} to the live moderation queue`,
         (moderationQueueService) => moderationQueueService.upsertCaseMirror(activeVerificationEvent)
@@ -1899,7 +1947,8 @@ export class SecurityActionService implements ISecurityActionService {
     member: GuildMember,
     detectionResult: DetectionResult,
     notificationMessage: Message,
-    sourceMessage?: Message
+    sourceMessage?: Message,
+    reportedMessage?: MessageReportContext
   ): Promise<void> {
     if (!detectionResult.detectionEventId) {
       return;
@@ -1918,7 +1967,8 @@ export class SecurityActionService implements ISecurityActionService {
         member,
         detectionResult,
         notificationMessage,
-        sourceMessage
+        sourceMessage,
+        ...(reportedMessage ? [reportedMessage] : [])
       );
       if (!thread) {
         return;
@@ -4189,7 +4239,10 @@ export class SecurityActionService implements ISecurityActionService {
           await this.upsertReportObservedAlertOrActiveCase(
             member,
             detectionResult,
-            serverDetectionEvent.id
+            serverDetectionEvent.id,
+            undefined,
+            0,
+            isLocalReport ? report : undefined
           );
           this.captureMemberAnalytics(
             member,
